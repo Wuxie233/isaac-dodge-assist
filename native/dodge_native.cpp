@@ -23,6 +23,8 @@ static SRWLOCK decisionLock=SRWLOCK_INIT;
 static int lastChoice=-1;
 static DWORD lastAt;
 static void* lastDevice;
+static uint32_t lastSequence;
+static LONGLONG lastCounter, counterFrequency;
 
 static int rank(const double* risk, uint32_t blocked, int manual, int x, int y, int previous=-1) {
     int best=manual;
@@ -57,7 +59,13 @@ static int choose(void* device) {
     DWORD now=GetTickCount();
     if(sample.magic!=0x32444149 || sample.version!=1 || sample.pid!=pid || !sample.active || now-sample.stamp>120) return -1;
     if(!TryAcquireSRWLockExclusive(&decisionLock)) return -1;
-    if(lastDevice==device && now-lastAt<16) {
+    // Share one decision among the action queries of a single input poll.
+    // GetTickCount moves in ~16ms steps and could hold a decision across a
+    // 60Hz player tick; a new packet or 4ms on the performance counter ends it.
+    LARGE_INTEGER counter; QueryPerformanceCounter(&counter);
+    if(!counterFrequency){LARGE_INTEGER f;QueryPerformanceFrequency(&f);counterFrequency=f.QuadPart;}
+    if(lastDevice==device && lastSequence==sample.sequence &&
+       (counter.QuadPart-lastCounter)*250<counterFrequency) {
         int result=lastChoice; ReleaseSRWLockExclusive(&decisionLock); return result;
     }
     float raw[4]; for(int i=0;i<4;++i) raw[i]=originalValue(device,i);
@@ -65,7 +73,7 @@ static int choose(void* device) {
     for(int i=0;i<9;++i) if(dx[i]==x && dy[i]==y) manual=i;
     int previous=(lastDevice==device && now-lastAt<=120) ? lastChoice : -1;
     lastChoice=rank(sample.risk,sample.blocked,manual,x,y,previous);
-    lastAt=now; lastDevice=device;
+    lastAt=now; lastDevice=device; lastSequence=sample.sequence; lastCounter=counter.QuadPart;
     InterlockedExchange(&shared->chosen,lastChoice);
     int result=lastChoice; ReleaseSRWLockExclusive(&decisionLock); return result;
 }

@@ -15,7 +15,13 @@ internal static class NativeHost
     static MemoryMappedViewAccessor view;
     static Mutex ipcLock;
     static int gamePid;
-    static bool enabled=true;
+    static volatile bool enabled=true, running=true;
+    // Reader thread and UI share view/log state under this lock.
+    static readonly object sync=new object();
+    // Isaac.GetTime() is QueryPerformanceCounter milliseconds (checked on the
+    // installed build), so arrival delay is measured directly (0..5000ms).
+    static readonly int[] delays=new int[512];
+    static int delayCount,delayNext,rejected,sameClock,otherClock;
     static FileStream log;
     static long received=-10000,opened=-10000;
     static readonly Stopwatch clock=Stopwatch.StartNew();
@@ -54,9 +60,49 @@ internal static class NativeHost
         if(f.Length!=8 || !long.TryParse(f[1],out seq) || !double.TryParse(f[2],NumberStyles.Float,CultureInfo.InvariantCulture,out stamp) || double.IsNaN(stamp) || double.IsInfinity(stamp) || stamp<0 || !int.TryParse(f[7],out blocked))return;
         string[] r=f[6].Split(',');if(r.Length!=9)return;double[] risk=new double[9];
         for(int i=0;i<9;i++)if(!double.TryParse(r[i],NumberStyles.Float,CultureInfo.InvariantCulture,out risk[i]) || double.IsNaN(risk[i]) || double.IsInfinity(risk[i]))return;
-        if(!calibration.Accept(unchecked((uint)(long)stamp),seq,clock.ElapsedMilliseconds)){Publish(false,null,0);note="校准时钟或等待实时数据";return;}
+        long absolute=Stopwatch.GetTimestamp()*1000/Stopwatch.Frequency-(long)stamp;
+        if(absolute>=0 && absolute<5000){sameClock++;delays[delayNext]=(int)absolute;delayNext=(delayNext+1)%delays.Length;if(delayCount<delays.Length)delayCount++;}
+        else otherClock++;
+        if(!calibration.Accept(unchecked((uint)(long)stamp),seq,clock.ElapsedMilliseconds)){rejected++;Publish(false,null,0);note="校准时钟或等待实时数据";return;}
         received=clock.ElapsedMilliseconds;packets++;
         Publish(enabled && f[3]=="1",risk,blocked);note="传感器已连接，原生键盘输入入口";
+    }
+    static string DelaySummary()
+    {
+        if(delayCount==0)return sameClock==0 && otherClock>0 ? "日志延迟：时钟不同源，未测" : "日志延迟：无数据";
+        int[] sorted=new int[delayCount];Array.Copy(delays,sorted,delayCount);Array.Sort(sorted);
+        return String.Format("日志延迟 p50 {0}ms · p95 {1}ms · 最大 {2}ms",sorted[delayCount/2],sorted[delayCount*95/100],sorted[delayCount-1]);
+    }
+    static void ReaderLoop(object path)
+    {
+        // WinForms timers fire every ~31ms at a 16ms interval; poll at 1ms.
+        timeBeginPeriod(1);
+        try{
+            while(running){
+                lock(sync){
+                    if(view==null)return;
+                    try{
+                        ReadLog((string)path);
+                        if(clock.ElapsedMilliseconds-received>120)Publish(false,null,0);
+                    }catch(IOException){Publish(false,null,0);if(log!=null)log.Dispose();log=null;note="等待游戏日志";}
+                }
+                Thread.Sleep(1);
+            }
+        }catch(Exception e){lock(sync){note="读取线程停止："+e.Message;if(view!=null)Publish(false,null,0);}}
+        finally{timeEndPeriod(1);}
+    }
+    static void WriteStats(string reason)
+    {
+        try{
+            string file=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"IsaacDodgeAssist","native-0.3-stats.log");
+            string line;
+            lock(sync){
+                line=String.Format(CultureInfo.InvariantCulture,"{0:o} reason={1} packets={2} rejected={3} sameClock={4} otherClock={5} jitterMs={6} polls={7} overrides={8} {9}",
+                    DateTime.Now,reason,packets,rejected,sameClock,otherClock,calibration.Delay,
+                    view!=null?view.ReadInt32(108):-1,view!=null?view.ReadInt32(112):-1,DelaySummary());
+            }
+            File.AppendAllText(file,line+Environment.NewLine);
+        }catch(Exception){}
     }
     [STAThread] static void Main()
     {
@@ -91,27 +137,33 @@ internal static class NativeHost
                 }
                 if(!loaded)Inject(game,dll);
                 Application.EnableVisualStyles();
-                var form=new Form{Text="以撒原生输入躲避 0.2",Width=560,Height=220};
+                var form=new Form{Text="以撒原生输入躲避 0.3",Width=560,Height=240};
                 var toggle=new CheckBox{Text="启用原生移动接管",Checked=true,Left=20,Top=20,Width=300};
-                var label=new Label{Left=20,Top=60,Width=510,Height=110};
-                toggle.CheckedChanged+=delegate{enabled=toggle.Checked;if(!enabled)Publish(false,null,0);};
+                var label=new Label{Left=20,Top=60,Width=510,Height=130};
+                toggle.CheckedChanged+=delegate{enabled=toggle.Checked;if(!enabled)lock(sync)Publish(false,null,0);};
                 form.Controls.Add(toggle);form.Controls.Add(label);
                 var timer=new System.Windows.Forms.Timer{Interval=16};
                 string path=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),"My Games","Binding of Isaac Repentance+","log.txt");
+                var reader=new Thread(ReaderLoop){IsBackground=true,Priority=ThreadPriority.AboveNormal,Name="IAD log reader"};
+                long lastStats=clock.ElapsedMilliseconds;
                 timer.Tick+=delegate{
                     try{
                         if(game.HasExited){form.Close();return;}
-                        ReadLog(path);
-                        if(clock.ElapsedMilliseconds-received>120)Publish(false,null,0);
-                        int status=view.ReadInt32(104);
-                        label.Text=String.Format("{0}\nHook状态 {1} · 收到 {2} 帧\n移动输入读取 {3} 次 · 返回替代输入 {4} 次\n关闭窗口或按住左 Alt 释放接管；计数不代表角色实际位移。",note,status,packets,view.ReadInt32(108),view.ReadInt32(112));
-                        if(status<0){enabled=false;toggle.Checked=false;note="Hook校验失败："+status;}
-                    }catch(IOException){Publish(false,null,0);if(log!=null)log.Dispose();log=null;note="等待游戏日志";}
-                    catch(Exception e){Publish(false,null,0);timer.Stop();label.Text="已停止："+e.Message;}
+                        int status;string text;
+                        lock(sync){
+                            status=view.ReadInt32(104);
+                            text=String.Format("{0}\nHook状态 {1} · 收到 {2} 帧 · 拒收 {3}\n{4}\n移动输入读取 {5} 次 · 返回替代输入 {6} 次\n关闭窗口或按住左 Alt 释放接管；计数不代表角色实际位移。",
+                                note,status,packets,rejected,DelaySummary(),view.ReadInt32(108),view.ReadInt32(112));
+                        }
+                        label.Text=text;
+                        if(status<0){enabled=false;toggle.Checked=false;lock(sync)note="Hook校验失败："+status;}
+                        if(clock.ElapsedMilliseconds-lastStats>=30000){lastStats=clock.ElapsedMilliseconds;WriteStats("interval");}
+                    }catch(Exception e){lock(sync)Publish(false,null,0);timer.Stop();label.Text="已停止："+e.Message;}
                 };
-                form.FormClosing+=delegate{timer.Stop();Publish(false,null,0);};
-                timer.Start();Application.Run(form);timer.Dispose();
-                view.Dispose();view=null;
+                form.FormClosing+=delegate{timer.Stop();running=false;reader.Join(500);WriteStats("exit");lock(sync)Publish(false,null,0);};
+                reader.Start(path);timer.Start();Application.Run(form);timer.Dispose();
+                running=false;reader.Join(500);
+                lock(sync){view.Dispose();view=null;}
             }
         }
     }
@@ -138,6 +190,8 @@ internal static class NativeHost
             completed=true;uint result;if(!GetExitCodeThread(thread,out result) || result==0)throw new Exception("游戏未能加载原生模块");
         }finally{if(allocation!=IntPtr.Zero && (completed || !started))VirtualFreeEx(process,allocation,UIntPtr.Zero,0x8000);if(thread!=IntPtr.Zero)CloseHandle(thread);CloseHandle(process);}
     }
+    [DllImport("winmm.dll")]static extern uint timeBeginPeriod(uint period);
+    [DllImport("winmm.dll")]static extern uint timeEndPeriod(uint period);
     [DllImport("kernel32.dll",SetLastError=true)]static extern IntPtr OpenProcess(uint access,bool inherit,int pid);
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode)]static extern IntPtr GetModuleHandle(string module);
     [DllImport("kernel32.dll",CharSet=CharSet.Ansi)]static extern IntPtr GetProcAddress(IntPtr module,string name);
