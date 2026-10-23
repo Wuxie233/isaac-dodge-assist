@@ -15,6 +15,7 @@ local kinematics = PlayerMotion.new()
 local inputs = InputQueue.new()
 -- Engine contact is the circle sum; this margin covers sensing error only.
 local CONTACT_MARGIN = 3
+local RED_POOP = 1 -- grid poop variant
 local enabled, selected, boundSeed = true, -1, nil
 local horizons, horizonIndex = {250, 350, 450, 600}, 3
 local effectiveHorizon=250
@@ -322,6 +323,11 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
             local kind = grid:GetType()
             if not p.CanFly and spikesActive(grid, kind) then
                 areas[#areas+1] = {position=grid.Position,velocity=Vector(0,0),radius=20}
+            elseif kind == GridEntityType.GRID_POOP and not p.CanFly and grid:GetVariant() == RED_POOP and
+                room:GetGridCollision(index) ~= GridCollisionClass.COLLISION_NONE then
+                -- Red poop hurts on contact (DAMAGE_POOP): 6 of 26 hits in
+                -- the 0.10.0 session. Solid 40-unit cell: half size + margin.
+                areas[#areas+1] = {position=grid.Position,velocity=Vector(0,0),radius=26}
             elseif kind == GridEntityType.GRID_ROCK_BOMB and grid.State == 3 then
                 areas[#areas+1] = {position=grid.Position,velocity=Vector(0,0),radius=100,warning=true}
             elseif kind == GridEntityType.GRID_TNT and grid.State < 4 and

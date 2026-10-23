@@ -137,3 +137,22 @@ function smoke:ToEffect()return self end
 scene={smoke};tick();values=packet()
 for _,s in ipairs(values)do assert(s==0,'lingering explosion graphics retained damage')end
 print('PASS explosive projectile warning and ordinary/friendly/expired/smoke exclusions')
+-- Red poop hurts on contact; normal poop and flight do not.
+local poopIndex,poopVariant=313,1 -- center (540,500)
+function room:GetGridEntity(i)
+ if i~=poopIndex then return nil end
+ return {Position=room:GetGridPosition(i),State=0,GetType=function()return GridEntityType.GRID_POOP end,
+  GetVariant=function()return poopVariant end}
+end
+function room:GetGridCollision(i)return i==poopIndex and GridCollisionClass.COLLISION_SOLID or 0 end
+scene={};p.Position=Vector(470,500);p.Velocity=Vector(0,0)
+callbacks[ModCallbacks.MC_POST_GAME_STARTED]()
+for i=1,5 do tick()end
+values=packet()
+assert(values[3]>0 and values[1]<=0 and values[2]<=0,'red poop contact not avoided')
+poopVariant=0;tick();values=packet()
+for _,s in ipairs(values)do assert(s==0,'normal poop treated as damaging')end
+poopVariant=1;p.CanFly=true;tick();values=packet()
+for _,s in ipairs(values)do assert(s==0,'flying player avoided red poop')end
+p.CanFly=false
+print('PASS red poop contact, normal poop and flight exclusions')
