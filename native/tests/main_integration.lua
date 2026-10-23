@@ -180,3 +180,30 @@ Input.IsButtonTriggered=function(key)return key==Keyboard.KEY_F9 end
 callbacks[ModCallbacks.MC_POST_RENDER]();Input.IsButtonTriggered=function()return false end
 before=renders;tick();callbacks[ModCallbacks.MC_POST_RENDER]();assert(renders==before,'preview drew after toggling off')
 print('PASS F9 danger preview: default off, toggle, capture, render, mirror world')
+-- F10 combat modes: IAD2 precedes the IAD1 packet it names; OFF and
+-- paused updates carry none.
+local function f10()
+ Input.IsButtonTriggered=function(key)return key==Keyboard.KEY_F10 end
+ callbacks[ModCallbacks.MC_POST_RENDER]();Input.IsButtonTriggered=function()return false end
+end
+local function combatPair()
+ local word,seq
+ local last=logs[#logs];local iad1=last:match('^IAD1|(%d+)|')
+ assert(iad1,'last line is not IAD1')
+ local prev=logs[#logs-1]
+ seq,word=prev:match('^IAD2|(%d+)|(%d+)$')
+ if seq then assert(seq==iad1,'IAD2 names another packet') end
+ return word and tonumber(word)
+end
+scene={npc2};npc2.Position=Vector(560,500);npc2.Velocity=Vector(0,0);p.Position=Vector(400,500)
+tick();assert(combatPair()==nil,'combat word while OFF')
+f10();tick()
+local word=assert(combatPair(),'AIM word missing')
+assert(word&3==1 and (word>>6)&7==2,'AIM must shoot right: '..word)
+f10();tick();word=assert(combatPair(),'AUTO word missing')
+assert(word&3==2 and (word>>6)&7==2 and word&512~=0 and ((word>>2)&15)<9,'AUTO word: '..word)
+Input.IsButtonPressed=function(key)return key==Keyboard.KEY_LEFT_SHIFT end
+tick();assert(combatPair()==nil,'combat word while paused by Shift')
+Input.IsButtonPressed=function()return false end
+f10();tick();assert(combatPair()==nil,'combat word after OFF')
+print('PASS F10 combat modes: IAD2 contract, AIM and AUTO words, Shift and OFF release')

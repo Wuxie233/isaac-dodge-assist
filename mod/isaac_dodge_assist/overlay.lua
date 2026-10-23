@@ -6,11 +6,12 @@
 local M = {}
 local sqrt, atan, cos, sin, pi, max, min = math.sqrt, math.atan, math.cos, math.sin, math.pi, math.max, math.min
 local HARD, WARN, PATH = {1, 0.15, 0.15}, {1, 0.75, 0.1}, {1, 0.35, 0.35}
-local shapes, enabled, sprite = {}, false, nil
+local TARGET, GOAL = {0.3, 0.9, 1}, {0.35, 1, 0.45}
+local shapes, marks, enabled, sprite = {}, {}, false, nil
 
 function M.enabled() return enabled end
-function M.toggle() enabled = not enabled; if not enabled then shapes = {} end; return enabled end
-function M.clear() shapes = {} end
+function M.toggle() enabled = not enabled; if not enabled then shapes, marks = {}, {} end; return enabled end
+function M.clear() shapes, marks = {}, {} end
 
 local function line(list, ax, ay, bx, by, color, alpha, width)
     list[#list+1] = {ax, ay, bx, by, color, alpha, width or 1}
@@ -58,6 +59,22 @@ function M.capture(scene, playerRadius)
     shapes = list
 end
 
+-- Combat marks (F10 modes): target ring, aim point, standing goal.
+function M.combat(info)
+    if not enabled then return end
+    local list = {}
+    if info then
+        circle(list, info.targetX, info.targetY, info.targetR + 6, TARGET, 0.9)
+        line(list, info.aimX-6, info.aimY, info.aimX+6, info.aimY, TARGET, 0.9, 2)
+        line(list, info.aimX, info.aimY-6, info.aimX, info.aimY+6, TARGET, 0.9, 2)
+        if info.goalX then
+            line(list, info.goalX-8, info.goalY-8, info.goalX+8, info.goalY+8, GOAL, 0.9, 2)
+            line(list, info.goalX-8, info.goalY+8, info.goalX+8, info.goalY-8, GOAL, 0.9, 2)
+        end
+    end
+    marks = list
+end
+
 local function ensureSprite()
     if sprite then return sprite end
     sprite = Sprite()
@@ -73,13 +90,9 @@ local function screen(x, y, mirror, width)
     if mirror then p = Vector(width - p.X, p.Y) end
     return p
 end
-function M.render(room)
-    if not enabled or #shapes == 0 then return end
-    local s = ensureSprite()
-    local mirror = room and room.IsMirrorWorld and room:IsMirrorWorld() or false
-    local width = mirror and Isaac.GetScreenWidth() or 0
-    for i = 1, #shapes do
-        local item = shapes[i]
+local function draw(s, list, mirror, width)
+    for i = 1, #list do
+        local item = list[i]
         local a = screen(item[1], item[2], mirror, width)
         local b = screen(item[3], item[4], mirror, width)
         local dx, dy = b.X - a.X, b.Y - a.Y
@@ -92,6 +105,14 @@ function M.render(room)
             s:Render(a, Vector(0, 0), Vector(0, 0))
         end
     end
+end
+function M.render(room)
+    if not enabled or (#shapes == 0 and #marks == 0) then return end
+    local s = ensureSprite()
+    local mirror = room and room.IsMirrorWorld and room:IsMirrorWorld() or false
+    local width = mirror and Isaac.GetScreenWidth() or 0
+    draw(s, shapes, mirror, width)
+    draw(s, marks, mirror, width)
 end
 
 return M

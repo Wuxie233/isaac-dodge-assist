@@ -26,5 +26,5 @@ if __name__ == '__main__':
     print('PASS all mod Lua syntax', flush=True)
     run(Path(sys.argv[1] if len(sys.argv)>1 else 'native/tests/planner_regression.lua').read_text())
     if len(sys.argv) == 1:
-        for name in ('laser_regression.lua', 'diagnostics_regression.lua'):
+        for name in ('laser_regression.lua', 'diagnostics_regression.lua', 'combat_regression.lua'):
             run((root/'native/tests'/name).read_text())

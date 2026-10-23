@@ -11,9 +11,11 @@ local Terrain = include("terrain_snapshot")
 local Overlay = include("overlay")
 local PlayerMotion = include("player_motion")
 local InputQueue = include("input_queue")
+local Combat = include("combat")
 local terrain
 local kinematics = PlayerMotion.new()
 local inputs = InputQueue.new()
+local combat, combatWord = Combat.new(), 0
 -- Engine contact is the circle sum; this margin covers sensing error only.
 local CONTACT_MARGIN = 3
 local RED_POOP = 1 -- grid poop variant
@@ -36,6 +38,9 @@ local function emit(active, scores, blocked)
         loggedState = state
     end
     -- Publish movement risks; the native host overrides local keyboard sampling.
+    -- The combat word precedes its IAD1 packet and carries that sequence;
+    -- hosts before 0.4 ignore it.
+    if active and combatWord ~= 0 then Isaac.DebugString("IAD2|" .. (sequence + 1) .. "|" .. combatWord) end
     sequence = sequence + 1
     Isaac.DebugString("IAD1|" .. sequence .. "|" .. math.floor(Isaac.GetTime()) .. "|" ..
         (active and "1" or "0") .. "|" .. selected .. "|" .. horizons[horizonIndex] .. "|" .. (scores or zeroScores) .. "|" .. (blocked or 0))
@@ -166,6 +171,13 @@ local function contactThreat(entity)
         collision ~= EntityCollisionClass.ENTCOLL_ALL then return false end
     if entity.CollisionDamage <= 0 then return false end
     return entity.Type == EntityType.ENTITY_FIREPLACE or entity:IsActiveEnemy(false)
+end
+local function engage(p, room, entities, scores, blocked)
+    combatWord = Combat.update(combat, {player=p, room=room, frame=frame, entities=entities,
+        playerOwned=playerOwned, gridSafeXY=gridSafeXY, directions=directions,
+        stride=kinematics.k*p.MoveSpeed*PlayerMotion.TICKS, queueDelay=inputs.delay,
+        scores=scores, blocked=blocked})
+    Overlay.combat(combat.info)
 end
 local function forecast(entity, step)
     return MotionPrediction.forecast(motion,entity,step)
@@ -343,6 +355,7 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     if #bullets == 0 and #contacts == 0 and #bombs == 0 and #areas == 0 and #lasers == 0 then
         Diagnostics.trace(frame,p,input,nil,nil,polled)
         Overlay.clear()
+        engage(p,room,entities)
         state = "MONITOR / HELPER"; emit(true); return
     end
     -- Conservative reach bound retains every area any candidate can reach.
@@ -389,6 +402,7 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     Diagnostics.performance(frame,finished-started,scanned-started,built-scanned,finished-built,
         terrain and terrain.nativeCalls or 0)
     Diagnostics.trace(frame,p,input,scores,blocked,polled)
+    engage(p,room,entities,scores,blocked)
     state = danger and "THREAT / HELPER" or "MONITOR / HELPER"
     emit(true, table.concat(scores, ","), blocked)
 end)
@@ -412,14 +426,18 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
     end
     if Input.IsButtonTriggered(Keyboard.KEY_F8, 0) then horizonIndex = horizonIndex % #horizons + 1 end
     if Input.IsButtonTriggered(Keyboard.KEY_F9, 0) then Overlay.toggle() end
+    if Input.IsButtonTriggered(Keyboard.KEY_F10, 0) then
+        Isaac.DebugString("IAD COMBAT: " .. Combat.MODES[Combat.cycle(combat)])
+    end
     Overlay.render(game:GetRoom())
     if game:IsPaused() then emit(false) end
-    local label = "DODGE v0.11.0 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
-        "  " .. horizons[horizonIndex] .. "/" .. effectiveHorizon .. "ms" .. (Overlay.enabled() and "  VIEW" or "")
+    local label = "DODGE v0.12.0 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
+        "  " .. horizons[horizonIndex] .. "/" .. effectiveHorizon .. "ms" .. (Overlay.enabled() and "  VIEW" or "") ..
+        (combat.mode > 0 and ("  " .. Combat.MODES[combat.mode]) or "")
     Isaac.RenderText(label, 48, 54, 1, 0.9, 0.35, 0.85)
     if selected >= 0 and selected < game:GetNumPlayers() then
         local point = Isaac.WorldToScreen(Isaac.GetPlayer(selected).Position)
         Isaac.RenderText("DODGE P" .. (selected + 1), point.X - 25, point.Y - 55, 1, 0.9, 0.35, 0.8)
     end
 end)
-Isaac.DebugString("IAD: sensor 0.11.0 loaded")
+Isaac.DebugString("IAD: sensor 0.12.0 loaded")
