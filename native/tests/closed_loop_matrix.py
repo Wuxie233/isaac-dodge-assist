@@ -2,6 +2,7 @@
 summarize hits per simulated minute. Needs lua5.3 on PATH.
 
 python3 native/tests/closed_loop_matrix.py <label>=<modDir|none> ... [--updates N] [--seeds N]
+With SIM_COMBAT=auto, also prints kills per simulated minute.
 """
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -31,14 +32,17 @@ def run(job):
     if not m:
         raise RuntimeError(f'{job}: {out.stdout[-400:]} {out.stderr[-800:]}')
     kinds = {k: int(v) for k, v in re.findall(r' (late|trapped|chose_safe|ignored_safe)=(\d+)', out.stdout)}
-    return job, int(m.group(1)), float(m.group(2)), kinds
+    k = re.search(r'kills=(\d+)', out.stdout)
+    return job, int(m.group(1)), float(m.group(2)), kinds, int(k.group(1)) if k else 0
 
 hits = collections.defaultdict(int)
+kills = collections.defaultdict(int)
 override = collections.defaultdict(list)
 kinds = collections.defaultdict(collections.Counter)
 with ThreadPoolExecutor(max_workers=40) as pool:
-    for (label, latency, scenario, seed), h, o, k in pool.map(run, jobs):
+    for (label, latency, scenario, seed), h, o, k, kill in pool.map(run, jobs):
         hits[label, latency, scenario] += h
+        kills[label, latency, scenario] += kill
         override[label, latency, scenario].append(o)
         kinds[label].update(k)
 minutes = updates*seeds/1800
@@ -56,3 +60,8 @@ print('chose_safe = an applied input was rated safe yet hit; ignored_safe = safe
 for label in mods:
     if label != 'none':
         print(label.ljust(10), dict(kinds[label]))
+if any(kills.values()):
+    print('kills per simulated minute')
+    for label in mods:
+        for latency in latencies:
+            print(label.ljust(10)+f'{latency:<4}'+''.join(f'{kills[label, latency, s]/minutes:17.2f}' for s in scenarios))

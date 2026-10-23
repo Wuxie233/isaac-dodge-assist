@@ -5,6 +5,9 @@
 -- Usage (from the project root):
 --   lua5.3 native/tests/closed_loop_sim.lua <modDir|none> <latencyTicks> <seed> <scenario> [updates]
 -- Prints one line: hits, takeovers and timing. Not a substitute for the game.
+-- SIM_COMBAT=auto presses F10 twice (AUTO) and keeps the human's hands off:
+-- the native port then walks and shoots from the IAD2 word; enemies have HP,
+-- the player fires tears, killed enemies respawn at an edge.
 local modDir, latency, seed, scenario, updates = arg[1], tonumber(arg[2]), tonumber(arg[3]), arg[4], tonumber(arg[5] or 2400)
 math.randomseed(seed)
 local mt={};mt.__index=mt
@@ -46,7 +49,7 @@ function room:GetTopLeftPos()return Vector(LEFT,TOP)end
 function room:GetBottomRightPos()return Vector(RIGHT,BOTTOM)end
 local applied=Vector(0,0)
 local p={Type=EntityType.ENTITY_PLAYER,Variant=0,SubType=0,Position=Vector(300,180),Velocity=Vector(0,0),
- Size=10,MoveSpeed=1,InitSeed=9,CanFly=false,ControllerIndex=0}
+ Size=10,MoveSpeed=1,InitSeed=9,CanFly=false,ControllerIndex=0,ShotSpeed=1,TearRange=260}
 function p:GetPlayerType()return -1 end
 function p:GetSubPlayer()return nil end
 function p:IsSubPlayer()return false end
@@ -55,7 +58,7 @@ function p:IsCoopGhost()return false end
 function p:AreControlsEnabled()return true end
 function p:ToPlayer()return self end
 function p:GetMovementInput()return applied end
-local scene,callbacks,packet={}, {}, nil
+local scene,callbacks,packet,combatWord={}, {}, nil, nil
 function RegisterMod()return {AddCallback=function(_,kind,fn)callbacks[kind]=fn end}end
 -- Optional tuning experiments: SIM_FAST_DELAY / SIM_SLOW_DELAY override the
 -- response models' latency (ticks); SIM_F8 presses F8 that many times.
@@ -88,11 +91,14 @@ Isaac={GetTime=function()return os.clock()*1000 end,GetPlayer=function()return p
  GetRoomEntities=function()return scene end,RenderText=function()end,WorldToScreen=function(v)return v end,
  DebugString=function(s)
   if os.getenv('SIM_DEBUG') and s:find('^IAD KIN') then print(s) end
+  local word=s:match('^IAD2|%d+|(%d+)$')
+  if word then combatWord=tonumber(word) end
   local body=s:match('^IAD1|(.*)$')
   if body then
    local f={};for part in body:gmatch('[^|]+')do f[#f+1]=part end
    local r={};for n in f[6]:gmatch('[^,]+')do r[#r+1]=tonumber(n)end
-   packet={active=f[3]=='1',risk=r,blocked=tonumber(f[7])}
+   packet={active=f[3]=='1',risk=r,blocked=tonumber(f[7]),combat=combatWord or 0}
+   combatWord=nil
   end
  end}
 local assist=modDir~='none'
@@ -100,11 +106,16 @@ if assist then dofile(modDir..'/main.lua') else
  callbacks[ModCallbacks.MC_POST_UPDATE]=function()end;callbacks[ModCallbacks.MC_POST_GAME_STARTED]=function()end
 end
 callbacks[ModCallbacks.MC_POST_GAME_STARTED]()
-for _=1,tonumber(os.getenv('SIM_F8') or 0) do
- Input.IsButtonTriggered=function(key)return key==Keyboard.KEY_F8 end
- if callbacks[ModCallbacks.MC_POST_RENDER] then callbacks[ModCallbacks.MC_POST_RENDER]() end
- Input.IsButtonTriggered=function()return false end
+local function press(key,times)
+ for _=1,times do
+  Input.IsButtonTriggered=function(k)return k==key end
+  if callbacks[ModCallbacks.MC_POST_RENDER] then callbacks[ModCallbacks.MC_POST_RENDER]() end
+  Input.IsButtonTriggered=function()return false end
+ end
 end
+press(Keyboard.KEY_F8,tonumber(os.getenv('SIM_F8') or 0))
+local auto=os.getenv('SIM_COMBAT')=='auto'
+if auto then press(Keyboard.KEY_F10,2) end
 -- Native rank(), ported from dodge_native.cpp (indices 1-based here).
 local dx,dy={0,-1,1,0,0,-1,1,-1,1},{0,0,0,-1,1,-1,-1,1,1}
 local function rank(risk,blocked,manual,x,y,previous)
@@ -138,9 +149,12 @@ local function base(kind)
  function e:GetSprite()return {GetAnimation=function()return 'Walk' end,GetFrame=function()return 0 end}end
  return e
 end
+local HP={turret=20,chaser=15,fly=6}
 local function npc(x,y,size,ai)
  local e=base(EntityType.ENTITY_NPC);e.Position=Vector(x,y);e.Size=size;e.ai=ai;e.timer=math.random(10,40)
+ e.HitPoints=HP[ai]
  function e:ToNPC()return self end;function e:IsActiveEnemy()return true end
+ function e:IsVulnerableEnemy()return true end
  return e
 end
 local function bullet(from,velocity)
@@ -168,6 +182,9 @@ for _=1,flies do local x,y=edgePoint();npcs[#npcs+1]=npc(x,y,9,'fly')end
 local F,K=0.885,4.0
 local manual,manualLeft=1,0
 local hits,overrides,ticks,invulnerable=0,0,0,0
+local tears,kills,shots,fireCooldown,respawns={},0,0,0,{}
+-- Base tears: about 2.7 shots per second, 3.5 damage, 10 units per update.
+local FIRE_TICKS,TEAR_DAMAGE,TEAR_SPEED=22,3.5,10
 local pending={}
 -- Online play queues every local input (manual and native override) for a
 -- fixed number of 60Hz ticks before it moves the player (SIM_INPUT_DELAY).
@@ -202,19 +219,31 @@ local function collide()
   end
  end
 end
+local shootDirs={Vector(-1,0),Vector(1,0),Vector(0,-1),Vector(0,1)}
 local function tick()
  ticks=ticks+1
  while pending[1] and pending[1].at<=ticks do current=table.remove(pending,1) end
- local choice
+ local choice,fire
  if current and current.active then
   local previous=(previousChoice and ticks-previousAt<=7) and previousChoice or nil
   choice=rank(current.risk,current.blocked,manual,dx[manual],dy[manual],previous)
+  -- decide() in dodge_native.cpp: AUTO with idle hands walks and fires.
+  local w=current.combat
+  local mode,move,shoot,hold=w&3,(w>>2)&15,(w>>6)&7,(w&512)~=0
+  if mode==2 and manual==1 and move<9 then choice=move+1 end
+  if mode==2 and shoot>=1 and shoot<=4 and hold then fire=shoot end
   previousChoice,previousAt=choice,ticks
  end
  local chosen=dirs[choice or manual]
  polledInput=chosen
- inputQueue[#inputQueue+1]=chosen
- local direction=#inputQueue>inputDelay and table.remove(inputQueue,1) or dirs[1]
+ inputQueue[#inputQueue+1]={move=chosen,fire=fire}
+ local queued=#inputQueue>inputDelay and table.remove(inputQueue,1) or {move=dirs[1]}
+ local direction=queued.move
+ fireCooldown=fireCooldown-1
+ if queued.fire and fireCooldown<=0 then
+  fireCooldown=FIRE_TICKS;shots=shots+1
+  tears[#tears+1]={Position=p.Position,Velocity=shootDirs[queued.fire]*TEAR_SPEED,travel=0}
+ end
  if choice then overrides=overrides+1 end
  if ticks%2==0 then
   local q={active=current and current.active}
@@ -236,6 +265,22 @@ local function tick()
  collide()
 end
 local function worldUpdate()
+ for i=#tears,1,-1 do
+  local t=tears[i];t.Position=t.Position+t.Velocity;t.travel=t.travel+TEAR_SPEED
+  local gone=t.travel>p.TearRange or not room:IsPositionInRoom(t.Position,0)
+  for j=#npcs,1,-1 do
+   local e=npcs[j]
+   if not gone and e.Position:Distance(t.Position)<e.Size+7 then
+    gone=true;e.HitPoints=e.HitPoints-TEAR_DAMAGE
+    if e.HitPoints<=0 then kills=kills+1;table.remove(npcs,j);respawns[#respawns+1]={at=45,ai=e.ai,size=e.Size} end
+   end
+  end
+  if gone then table.remove(tears,i) end
+ end
+ for i=#respawns,1,-1 do
+  local r=respawns[i];r.at=r.at-1
+  if r.at<=0 then local x,y=edgePoint();npcs[#npcs+1]=npc(x,y,r.size,r.ai);table.remove(respawns,i) end
+ end
  for i=#bullets,1,-1 do
   local b=bullets[i];b.Position=b.Position+b.Velocity;b.FrameCount=b.FrameCount+1
   if not room:IsPositionInRoom(b.Position,0) then table.remove(bullets,i) end
@@ -270,7 +315,8 @@ end
 local started=os.clock()
 for update=1,updates do
  manualLeft=manualLeft-1
- if manualLeft<=0 then manual=math.random()<0.2 and 1 or math.random(2,9);manualLeft=math.random(15,45)end
+ if auto then manual=1
+ elseif manualLeft<=0 then manual=math.random()<0.2 and 1 or math.random(2,9);manualLeft=math.random(15,45)end
  tick();tick()
  collide()
  worldUpdate()
@@ -278,9 +324,10 @@ for update=1,updates do
  packet=nil
  callbacks[ModCallbacks.MC_POST_UPDATE]()
  -- The packet affects ticks after `latency` further ticks.
- if packet then pending[#pending+1]={at=ticks+latency+1,active=packet.active,risk=packet.risk,blocked=packet.blocked} end
+ if packet then pending[#pending+1]={at=ticks+latency+1,active=packet.active,risk=packet.risk,blocked=packet.blocked,combat=packet.combat} end
 end
 if assist and callbacks[ModCallbacks.MC_PRE_GAME_EXIT] then callbacks[ModCallbacks.MC_PRE_GAME_EXIT]() end
 print(string.format("mod=%s latency=%d seed=%d scenario=%s updates=%d hits=%d per_min=%.2f override_ticks=%.1f%% ms/update=%.2f",
  modDir,latency,seed,scenario,updates,hits,hits*1800/updates,overrides*100/ticks,(os.clock()-started)*1000/updates)..
- string.format(" late=%d trapped=%d chose_safe=%d ignored_safe=%d",classes.late,classes.trapped,classes.chose_safe,classes.ignored_safe))
+ string.format(" late=%d trapped=%d chose_safe=%d ignored_safe=%d",classes.late,classes.trapped,classes.chose_safe,classes.ignored_safe)..
+ string.format(" kills=%d shots=%d",kills,shots))
