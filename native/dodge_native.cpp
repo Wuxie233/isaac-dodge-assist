@@ -49,7 +49,7 @@ static int rank(const double* risk, uint32_t blocked, int manual, int x, int y, 
 
 static int choose(void* device) {
     DWORD pid=0; GetWindowThreadProcessId(GetForegroundWindow(), &pid);
-    if (!shared || pid!=GetCurrentProcessId() || (GetAsyncKeyState(VK_LMENU)&0x8000)) return -1;
+    if (!shared || pid!=GetCurrentProcessId() || (GetAsyncKeyState(VK_LSHIFT)&0x8000)) return -1;
     Shared sample{};
     DWORD wait=WaitForSingleObject(mutexHandle,0);
     if (wait==WAIT_ABANDONED) { shared->active=0; ReleaseMutex(mutexHandle); return -1; }

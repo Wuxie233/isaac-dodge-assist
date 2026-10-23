@@ -152,7 +152,7 @@ internal static class NativeHost
                         int status;string text;
                         lock(sync){
                             status=view.ReadInt32(104);
-                            text=String.Format("{0}\nHook状态 {1} · 收到 {2} 帧 · 拒收 {3}\n{4}\n移动输入读取 {5} 次 · 返回替代输入 {6} 次\n关闭窗口或按住左 Alt 释放接管；计数不代表角色实际位移。",
+                            text=String.Format("{0}\nHook状态 {1} · 收到 {2} 帧 · 拒收 {3}\n{4}\n移动输入读取 {5} 次 · 返回替代输入 {6} 次\n关闭窗口或按住左 Shift 释放接管；计数不代表角色实际位移。",
                                 note,status,packets,rejected,DelaySummary(),view.ReadInt32(108),view.ReadInt32(112));
                         }
                         label.Text=text;
