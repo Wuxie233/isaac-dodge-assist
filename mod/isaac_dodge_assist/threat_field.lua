@@ -32,41 +32,47 @@ function M.add(ctx,t,a,b,r,warning)
         local bucket=cell(layer,x,y,true);bucket[#bucket+1]=item
     end end
 end
+-- Narrow phase for one bucket. A plain function (not a per-query closure)
+-- keeps each query allocation-free.
+local function visit(ctx,bucket,stamp,ox,oy,pdx,pdy,hard,warning,clearance)
+    if not bucket then return hard,warning,clearance end
+    local seen=ctx.seen
+    for i=1,#bucket do
+        local h=bucket[i]
+        if seen[h.id]~=stamp then
+            seen[h.id]=stamp;ctx.checks=ctx.checks+1
+            local ax,ay=ox-h.ax,oy-h.ay
+            local dx,dy=pdx-h.vx,pdy-h.vy
+            local length=dx*dx+dy*dy
+            local u=length>0.000001 and -(ax*dx+ay*dy)/length or 0
+            if u<0 then u=0 elseif u>1 then u=1 end
+            local x,y=ax+dx*u,ay+dy*u
+            -- Only a nearer/deeper contact can change max-depth scoring.
+            -- Reject by squared distance before taking a square root.
+            local limit=h.warning and h.radius-warning or h.radius+clearance
+            if limit>0 and x*x+y*y<limit*limit then
+                local gap=sqrt(x*x+y*y)-h.radius
+                if h.warning then warning=-gap
+                else clearance=gap;if gap<0 then hard=-gap end end
+            end
+        end
+    end
+    return hard,warning,clearance
+end
 function M.sampleXY(ctx,ox,oy,px,py,t)
     ctx.queries,ctx.serial=ctx.queries+1,ctx.serial+1
     local stamp=ctx.serial
     local hard,warning,clearance,preference=0,0,NEAR,0
     local pdx,pdy=px-ox,py-oy
-    local function visit(bucket)
-        if not bucket then return end
-        for i=1,#bucket do
-            local h=bucket[i]
-            if ctx.seen[h.id]~=stamp then
-                ctx.seen[h.id]=stamp;ctx.checks=ctx.checks+1
-                local ax,ay=ox-h.ax,oy-h.ay
-                local dx,dy=pdx-h.vx,pdy-h.vy
-                local length=dx*dx+dy*dy
-                local u=length>0.000001 and -(ax*dx+ay*dy)/length or 0
-                if u<0 then u=0 elseif u>1 then u=1 end
-                local x,y=ax+dx*u,ay+dy*u
-                -- Only a nearer/deeper contact can change max-depth scoring.
-                -- Reject by squared distance before taking a square root.
-                local limit=h.warning and h.radius-warning or h.radius+clearance
-                if limit>0 and x*x+y*y<limit*limit then
-                    local gap=sqrt(x*x+y*y)-h.radius
-                    if h.warning then warning=-gap
-                    else clearance=gap;if gap<0 then hard=-gap end end
-                end
-            end
-        end
-    end
-    local layer=ctx.layers[t]
+    local layer,static=ctx.layers[t],ctx.static
     for x=floor(min(ox,px)/CELL),floor(max(ox,px)/CELL) do
         for y=floor(min(oy,py)/CELL),floor(max(oy,py)/CELL) do
-            visit(cell(layer,x,y,false));visit(cell(ctx.static,x,y,false))
+            hard,warning,clearance=visit(ctx,cell(layer,x,y,false),stamp,ox,oy,pdx,pdy,hard,warning,clearance)
+            hard,warning,clearance=visit(ctx,cell(static,x,y,false),stamp,ox,oy,pdx,pdy,hard,warning,clearance)
         end
     end
-    visit(layer.global);visit(ctx.static.global)
+    hard,warning,clearance=visit(ctx,layer.global,stamp,ox,oy,pdx,pdy,hard,warning,clearance)
+    hard,warning,clearance=visit(ctx,static.global,stamp,ox,oy,pdx,pdy,hard,warning,clearance)
     for _,shape in ipairs(ctx.lasers) do
         local gap=ctx.laserGeometry.clearanceXY(shape,ox,oy,px,py,t,ctx.radius)
         if shape.rankingOnly then preference=max(preference,-gap)
