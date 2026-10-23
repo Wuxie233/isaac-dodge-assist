@@ -3,17 +3,18 @@
 -- physics ticks per 30Hz MC_POST_UPDATE, while NPCs and projectiles move
 -- once per update. 0.9.2 game logs measured a displacement of 2.0x Velocity
 -- per update, terminal |Velocity| ~= 4.0x MoveSpeed and a per-tick
--- velocity retention of ~0.885, both while driving and while released.
+-- velocity retention of ~0.885, both while driving and while released;
+-- 0.10.0 in-game calibration converged on idle 0.880, drive 0.874, k 4.33.
 -- Per tick: v = f*v + (1-f)*k*MoveSpeed*input; position += v.
 local M = {}
 M.TICKS = 2
-local DEFAULT_F, DEFAULT_K = 0.885, 4.0
+local DEFAULT_IDLE, DEFAULT_DRIVE, DEFAULT_K = 0.880, 0.874, 4.2
 local F_MIN, F_MAX, K_MIN, K_MAX = 0.80, 0.95, 3.5, 4.8
 local RATE = 0.05
 local sqrt, abs, min, max = math.sqrt, math.abs, math.min, math.max
 
 function M.new()
-    return {idle=DEFAULT_F, drive=DEFAULT_F, k=DEFAULT_K, idleN=0, driveN=0, kN=0}
+    return {idle=DEFAULT_IDLE, drive=DEFAULT_DRIVE, k=DEFAULT_K, idleN=0, driveN=0, kN=0}
 end
 
 -- Applied movement input after the native override, normalized to <= 1.
