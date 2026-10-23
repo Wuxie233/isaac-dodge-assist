@@ -87,7 +87,9 @@ function M.sample(ctx,old,pos,t)
 end
 
 -- Height can enter AND leave the player's band within one tick. Checking only
--- its endpoint loses these fast falling projectiles.
+-- its endpoint loses these fast falling projectiles. 0.10.0 logs recorded
+-- two hits at height -49 (outside the former -40 band); the band is -60..0.
+local BAND = -60
 function M.heightIntersects(bullet,t)
     if bullet:HasProjectileFlags(ProjectileFlags.ANY_HEIGHT_ENTITY_HIT) then return true end
     local a=(bullet.FallingAccel+0.1)*0.5
@@ -99,6 +101,6 @@ function M.heightIntersects(bullet,t)
         local turn=-bullet.FallingSpeed/(2*a)
         if turn>lo and turn<hi then low=min(low,height(turn));high=max(high,height(turn)) end
     end
-    return high>=-40 and low<=0
+    return high>=BAND and low<=0
 end
 return M

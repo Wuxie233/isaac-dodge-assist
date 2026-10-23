@@ -110,6 +110,8 @@ local bullet={Height=-60,FallingSpeed=100,FallingAccel=-0.1,HasProjectileFlags=f
 assert(Field.heightIntersects(bullet,1),'fell through entire collision band between samples')
 bullet.Height=-100;bullet.FallingSpeed=0
 assert(not Field.heightIntersects(bullet,1),'overhead projectile considered grounded')
+bullet.Height=-49;bullet.FallingSpeed=1.68;bullet.FallingAccel=0
+assert(Field.heightIntersects(bullet,1),'logged hit at height -49 treated as overhead')
 print('PASS swept projectile height')
 -- Delay sensitivity: the robust score must retain the slower response risk.
 ctx=context(player(0,0),11)
