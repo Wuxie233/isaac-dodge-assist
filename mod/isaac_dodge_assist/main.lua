@@ -8,6 +8,7 @@ local EscapeSpace = include("escape_space")
 local TNT = include("tnt_hazards")
 local Diagnostics = include("diagnostics")
 local Terrain = include("terrain_snapshot")
+local Overlay = include("overlay")
 local PlayerMotion = include("player_motion")
 local InputQueue = include("input_queue")
 local terrain
@@ -249,7 +250,7 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     elseif p:IsCoopGhost() then reason = "GHOST"
     elseif not p:AreControlsEnabled() then reason = "CONTROLS LOCKED"
     elseif Input.IsButtonPressed(Keyboard.KEY_LEFT_SHIFT, 0) then reason = "SHIFT HELD" end
-    if reason then motion = {}; state = reason; emit(false); return end
+    if reason then motion = {}; state = reason; Overlay.clear(); emit(false); return end
     local input = PlayerMotion.input(p)
     PlayerMotion.observe(kinematics,p,input,frame)
     local polled = InputQueue.polled(p)
@@ -341,6 +342,7 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     end
     if #bullets == 0 and #contacts == 0 and #bombs == 0 and #areas == 0 and #lasers == 0 then
         Diagnostics.trace(frame,p,input,nil,nil,polled)
+        Overlay.clear()
         state = "MONITOR / HELPER"; emit(true); return
     end
     -- Conservative reach bound retains every area any candidate can reach.
@@ -350,6 +352,24 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
             area.position+area.velocity*steps-p.Position) <= reach+area.radius then
             nearbyAreas[#nearbyAreas+1] = area
         end
+    end
+    if Overlay.enabled() then
+        local view={bullets={},contacts={},areas={},lasers=lasers}
+        for _,b in ipairs(bullets) do
+            local path={}
+            for t=0,steps,2 do local q=forecast(b,t);path[#path+1]=q.X;path[#path+1]=q.Y end
+            view.bullets[#view.bullets+1]={x=b.Position.X,y=b.Position.Y,r=b.Size+3,path=path}
+        end
+        for _,e in ipairs(contacts) do
+            view.contacts[#view.contacts+1]={x=e.Position.X,y=e.Position.Y,r=e.Size+CONTACT_MARGIN}
+        end
+        for _,a in ipairs(nearbyAreas) do
+            view.areas[#view.areas+1]={x=a.position.X,y=a.position.Y,r=a.radius,warning=a.warning}
+        end
+        for _,b in ipairs(bombs) do
+            view.areas[#view.areas+1]={x=b.Position.X,y=b.Position.Y,r=bombRadius(b),warning=true}
+        end
+        Overlay.capture(view,p.Size)
     end
     local scanned=Isaac.GetTime()
     local field=buildField(p,steps,bullets,contacts,bombs,nearbyAreas,lasers)
@@ -391,13 +411,15 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
         emit(false)
     end
     if Input.IsButtonTriggered(Keyboard.KEY_F8, 0) then horizonIndex = horizonIndex % #horizons + 1 end
+    if Input.IsButtonTriggered(Keyboard.KEY_F9, 0) then Overlay.toggle() end
+    Overlay.render(game:GetRoom())
     if game:IsPaused() then emit(false) end
-    local label = "DODGE v0.10.3 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
-        "  " .. horizons[horizonIndex] .. "/" .. effectiveHorizon .. "ms"
+    local label = "DODGE v0.11.0 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
+        "  " .. horizons[horizonIndex] .. "/" .. effectiveHorizon .. "ms" .. (Overlay.enabled() and "  VIEW" or "")
     Isaac.RenderText(label, 48, 54, 1, 0.9, 0.35, 0.85)
     if selected >= 0 and selected < game:GetNumPlayers() then
         local point = Isaac.WorldToScreen(Isaac.GetPlayer(selected).Position)
         Isaac.RenderText("DODGE P" .. (selected + 1), point.X - 25, point.Y - 55, 1, 0.9, 0.35, 0.8)
     end
 end)
-Isaac.DebugString("IAD: sensor 0.10.3 loaded")
+Isaac.DebugString("IAD: sensor 0.11.0 loaded")

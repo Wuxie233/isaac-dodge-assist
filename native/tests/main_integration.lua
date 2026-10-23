@@ -156,3 +156,27 @@ poopVariant=1;p.CanFly=true;tick();values=packet()
 for _,s in ipairs(values)do assert(s==0,'flying player avoided red poop')end
 p.CanFly=false
 print('PASS red poop contact, normal poop and flight exclusions')
+-- F9 danger preview: off by default, toggles, captures and renders lines.
+local renders,loaded=0,nil
+function Sprite()return {Load=function(_,path)loaded=path end,Play=function()end,
+ Render=function(self,pos)assert(self.Scale.X>0 and self.Rotation==self.Rotation);renders=renders+1 end}end
+function Color(r,g,b,a)return {R=r,G=g,B=b,A=a}end
+Isaac.GetScreenWidth=function()return 480 end
+local npc2=entity(EntityType.ENTITY_NPC,0)
+function npc2:ToNPC()return self end;function npc2:IsBoss()return false end;function npc2:IsActiveEnemy()return true end
+npc2.Position=Vector(560,500);npc2.Velocity=Vector(-6,0);npc2.Size=10
+scene={npc2,bullet};bullet.Position=Vector(470,560);bullet.Velocity=Vector(0,-8)
+p.Position=Vector(470,500)
+callbacks[ModCallbacks.MC_POST_RENDER]();assert(renders==0,'preview drew while disabled')
+Input.IsButtonTriggered=function(key)return key==Keyboard.KEY_F9 end
+callbacks[ModCallbacks.MC_POST_RENDER]()
+Input.IsButtonTriggered=function()return false end
+tick();callbacks[ModCallbacks.MC_POST_RENDER]()
+assert(loaded=='gfx/iad/iad_shapes.anm2' and renders>20,'danger preview did not render: '..renders)
+room.IsMirrorWorld=function()return true end
+local before=renders;callbacks[ModCallbacks.MC_POST_RENDER]();assert(renders>before,'mirror world render failed')
+room.IsMirrorWorld=nil
+Input.IsButtonTriggered=function(key)return key==Keyboard.KEY_F9 end
+callbacks[ModCallbacks.MC_POST_RENDER]();Input.IsButtonTriggered=function()return false end
+before=renders;tick();callbacks[ModCallbacks.MC_POST_RENDER]();assert(renders==before,'preview drew after toggling off')
+print('PASS F9 danger preview: default off, toggle, capture, render, mirror world')
