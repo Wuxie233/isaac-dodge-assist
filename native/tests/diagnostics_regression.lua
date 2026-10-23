@@ -1,0 +1,23 @@
+local logs={}
+Isaac={DebugString=function(line)logs[#logs+1]=line end}
+local D=dofile('mod/isaac_dodge_assist/diagnostics.lua')
+D.reset()
+assert(#logs==0,'empty reset logged a fake sample')
+D.performance(4,10,2,3,5,100)
+D.performance(9,20,4,6,10,200)
+D.reset('room')
+assert(#logs==1,'short room discarded its performance samples')
+assert(logs[1]:find('frame=9 n=2 avgMs=15.00 maxMs=20.00 scanMs=3.00 fieldMs=4.50 planMs=7.50 terrainCalls=150.0',1,true),logs[1])
+assert(logs[1]:find('reason=room',1,true),logs[1])
+D.reset('room')
+assert(#logs==1,'empty reset duplicated previous room')
+for i=1,90 do D.performance(i,1,0.2,0.3,0.5,10) end
+assert(#logs==2 and logs[2]:find('n=90',1,true),'full aggregate missing')
+D.reset('room')
+assert(#logs==2,'full aggregate emitted twice')
+D.performance(91,3,1,1,1,20)
+D.flushPerformance('game-exit')
+assert(#logs==3 and logs[3]:find('n=1',1,true) and logs[3]:find('reason=game-exit',1,true))
+D.flushPerformance('game-exit')
+assert(#logs==3,'exit emitted twice')
+print('PASS short-room and game-exit performance flush, exact averages and no duplicates')

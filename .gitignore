@@ -1,0 +1,6 @@
+helper/*.exe
+package/
+*.zip
+
+native/bin/
+__pycache__/
