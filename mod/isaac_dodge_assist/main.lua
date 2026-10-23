@@ -379,7 +379,7 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
     end
     if Input.IsButtonTriggered(Keyboard.KEY_F8, 0) then horizonIndex = horizonIndex % #horizons + 1 end
     if game:IsPaused() then emit(false) end
-    local label = "DODGE v0.10.0 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
+    local label = "DODGE v0.10.1 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
         "  " .. horizons[horizonIndex] .. "/" .. effectiveHorizon .. "ms"
     Isaac.RenderText(label, 48, 54, 1, 0.9, 0.35, 0.85)
     if selected >= 0 and selected < game:GetNumPlayers() then
@@ -387,4 +387,4 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
         Isaac.RenderText("DODGE P" .. (selected + 1), point.X - 25, point.Y - 55, 1, 0.9, 0.35, 0.8)
     end
 end)
-Isaac.DebugString("IAD: sensor 0.10.0 loaded")
+Isaac.DebugString("IAD: sensor 0.10.1 loaded")
