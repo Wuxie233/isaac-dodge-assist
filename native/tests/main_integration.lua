@@ -33,7 +33,7 @@ dofile('mod/isaac_dodge_assist/main.lua')
 local function tick()callbacks[ModCallbacks.MC_POST_UPDATE]()end
 callbacks[ModCallbacks.MC_POST_GAME_STARTED]()
 for i=1,6 do tick()end
-assert(logs[#logs]:find('|1|0|250|0,0,0,0,0,0,0,0,0|0',1,true),'empty room must release input')
+assert(logs[#logs]:find('|1|0|450|0,0,0,0,0,0,0,0,0|0',1,true),'empty room must release input')
 local function entity(typ,variant)
  local e={Type=typ,Variant=variant,SubType=0,InitSeed=typ*100+variant,SpawnerType=-1,
  Position=Vector(480,480),Velocity=Vector(0,0),Size=30,Scale=1,SpriteScale=Vector(1,1),SizeMulti=Vector(1,1),
@@ -93,7 +93,7 @@ npc.Position=Vector(550,480);npc.Velocity=Vector(-10,0);npc.Size=6
 scene={npc};tick();values=packet()
 assert(values[1]>0,'main integration missed fast contact enemy')
 scene={};tick();values=packet();for _,s in ipairs(values)do assert(s==0,'stale hazard survived empty room')end
-paused=true;tick();assert(logs[#logs]:find('|0|0|250|0,0,0,0,0,0,0,0,0|0',1,true),'pause did not release')
+paused=true;tick();assert(logs[#logs]:find('|0|0|450|0,0,0,0,0,0,0,0,0|0',1,true),'pause did not release')
 callbacks[ModCallbacks.MC_POST_RENDER]()
 callbacks[ModCallbacks.MC_PRE_GAME_EXIT]()
 summaries=perfLogs()

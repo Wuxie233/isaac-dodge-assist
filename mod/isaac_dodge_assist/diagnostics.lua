@@ -3,6 +3,23 @@ local M = {}
 local history, decision, lastDump, warned = {}, "none", -1000, false
 local planner="none"
 local performance
+-- Per-update movement receipts: applied input (after the native override)
+-- next to the sensor's preferred direction. Dumped on damage only.
+local trace = {}
+local TRACE = 15
+local SCALE, TIER = 1048576, 1000000
+local names = {"idle","L","R","U","D","LU","RU","LD","RD"}
+local function directionIndex(input)
+    if not input then return nil end
+    local x = input.X > 0.3 and 1 or (input.X < -0.3 and -1 or 0)
+    local y = input.Y > 0.3 and 1 or (input.Y < -0.3 and -1 or 0)
+    return ({[0]={[0]=1,[-1]=4,[1]=5},[-1]={[0]=2,[-1]=6,[1]=8},[1]={[0]=3,[-1]=7,[1]=9}})[x][y]
+end
+local function grade(score)
+    if score <= 0 then return "ok" end
+    local risk = math.floor(score / SCALE)
+    return risk >= TIER and string.format("h%d", risk // TIER) or "w"
+end
 local function safe(fn)
     local ok, err = pcall(fn)
     if not ok and not warned then warned=true; Isaac.DebugString("IAD DIAG ERROR: "..tostring(err)) end
@@ -37,6 +54,7 @@ function M.reset(reason)
     M.flushPerformance(reason or "reset")
     history,decision,lastDump,warned={},"none",-1000,false
     planner="none"
+    trace={}
 end
 -- One aggregate every 90 active updates, not a second per-frame log stream.
 function M.performance(frame,total,scan,field,plan,calls)
@@ -57,6 +75,23 @@ function M.decision(frame,active,state,selected,horizon,scores,blocked)
     decision="frame="..frame.." active="..tostring(active).." state="..state..
         " slot="..selected.." horizon="..horizon.." scores="..(scores or "zero").." blocked="..(blocked or 0)..
         (scores and (" planner="..planner) or "")
+end
+function M.trace(frame, player, input, scores, blocked)
+    safe(function()
+        local applied = directionIndex(input)
+        local line = string.format("f=%d p=%s v=%s in=%s", frame, xy(player.Position),
+            xy(player.Velocity), applied and names[applied] or "?")
+        if scores then
+            local best, low = 1, math.huge
+            for i, score in ipairs(scores) do
+                if (blocked & (1 << (i-1))) == 0 and score < low then best, low = i, score end
+            end
+            line = line.." best="..names[best]..":"..grade(low)..
+                " applied="..(applied and grade(scores[applied]) or "?").." idle="..grade(scores[1])
+        end
+        trace[#trace+1] = line
+        if #trace > TRACE then table.remove(trace, 1) end
+    end)
 end
 function M.observe(frame, entities, player, owner, laserCount)
     if frame%3~=0 then return end
@@ -97,6 +132,7 @@ function M.hit(frame,player,source,amount,flags,entities)
         if frame-lastDump<15 then return end
         lastDump=frame
         for _,line in ipairs(history) do Isaac.DebugString("IAD DIAG HISTORY: "..line) end
+        for _,line in ipairs(trace) do Isaac.DebugString("IAD DIAG TRACE: "..line) end
         -- Effects can implement attacks without a laser entity. Sample only on
         -- damage, capped, with totals so truncation is explicit.
         local nearby=0

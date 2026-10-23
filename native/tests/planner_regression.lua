@@ -11,12 +11,13 @@ function mt:Normalized()return self:Resized(1)end
 function mt:Distance(b)return (self-b):Length()end
 function mt:Rotated(a)local r=math.rad(a);return Vector(self.X*math.cos(r)-self.Y*math.sin(r),self.X*math.sin(r)+self.Y*math.cos(r))end
 local function module(name)return dofile('mod/isaac_dodge_assist/'..name..'.lua')end
-local Field,Planner,Motion,Laser=module('threat_field'),module('dodge_planner'),module('motion_prediction'),module('laser_hazards')
+local Field,Planner,Motion,Laser,Kinematics=module('threat_field'),module('dodge_planner'),module('motion_prediction'),module('laser_hazards'),module('player_motion')
 local dirs={Vector(0,0),Vector(-1,0),Vector(1,0),Vector(0,-1),Vector(0,1),Vector(-1,-1):Normalized(),Vector(1,-1):Normalized(),Vector(-1,1):Normalized(),Vector(1,1):Normalized()}
 local function player(x,y,vx,vy)return {Position=Vector(x,y),Velocity=Vector(vx or 0,vy or 0),Size=5,MoveSpeed=1}end
 local function context(p,steps,safe)
  local field=Field.new(steps,p.Size,{},Laser)
- return {player=p,steps=steps,field=field,sample=Field.sample,gridSafe=safe or function()return true end,room={}}
+ return {player=p,steps=steps,field=field,sample=Field.sample,gridSafe=safe or function()return true end,room={},
+  ticks=Kinematics.TICKS,models={Kinematics.models(Kinematics.new())}}
 end
 local function solve(ctx)return Planner.solve(ctx,dirs,function()return 0 end)end
 local function best(scores,blocked)
@@ -27,13 +28,13 @@ end
 -- v0.8.5 wall-inertia regression remains valid through the module extraction.
 local ctx=context(player(0,0,-1,0),8,function(_,_,p)return p.X>=0 end)
 ctx.inside=false
-local right,left=Planner.path(ctx,dirs[3],1,0.65),Planner.path(ctx,dirs[2],1,0.65)
+local right,left=Planner.path(ctx,dirs[3],ctx.models[1]),Planner.path(ctx,dirs[2],ctx.models[1])
 assert(not right.blocked and right.endpoint.X>0,'pre-input inertia rejected valid escape')
 assert(left.blocked,'fully blocked movement must stay blocked')
 print('PASS wall inertia and slide')
 -- A high-speed character must not jump across a thin obstacle between samples.
 ctx=context(player(0,0,40,0),8,function(_,_,p)return p.X<12 or p.X>24 end)
-local tunnel=Planner.path(ctx,dirs[3],1,0.65)
+local tunnel=Planner.path(ctx,dirs[3],ctx.models[1])
 assert(tunnel.endpoint.X<12,'terrain sweep tunneled through obstacle')
 print('PASS swept terrain')
 -- Current overlap: leaving the envelope decisively beats remaining inside it.

@@ -16,27 +16,48 @@ local function traversable(ctx,x,y,nx,ny)
     end
     return true
 end
-local function advance(ctx,x,y,vx,vy)
-    local nx,ny=x+vx,y+vy
-    if traversable(ctx,x,y,nx,ny) then return nx,ny,vx,vy end
-    if math.abs(vx)>0.01 and traversable(ctx,x,y,nx,y) then return nx,y,vx,0 end
-    if math.abs(vy)>0.01 and traversable(ctx,x,y,x,ny) then return x,ny,0,vy end
-    return x,y,0,0
+local function advance(ctx,x,y,dx,dy)
+    local nx,ny=x+dx,y+dy
+    if traversable(ctx,x,y,nx,ny) then return nx,ny,true,true end
+    if math.abs(dx)>0.01 and traversable(ctx,x,y,nx,y) then return nx,y,true,false end
+    if math.abs(dy)>0.01 and traversable(ctx,x,y,x,ny) then return x,ny,false,true end
+    return x,y,false,false
 end
-function M.path(ctx,dir,delay,drag)
-    local p,steps=ctx.player,ctx.steps
+-- The player integrates twice per sensing update (60Hz player physics).
+-- Until the native input takes effect (model.delay ticks), the currently
+-- applied input keeps driving; afterwards the candidate input does.
+-- Threat and terrain checks use the whole update as one swept segment.
+function M.path(ctx,dir,model)
+    local p,steps,ticks=ctx.player,ctx.steps,ctx.ticks or 2
     local position,velocity=p.Position,p.Velocity
     local x,y,vx,vy=position.X,position.Y,velocity.X,velocity.Y
     local firstHit,lastHit,hits,exposure,warning,preference=steps+1,0,0,0,0,0
     local moved=false
     local terminalDepth,clearance=0,24
-    local tx,ty=dir.X*(6*p.MoveSpeed),dir.Y*(6*p.MoveSpeed)
+    local terminal=model.k*p.MoveSpeed
+    local tx,ty=dir.X*terminal,dir.Y*terminal
+    local current,cx,cy=ctx.input
+    if current then cx,cy=current.X*terminal,current.Y*terminal end
+    local tick=0
     for t=1,steps do
         local ox,oy=x,y
-        if t>delay then vx=vx*drag+tx*(1-drag);vy=vy*drag+ty*(1-drag) end
-        x,y,vx,vy=advance(ctx,x,y,vx,vy)
-        local dx,dy=x-ox,y-oy
-        if t>delay and dx*dx+dy*dy>0.0001 then moved=true end
+        local dx,dy,steered=0,0,false
+        for _=1,ticks do
+            tick=tick+1
+            local gx,gy
+            if tick>model.delay then gx,gy,steered=tx,ty,true elseif cx then gx,gy=cx,cy end
+            if gx then
+                local f=(gx==0 and gy==0) and model.idle or model.drive
+                vx,vy=vx*f+gx*(1-f),vy*f+gy*(1-f)
+            end
+            dx,dy=dx+vx,dy+vy
+        end
+        local keepX,keepY
+        x,y,keepX,keepY=advance(ctx,x,y,dx,dy)
+        if not keepX then vx=0 end
+        if not keepY then vy=0 end
+        local mx,my=x-ox,y-oy
+        if steered and mx*mx+my*my>0.0001 then moved=true end
         local hard,soft,gap,pref
         if ctx.sampleXY then hard,soft,gap,pref=ctx.sampleXY(ctx.field,ox,oy,x,y,t)
         else hard,soft,gap,pref=ctx.sample(ctx.field,Vector(ox,oy),Vector(x,y),t) end
@@ -77,8 +98,8 @@ function M.solve(ctx,directions,spaceCost)
     local paths,scores,blocked,danger={},{},0,false
     local bestRisk=math.huge
     for i,dir in ipairs(directions) do
-        local a,b=M.path(ctx,dir,1,0.65),M.path(ctx,dir,2,0.75)
-        -- Robust against an additional sensing/input frame and slower reversal.
+        local a,b=M.path(ctx,dir,ctx.models[1]),M.path(ctx,dir,ctx.models[2])
+        -- Robust against a missed native poll and a slower calibrated response.
         -- One favorable simulation must not hide a collision in the other.
         paths[i]={fast=a,slow=b,risk=max(a.risk,b.risk)}
         if a.blocked and b.blocked then blocked=blocked | (1 << (i-1)) end

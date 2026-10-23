@@ -8,9 +8,13 @@ local EscapeSpace = include("escape_space")
 local TNT = include("tnt_hazards")
 local Diagnostics = include("diagnostics")
 local Terrain = include("terrain_snapshot")
+local PlayerMotion = include("player_motion")
 local terrain
+local kinematics = PlayerMotion.new()
+-- Engine contact is the circle sum; this margin covers sensing error only.
+local CONTACT_MARGIN = 3
 local enabled, selected, boundSeed = true, -1, nil
-local horizons, horizonIndex = {150, 200, 250, 350}, 3
+local horizons, horizonIndex = {250, 350, 450, 600}, 3
 local effectiveHorizon=250
 local motion = {}
 local masks = {0, 1, 2, 4, 8, 5, 6, 9, 10}
@@ -49,8 +53,10 @@ local function unsupported(p)
         t == PlayerType.PLAYER_THESOUL_B
 end
 local function bind(index)
+    local seed = index >= 0 and Isaac.GetPlayer(index).InitSeed or nil
+    if seed ~= boundSeed then kinematics = PlayerMotion.new() end
     selected = index
-    boundSeed = index >= 0 and Isaac.GetPlayer(index).InitSeed or nil
+    boundSeed = seed
 end
 local function gridSafeXY(room,p,x,y)
     if not terrain then terrain=Terrain.new(room,p,directions) end
@@ -174,13 +180,19 @@ local function buildField(p,steps,bullets,contacts,bombs,areas,lasers)
         for _,enemy in ipairs(contacts) do
             local sample=motion[enemy.InitSeed]
             local speed=sample and sample.speed or enemy.Velocity:Length()
-            local radius=enemy.Size+5+math.min(16,speed*2)
-            ThreatField.add(field,t,forecast(enemy,previous),forecast(enemy,t),radius)
+            -- Only the engine contact circle is a hit. The speed buffer is a
+            -- proximity warning: when it counted as a hit, a chasing enemy
+            -- made every direction look like an immediate collision.
+            local hard,near=enemy.Size+CONTACT_MARGIN,enemy.Size+5+math.min(16,speed*2)
+            local a,b=forecast(enemy,previous),forecast(enemy,t)
+            ThreatField.add(field,t,a,b,hard)
+            ThreatField.add(field,t,a,b,near,true)
             -- A fast enemy can stop accelerating or change its turn. Retain
             -- constant velocity as a second hypothesis, without doubling risk.
             if sample and sample.acceleration:LengthSquared()>0.01 then
-                ThreatField.add(field,t,enemy.Position+enemy.Velocity*previous,
-                    enemy.Position+enemy.Velocity*t,radius)
+                a,b=enemy.Position+enemy.Velocity*previous,enemy.Position+enemy.Velocity*t
+                ThreatField.add(field,t,a,b,hard)
+                ThreatField.add(field,t,a,b,near,true)
             end
         end
         for _,bullet in ipairs(bullets) do
@@ -207,8 +219,13 @@ local function buildField(p,steps,bullets,contacts,bombs,areas,lasers)
     return field
 end
 mod:AddCallback(ModCallbacks.MC_POST_GAME_STARTED, reset)
-mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() frame = 0; motion = {}; Diagnostics.reset("room"); emit(false) end)
-mod:AddCallback(ModCallbacks.MC_PRE_GAME_EXIT, function() Diagnostics.flushPerformance("game-exit"); emit(false); selected = -1 end)
+local function flushKinematics(reason)
+    if kinematics.idleN+kinematics.driveN+kinematics.kN>0 then
+        Isaac.DebugString("IAD KIN: "..PlayerMotion.summary(kinematics).." reason="..reason)
+    end
+end
+mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); frame = 0; motion = {}; Diagnostics.reset("room"); emit(false) end)
+mod:AddCallback(ModCallbacks.MC_PRE_GAME_EXIT, function() flushKinematics("game-exit"); Diagnostics.flushPerformance("game-exit"); emit(false); selected = -1 end)
 mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     frame = frame + 1
     local count = game:GetNumPlayers()
@@ -230,15 +247,18 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     elseif not p:AreControlsEnabled() then reason = "CONTROLS LOCKED"
     elseif Input.IsButtonPressed(Keyboard.KEY_LEFT_ALT, 0) then reason = "ALT HELD" end
     if reason then motion = {}; state = reason; emit(false); return end
+    local input = PlayerMotion.input(p)
+    PlayerMotion.observe(kinematics,p,input,frame)
     terrain = nil
     local bullets, contacts, bombs, areas, lasers = {}, {}, {}, {}, {}
     local started=Isaac.GetTime()
     -- The selected horizon remains the minimum. Include the delayed input and
     -- the distance needed to get out of a large footprint at low movement speed.
+    local stride = PlayerMotion.reach(kinematics,p)
     local steps = math.min(18,math.max(math.ceil(horizons[horizonIndex]*30/1000),
-        math.ceil((p.Size+22)/math.max(2,6*p.MoveSpeed))+3))
+        math.ceil((p.Size+22)/math.max(2,stride))+3))
     effectiveHorizon=math.floor(steps*1000/30+0.5)
-    local reach=math.max(p.Velocity:Length(),6*p.MoveSpeed)*steps+p.Size
+    local reach=stride*steps+p.Size
     local entities = Isaac.GetRoomEntities()
     motion = MotionPrediction.track(entities,motion)
     for _, entity in ipairs(entities) do
@@ -307,7 +327,10 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
             end
         end
     end
-    if #bullets == 0 and #contacts == 0 and #bombs == 0 and #areas == 0 and #lasers == 0 then state = "MONITOR / HELPER"; emit(true); return end
+    if #bullets == 0 and #contacts == 0 and #bombs == 0 and #areas == 0 and #lasers == 0 then
+        Diagnostics.trace(frame,p,input)
+        state = "MONITOR / HELPER"; emit(true); return
+    end
     -- Conservative reach bound retains every area any candidate can reach.
     local nearbyAreas = {}
     for _,area in ipairs(areas) do
@@ -326,11 +349,13 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     end
     local scores,blocked,danger,paths,inside=Planner.solve({player=p,room=room,
         steps=steps,field=field,sample=ThreatField.sample,sampleXY=ThreatField.sampleXY,
-        gridSafe=gridSafe,gridSafeXY=gridSafeXY},directions,spaceCost)
+        gridSafe=gridSafe,gridSafeXY=gridSafeXY,input=input,ticks=PlayerMotion.TICKS,
+        models={PlayerMotion.models(kinematics)}},directions,spaceCost)
     local finished=Isaac.GetTime()
     Diagnostics.planner(steps,inside,finished-started,field.queries,field.checks,field.records,paths)
     Diagnostics.performance(frame,finished-started,scanned-started,built-scanned,finished-built,
         terrain and terrain.nativeCalls or 0)
+    Diagnostics.trace(frame,p,input,scores,blocked)
     state = danger and "THREAT / HELPER" or "MONITOR / HELPER"
     emit(true, table.concat(scores, ","), blocked)
 end)
@@ -354,7 +379,7 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
     end
     if Input.IsButtonTriggered(Keyboard.KEY_F8, 0) then horizonIndex = horizonIndex % #horizons + 1 end
     if game:IsPaused() then emit(false) end
-    local label = "DODGE v0.9.2 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
+    local label = "DODGE v0.10.0 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
         "  " .. horizons[horizonIndex] .. "/" .. effectiveHorizon .. "ms"
     Isaac.RenderText(label, 48, 54, 1, 0.9, 0.35, 0.85)
     if selected >= 0 and selected < game:GetNumPlayers() then
@@ -362,4 +387,4 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
         Isaac.RenderText("DODGE P" .. (selected + 1), point.X - 25, point.Y - 55, 1, 0.9, 0.35, 0.8)
     end
 end)
-Isaac.DebugString("IAD: sensor 0.9.2 loaded")
+Isaac.DebugString("IAD: sensor 0.10.0 loaded")
