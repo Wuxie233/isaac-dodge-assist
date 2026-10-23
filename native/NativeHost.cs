@@ -29,7 +29,10 @@ internal static class NativeHost
     static string pending="",note="等待新传感器数据";
     static long packets;
     static uint sequence;
-    static void Publish(bool active,double[] risk,int blocked)
+    // IAD2 (sensor 0.12+) precedes the IAD1 packet whose sequence it names.
+    static long combatSeq=-1;
+    static uint combatWord,lastCombat;
+    static void Publish(bool active,double[] risk,int blocked,uint combat=0)
     {
         bool acquired=false;
         try {
@@ -37,7 +40,7 @@ internal static class NativeHost
             if(!acquired)return;
             view.Write(0,0x32444149u);view.Write(4,1u);view.Write(8,(uint)gamePid);
             view.Write(12,unchecked((uint)Environment.TickCount));view.Write(16,active?1u:0u);
-            view.Write(20,(uint)blocked);view.Write(24,++sequence);
+            view.Write(20,(uint)blocked);view.Write(24,++sequence);view.Write(28,active?combat:0u);
             if(risk!=null)for(int i=0;i<9;i++)view.Write(32+i*8,risk[i]);
         } finally {if(acquired)ipcLock.ReleaseMutex();}
     }
@@ -50,9 +53,14 @@ internal static class NativeHost
         while((count=log.Read(bytes,0,bytes.Length))>0) {
             pending+=Encoding.UTF8.GetString(bytes,0,count);
             int newline;
-            while((newline=pending.IndexOf('\n'))>=0){string line=pending.Substring(0,newline).Trim();pending=pending.Substring(newline+1);int start=line.IndexOf("IAD1|");if(start>=0)Parse(line.Substring(start));}
+            while((newline=pending.IndexOf('\n'))>=0){string line=pending.Substring(0,newline).Trim();pending=pending.Substring(newline+1);int start=line.IndexOf("IAD1|");if(start>=0)Parse(line.Substring(start));else{start=line.IndexOf("IAD2|");if(start>=0)ParseCombat(line.Substring(start));}}
             if(pending.Length>16384)pending="";
         }
+    }
+    static void ParseCombat(string line)
+    {
+        string[] f=line.Split('|');long seq;uint word;
+        if(f.Length==3 && long.TryParse(f[1],out seq) && uint.TryParse(f[2],out word)){combatSeq=seq;combatWord=word;}
     }
     static void Parse(string line)
     {
@@ -65,7 +73,8 @@ internal static class NativeHost
         else otherClock++;
         if(!calibration.Accept(unchecked((uint)(long)stamp),seq,clock.ElapsedMilliseconds)){rejected++;Publish(false,null,0);note="校准时钟或等待实时数据";return;}
         received=clock.ElapsedMilliseconds;packets++;
-        Publish(enabled && f[3]=="1",risk,blocked);note="传感器已连接，原生键盘输入入口";
+        uint combat=combatSeq==seq?combatWord:0u;combatSeq=-1;lastCombat=combat;
+        Publish(enabled && f[3]=="1",risk,blocked,combat);note="传感器已连接，原生键盘输入入口";
     }
     static string DelaySummary()
     {
@@ -94,12 +103,12 @@ internal static class NativeHost
     static void WriteStats(string reason)
     {
         try{
-            string file=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"IsaacDodgeAssist","native-0.3-stats.log");
+            string file=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"IsaacDodgeAssist","native-0.4-stats.log");
             string line;
             lock(sync){
-                line=String.Format(CultureInfo.InvariantCulture,"{0:o} reason={1} packets={2} rejected={3} sameClock={4} otherClock={5} jitterMs={6} polls={7} overrides={8} {9}",
+                line=String.Format(CultureInfo.InvariantCulture,"{0:o} reason={1} packets={2} rejected={3} sameClock={4} otherClock={5} jitterMs={6} polls={7} overrides={8} shots={10} {9}",
                     DateTime.Now,reason,packets,rejected,sameClock,otherClock,calibration.Delay,
-                    view!=null?view.ReadInt32(108):-1,view!=null?view.ReadInt32(112):-1,DelaySummary());
+                    view!=null?view.ReadInt32(108):-1,view!=null?view.ReadInt32(112):-1,DelaySummary(),view!=null?view.ReadInt32(120):-1);
             }
             File.AppendAllText(file,line+Environment.NewLine);
         }catch(Exception){}
@@ -137,9 +146,9 @@ internal static class NativeHost
                 }
                 if(!loaded)Inject(game,dll);
                 Application.EnableVisualStyles();
-                var form=new Form{Text="以撒原生输入躲避 0.3",Width=560,Height=240};
+                var form=new Form{Text="以撒原生输入躲避 0.4",Width=560,Height=270};
                 var toggle=new CheckBox{Text="启用原生移动接管",Checked=true,Left=20,Top=20,Width=300};
-                var label=new Label{Left=20,Top=60,Width=510,Height=130};
+                var label=new Label{Left=20,Top=60,Width=510,Height=160};
                 toggle.CheckedChanged+=delegate{enabled=toggle.Checked;if(!enabled)lock(sync)Publish(false,null,0);};
                 form.Controls.Add(toggle);form.Controls.Add(label);
                 var timer=new System.Windows.Forms.Timer{Interval=16};
@@ -152,8 +161,9 @@ internal static class NativeHost
                         int status;string text;
                         lock(sync){
                             status=view.ReadInt32(104);
-                            text=String.Format("{0}\nHook状态 {1} · 收到 {2} 帧 · 拒收 {3}\n{4}\n移动输入读取 {5} 次 · 返回替代输入 {6} 次\n关闭窗口或按住左 Shift 释放接管；计数不代表角色实际位移。",
-                                note,status,packets,rejected,DelaySummary(),view.ReadInt32(108),view.ReadInt32(112));
+                            string[] modes={"关","自动瞄准","自动战斗","?"};
+                            text=String.Format("{0}\nHook状态 {1} · 收到 {2} 帧 · 拒收 {3}\n{4}\n移动输入读取 {5} 次 · 返回替代输入 {6} 次 · 射击替代 {7} 次\n战斗模式（游戏内 F10）：{8}\n关闭窗口或按住左 Shift 释放接管；计数不代表角色实际位移。",
+                                note,status,packets,rejected,DelaySummary(),view.ReadInt32(108),view.ReadInt32(112),view.ReadInt32(120),modes[lastCombat&3]);
                         }
                         label.Text=text;
                         if(status<0){enabled=false;toggle.Checked=false;lock(sync)note="Hook校验失败："+status;}

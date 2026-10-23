@@ -5,12 +5,15 @@
 #include <cstdio>
 
 // One supported executable build. No network-device or entity-state writes.
+// combat (former reserved field, 0 from hosts before 0.4) is the Lua IAD2
+// word: bits 0-1 mode (1 aim, 2 auto), 2-5 move (0-8, 15 none),
+// 6-8 shoot (0 none, 1-4 = actions 4-7), 9 hold fire.
 struct Shared {
-    uint32_t magic, version, pid, stamp, active, blocked, sequence, reserved;
+    uint32_t magic, version, pid, stamp, active, blocked, sequence, combat;
     double risk[9];
-    volatile LONG status, polls, overrides, chosen;
+    volatile LONG status, polls, overrides, chosen, shots;
 };
-static_assert(offsetof(Shared, risk)==32 && offsetof(Shared,status)==104, "IPC layout");
+static_assert(offsetof(Shared, risk)==32 && offsetof(Shared,status)==104 && offsetof(Shared,shots)==120, "IPC layout");
 static Shared* shared;
 static HANDLE mutexHandle;
 using ValueFn = float (__attribute__((thiscall)) *)(void*, int);
@@ -20,6 +23,10 @@ static BoolFn originalPressed;
 static const int dx[]={0,-1,1,0,0,-1,1,-1,1}, dy[]={0,0,0,-1,1,-1,-1,1,1};
 static const int masks[]={0,1,2,4,8,5,6,9,10};
 static SRWLOCK decisionLock=SRWLOCK_INIT;
+// move: candidate index or -1 (original input); fire: bitmask over the
+// shoot actions 4-7 or -1 (original input).
+struct Decision { int move, fire; };
+static Decision lastDecision{-1,-1};
 static int lastChoice=-1;
 static DWORD lastAt;
 static void* lastDevice;
@@ -47,18 +54,36 @@ static int rank(const double* risk, uint32_t blocked, int manual, int x, int y, 
     return best;
 }
 
-static int choose(void* device) {
+// Hands off the movement keys in AUTO: walk where Lua chose (dodge already
+// included). Any shoot key in AIM/AUTO: fire toward the target instead.
+// No shoot key in AUTO: fire as Lua holds/releases.
+static Decision decide(const double* risk, uint32_t blocked, uint32_t combat, const float* raw, int previous) {
+    int x=(raw[1]>0.1f)-(raw[0]>0.1f), y=(raw[3]>0.1f)-(raw[2]>0.1f), manual=0;
+    for(int i=0;i<9;++i) if(dx[i]==x && dy[i]==y) manual=i;
+    int mode=combat&3, move=(combat>>2)&15, shoot=(combat>>6)&7;
+    bool hold=(combat>>9)&1;
+    Decision d{rank(risk,blocked,manual,x,y,previous),-1};
+    if(mode==2 && manual==0 && move<9) d.move=move;
+    bool firing=raw[4]>0.1f || raw[5]>0.1f || raw[6]>0.1f || raw[7]>0.1f;
+    if(mode>=1 && mode<=2 && shoot>=1 && shoot<=4) {
+        if(firing) d.fire=1<<(shoot-1);
+        else if(mode==2) d.fire=hold ? 1<<(shoot-1) : 0;
+    }
+    return d;
+}
+static Decision choose(void* device) {
+    const Decision none{-1,-1};
     DWORD pid=0; GetWindowThreadProcessId(GetForegroundWindow(), &pid);
-    if (!shared || pid!=GetCurrentProcessId() || (GetAsyncKeyState(VK_LSHIFT)&0x8000)) return -1;
+    if (!shared || pid!=GetCurrentProcessId() || (GetAsyncKeyState(VK_LSHIFT)&0x8000)) return none;
     Shared sample{};
     DWORD wait=WaitForSingleObject(mutexHandle,0);
-    if (wait==WAIT_ABANDONED) { shared->active=0; ReleaseMutex(mutexHandle); return -1; }
-    if (wait!=WAIT_OBJECT_0) return -1;
+    if (wait==WAIT_ABANDONED) { shared->active=0; ReleaseMutex(mutexHandle); return none; }
+    if (wait!=WAIT_OBJECT_0) return none;
     memcpy(&sample, shared, 104);
     ReleaseMutex(mutexHandle);
     DWORD now=GetTickCount();
-    if(sample.magic!=0x32444149 || sample.version!=1 || sample.pid!=pid || !sample.active || now-sample.stamp>120) return -1;
-    if(!TryAcquireSRWLockExclusive(&decisionLock)) return -1;
+    if(sample.magic!=0x32444149 || sample.version!=1 || sample.pid!=pid || !sample.active || now-sample.stamp>120) return none;
+    if(!TryAcquireSRWLockExclusive(&decisionLock)) return none;
     // Share one decision among the action queries of a single input poll.
     // GetTickCount moves in ~16ms steps and could hold a decision across a
     // 60Hz player tick; a new packet or 4ms on the performance counter ends it.
@@ -66,29 +91,33 @@ static int choose(void* device) {
     if(!counterFrequency){LARGE_INTEGER f;QueryPerformanceFrequency(&f);counterFrequency=f.QuadPart;}
     if(lastDevice==device && lastSequence==sample.sequence &&
        (counter.QuadPart-lastCounter)*250<counterFrequency) {
-        int result=lastChoice; ReleaseSRWLockExclusive(&decisionLock); return result;
+        Decision result=lastDecision; ReleaseSRWLockExclusive(&decisionLock); return result;
     }
-    float raw[4]; for(int i=0;i<4;++i) raw[i]=originalValue(device,i);
-    int x=(raw[1]>0.1f)-(raw[0]>0.1f), y=(raw[3]>0.1f)-(raw[2]>0.1f), manual=0;
-    for(int i=0;i<9;++i) if(dx[i]==x && dy[i]==y) manual=i;
+    float raw[8]; for(int i=0;i<8;++i) raw[i]=originalValue(device,i);
     int previous=(lastDevice==device && now-lastAt<=120) ? lastChoice : -1;
-    lastChoice=rank(sample.risk,sample.blocked,manual,x,y,previous);
+    lastDecision=decide(sample.risk,sample.blocked,sample.combat,raw,previous);
+    lastChoice=lastDecision.move;
     lastAt=now; lastDevice=device; lastSequence=sample.sequence; lastCounter=counter.QuadPart;
     InterlockedExchange(&shared->chosen,lastChoice);
-    int result=lastChoice; ReleaseSRWLockExclusive(&decisionLock); return result;
+    Decision result=lastDecision; ReleaseSRWLockExclusive(&decisionLock); return result;
+}
+static int overridden(void* self, int action) {
+    Decision d=choose(self);
+    if(action<4) return d.move<0 ? -1 : (masks[d.move]>>action)&1;
+    return d.fire<0 ? -1 : (d.fire>>(action-4))&1;
 }
 static float __attribute__((fastcall)) valueHook(void* self, void*, int action) {
-    if(action>=0 && action<4) {
-        InterlockedIncrement(&shared->polls);
-        int direction=choose(self);
-        if(direction>=0){InterlockedIncrement(&shared->overrides);return (masks[direction]&(1<<action))?1.f:0.f;}
+    if(action>=0 && action<8) {
+        if(action<4) InterlockedIncrement(&shared->polls);
+        int value=overridden(self,action);
+        if(value>=0){InterlockedIncrement(action<4 ? &shared->overrides : &shared->shots);return value?1.f:0.f;}
     }
     return originalValue(self,action);
 }
 static bool __attribute__((fastcall)) pressedHook(void* self, void*, int action) {
-    if(action>=0 && action<4) {
-        int direction=choose(self);
-        if(direction>=0) return (masks[direction]&(1<<action))!=0;
+    if(action>=0 && action<8) {
+        int value=overridden(self,action);
+        if(value>=0) return value!=0;
     }
     return originalPressed(self,action);
 }
