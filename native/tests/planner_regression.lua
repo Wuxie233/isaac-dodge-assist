@@ -155,4 +155,22 @@ for tick=1,45 do
 end
 assert(finalClear>=15,'replanning never completed a stable escape')
 print('PASS closed-loop delayed-control escape: final clear ticks='..finalClear)
+-- Online input queue: the lag that explains applied-input changes is
+-- learned, and queued inputs move the player before any candidate.
+local Queue=module('input_queue')
+local q=Queue.new();local seq={}
+math.randomseed(77)
+for f=1,400 do seq[f]=dirs[(f//9)%2==0 and 2 or 3+(f//18)%2] end
+for f=1,400 do Queue.observe(q,f,seq[f],f>4 and seq[f-4] or dirs[1]) end
+assert(q.delay==4,'online input delay not learned: '..Queue.summary(q))
+local queued=Queue.pending(q);assert(#queued==4 and queued[4]==seq[400] and queued[1]==seq[397],'pending inputs misaligned')
+ctx=context(player(0,0),11)
+ctx.pending={dirs[2],dirs[2],dirs[2],dirs[2]};ctx.input=dirs[2]
+local committed=Planner.path(ctx,dirs[3],ctx.models[1])
+ctx.pending=nil;ctx.input=nil
+local free=Planner.path(ctx,dirs[3],ctx.models[1])
+assert(committed.endpoint.X<free.endpoint.X-30,'queued left inputs did not delay the right turn')
+q=Queue.new();for f=1,200 do Queue.observe(q,f,seq[f],seq[f]) end
+assert(q.delay==0 and #Queue.pending(q)==0,'offline play gained a queue')
+print('PASS online input queue: lag 4 learned, pending order, committed motion, offline zero')
 dofile('native/tests/main_integration.lua')

@@ -72,10 +72,22 @@ function include(name)
  return m
 end
 function Game()return {GetNumPlayers=function()return 1 end,GetRoom=function()return room end,IsPaused=function()return false end}end
+-- GetActionValue goes through the hooked device: the input entering the
+-- online queue now (SIM_NO_POLL=1 hides it, like a build without the API).
+ButtonAction={ACTION_LEFT=0,ACTION_RIGHT=1,ACTION_UP=2,ACTION_DOWN=3}
+local polledInput=Vector(0,0)
 Input={IsButtonPressed=function()return false end,IsButtonTriggered=function()return false end}
+if not os.getenv('SIM_NO_POLL') then
+ Input.GetActionValue=function(action)
+  local v=polledInput
+  if action==0 then return v.X<0 and -v.X or 0 elseif action==1 then return v.X>0 and v.X or 0
+  elseif action==2 then return v.Y<0 and -v.Y or 0 else return v.Y>0 and v.Y or 0 end
+ end
+end
 Isaac={GetTime=function()return os.clock()*1000 end,GetPlayer=function()return p end,
  GetRoomEntities=function()return scene end,RenderText=function()end,WorldToScreen=function(v)return v end,
  DebugString=function(s)
+  if os.getenv('SIM_DEBUG') and s:find('^IAD KIN') then print(s) end
   local body=s:match('^IAD1|(.*)$')
   if body then
    local f={};for part in body:gmatch('[^|]+')do f[#f+1]=part end
@@ -157,6 +169,10 @@ local F,K=0.885,4.0
 local manual,manualLeft=1,0
 local hits,overrides,ticks,invulnerable=0,0,0,0
 local pending={}
+-- Online play queues every local input (manual and native override) for a
+-- fixed number of 60Hz ticks before it moves the player (SIM_INPUT_DELAY).
+local inputDelay=tonumber(os.getenv('SIM_INPUT_DELAY') or 0)
+local inputQueue={}
 local current,previousChoice,previousAt=nil,nil,-1000
 -- Damage classification from the packets actually used before each hit.
 local packets,classes={},{late=0,trapped=0,chose_safe=0,ignored_safe=0}
@@ -195,7 +211,10 @@ local function tick()
   choice=rank(current.risk,current.blocked,manual,dx[manual],dy[manual],previous)
   previousChoice,previousAt=choice,ticks
  end
- local direction=dirs[choice or manual]
+ local chosen=dirs[choice or manual]
+ polledInput=chosen
+ inputQueue[#inputQueue+1]=chosen
+ local direction=#inputQueue>inputDelay and table.remove(inputQueue,1) or dirs[1]
  if choice then overrides=overrides+1 end
  if ticks%2==0 then
   local q={active=current and current.active}
@@ -261,6 +280,7 @@ for update=1,updates do
  -- The packet affects ticks after `latency` further ticks.
  if packet then pending[#pending+1]={at=ticks+latency+1,active=packet.active,risk=packet.risk,blocked=packet.blocked} end
 end
+if assist and callbacks[ModCallbacks.MC_PRE_GAME_EXIT] then callbacks[ModCallbacks.MC_PRE_GAME_EXIT]() end
 print(string.format("mod=%s latency=%d seed=%d scenario=%s updates=%d hits=%d per_min=%.2f override_ticks=%.1f%% ms/update=%.2f",
  modDir,latency,seed,scenario,updates,hits,hits*1800/updates,overrides*100/ticks,(os.clock()-started)*1000/updates)..
  string.format(" late=%d trapped=%d chose_safe=%d ignored_safe=%d",classes.late,classes.trapped,classes.chose_safe,classes.ignored_safe))

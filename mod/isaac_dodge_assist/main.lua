@@ -9,8 +9,10 @@ local TNT = include("tnt_hazards")
 local Diagnostics = include("diagnostics")
 local Terrain = include("terrain_snapshot")
 local PlayerMotion = include("player_motion")
+local InputQueue = include("input_queue")
 local terrain
 local kinematics = PlayerMotion.new()
+local inputs = InputQueue.new()
 -- Engine contact is the circle sum; this margin covers sensing error only.
 local CONTACT_MARGIN = 3
 local enabled, selected, boundSeed = true, -1, nil
@@ -54,7 +56,7 @@ local function unsupported(p)
 end
 local function bind(index)
     local seed = index >= 0 and Isaac.GetPlayer(index).InitSeed or nil
-    if seed ~= boundSeed then kinematics = PlayerMotion.new() end
+    if seed ~= boundSeed then kinematics, inputs = PlayerMotion.new(), InputQueue.new() end
     selected = index
     boundSeed = seed
 end
@@ -221,7 +223,7 @@ end
 mod:AddCallback(ModCallbacks.MC_POST_GAME_STARTED, reset)
 local function flushKinematics(reason)
     if kinematics.idleN+kinematics.driveN+kinematics.kN>0 then
-        Isaac.DebugString("IAD KIN: "..PlayerMotion.summary(kinematics).." reason="..reason)
+        Isaac.DebugString("IAD KIN: "..PlayerMotion.summary(kinematics).." "..InputQueue.summary(inputs).." reason="..reason)
     end
 end
 mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); frame = 0; motion = {}; Diagnostics.reset("room"); emit(false) end)
@@ -249,14 +251,18 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     if reason then motion = {}; state = reason; emit(false); return end
     local input = PlayerMotion.input(p)
     PlayerMotion.observe(kinematics,p,input,frame)
+    local polled = InputQueue.polled(p)
+    InputQueue.observe(inputs,frame,polled,input)
+    local pending = InputQueue.pending(inputs)
     terrain = nil
     local bullets, contacts, bombs, areas, lasers = {}, {}, {}, {}, {}
     local started=Isaac.GetTime()
     -- The selected horizon remains the minimum. Include the delayed input and
     -- the distance needed to get out of a large footprint at low movement speed.
     local stride = PlayerMotion.reach(kinematics,p)
-    local steps = math.min(18,math.max(math.ceil(horizons[horizonIndex]*30/1000),
-        math.ceil((p.Size+22)/math.max(2,stride))+3))
+    -- Queued online input is committed; plan the selected window after it.
+    local steps = math.min(22,math.max(math.ceil(horizons[horizonIndex]*30/1000),
+        math.ceil((p.Size+22)/math.max(2,stride))+3)+#pending)
     effectiveHorizon=math.floor(steps*1000/30+0.5)
     local reach=stride*steps+p.Size
     local entities = Isaac.GetRoomEntities()
@@ -328,7 +334,7 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
         end
     end
     if #bullets == 0 and #contacts == 0 and #bombs == 0 and #areas == 0 and #lasers == 0 then
-        Diagnostics.trace(frame,p,input)
+        Diagnostics.trace(frame,p,input,nil,nil,polled)
         state = "MONITOR / HELPER"; emit(true); return
     end
     -- Conservative reach bound retains every area any candidate can reach.
@@ -349,13 +355,14 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     end
     local scores,blocked,danger,paths,inside=Planner.solve({player=p,room=room,
         steps=steps,field=field,sample=ThreatField.sample,sampleXY=ThreatField.sampleXY,
-        gridSafe=gridSafe,gridSafeXY=gridSafeXY,input=input,ticks=PlayerMotion.TICKS,
+        gridSafe=gridSafe,gridSafeXY=gridSafeXY,ticks=PlayerMotion.TICKS,
+        input=#pending>0 and pending[#pending] or input,pending=pending,
         models={PlayerMotion.models(kinematics)}},directions,spaceCost)
     local finished=Isaac.GetTime()
     Diagnostics.planner(steps,inside,finished-started,field.queries,field.checks,field.records,paths)
     Diagnostics.performance(frame,finished-started,scanned-started,built-scanned,finished-built,
         terrain and terrain.nativeCalls or 0)
-    Diagnostics.trace(frame,p,input,scores,blocked)
+    Diagnostics.trace(frame,p,input,scores,blocked,polled)
     state = danger and "THREAT / HELPER" or "MONITOR / HELPER"
     emit(true, table.concat(scores, ","), blocked)
 end)

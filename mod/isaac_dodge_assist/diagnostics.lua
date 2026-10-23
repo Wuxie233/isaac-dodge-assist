@@ -76,11 +76,11 @@ function M.decision(frame,active,state,selected,horizon,scores,blocked)
         " slot="..selected.." horizon="..horizon.." scores="..(scores or "zero").." blocked="..(blocked or 0)..
         (scores and (" planner="..planner) or "")
 end
-function M.trace(frame, player, input, scores, blocked)
+function M.trace(frame, player, input, scores, blocked, polled)
     safe(function()
-        local applied = directionIndex(input)
-        local line = string.format("f=%d p=%s v=%s in=%s", frame, xy(player.Position),
-            xy(player.Velocity), applied and names[applied] or "?")
+        local applied, queued = directionIndex(input), directionIndex(polled)
+        local line = string.format("f=%d p=%s v=%s in=%s q=%s", frame, xy(player.Position),
+            xy(player.Velocity), applied and names[applied] or "?", queued and names[queued] or "?")
         if scores then
             local best, low = 1, math.huge
             for i, score in ipairs(scores) do

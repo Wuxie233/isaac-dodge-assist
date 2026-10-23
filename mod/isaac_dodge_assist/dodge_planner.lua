@@ -24,8 +24,9 @@ local function advance(ctx,x,y,dx,dy)
     return x,y,false,false
 end
 -- The player integrates twice per sensing update (60Hz player physics).
--- Until the native input takes effect (model.delay ticks), the currently
--- applied input keeps driving; afterwards the candidate input does.
+-- Inputs already queued by online play (ctx.pending, one per update) move
+-- the player first; then the current input keeps driving for model.delay
+-- ticks until the native choice takes effect; then the candidate does.
 -- Threat and terrain checks use the whole update as one swept segment.
 function M.path(ctx,dir,model)
     local p,steps,ticks=ctx.player,ctx.steps,ctx.ticks or 2
@@ -38,6 +39,8 @@ function M.path(ctx,dir,model)
     local tx,ty=dir.X*terminal,dir.Y*terminal
     local current,cx,cy=ctx.input
     if current then cx,cy=current.X*terminal,current.Y*terminal end
+    local pending=ctx.pending
+    local queued=pending and #pending or 0
     local tick=0
     for t=1,steps do
         local ox,oy=x,y
@@ -45,7 +48,9 @@ function M.path(ctx,dir,model)
         for _=1,ticks do
             tick=tick+1
             local gx,gy
-            if tick>model.delay then gx,gy,steered=tx,ty,true elseif cx then gx,gy=cx,cy end
+            if t<=queued then gx,gy=pending[t].X*terminal,pending[t].Y*terminal
+            elseif tick-queued*ticks>model.delay then gx,gy,steered=tx,ty,true
+            elseif cx then gx,gy=cx,cy end
             if gx then
                 local f=(gx==0 and gy==0) and model.idle or model.drive
                 vx,vy=vx*f+gx*(1-f),vy*f+gy*(1-f)
