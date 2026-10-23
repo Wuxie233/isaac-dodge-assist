@@ -19,7 +19,7 @@ if '--seeds' in args:
     i = args.index('--seeds'); seeds = int(args[i+1]); del args[i:i+2]
 mods = dict(a.split('=', 1) for a in args)
 latencies = (0, 1, 2, 3)
-scenarios = ('turrets', 'chasers', 'spread', 'dense')
+scenarios = tuple(__import__('os').environ.get('SIM_SCENARIOS', 'turrets,chasers,spread,dense').split(','))
 jobs = [(label, latency, scenario, seed) for label in mods for latency in latencies
         for scenario in scenarios for seed in range(1, seeds+1)]
 

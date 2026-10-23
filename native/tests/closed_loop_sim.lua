@@ -143,13 +143,15 @@ local function edgePoint()
  if side==1 then return LEFT+20,math.random(TOP+20,BOTTOM-20) elseif side==2 then return RIGHT-20,math.random(TOP+20,BOTTOM-20)
  elseif side==3 then return math.random(LEFT+20,RIGHT-20),TOP+20 else return math.random(LEFT+20,RIGHT-20),BOTTOM-20 end
 end
-local turrets,chasers,spread,period,shot=0,0,1,36,9
+local turrets,chasers,spread,period,shot,flies=0,0,1,36,9,0
 if scenario=='turrets' then turrets=3
 elseif scenario=='chasers' then chasers=2;turrets=1
 elseif scenario=='spread' then turrets=2;spread=3;period=40
-elseif scenario=='dense' then turrets=4;period=24;shot=8 end
+elseif scenario=='dense' then turrets=4;period=24;shot=8
+elseif scenario=='flies' then flies=6 end
 for _=1,turrets do local x,y=edgePoint();npcs[#npcs+1]=npc(x,y,13,'turret')end
 for _=1,chasers do local x,y=edgePoint();npcs[#npcs+1]=npc(x,y,13,'chaser')end
+for _=1,flies do local x,y=edgePoint();npcs[#npcs+1]=npc(x,y,9,'fly')end
 -- Player physics and the human: wanders, re-choosing a direction every 0.5-1.5 s.
 local F,K=0.885,4.0
 local manual,manualLeft=1,0
@@ -230,6 +232,12 @@ local function worldUpdate()
      bullets[#bullets+1]=bullet(e.Position+aim*15,aim:Rotated(angle)*shot)
     end
    end
+  elseif e.ai=='fly' then
+   -- Attack-fly-like: slow pursuit with a random wobble that changes often.
+   if math.random()<0.15 then e.wobble=Vector(math.random()*2-1,math.random()*2-1):Resized(2.2) end
+   local toward=(p.Position-e.Position):Resized(2.4)+(e.wobble or Vector(0,0))
+   e.Velocity=e.Velocity*0.7+toward*0.3
+   e.Position=e.Position+e.Velocity
   else
    local toward=(p.Position-e.Position):Resized(3.6)
    e.Velocity=e.Velocity*0.8+toward*0.2
