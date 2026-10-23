@@ -51,6 +51,24 @@ local start=allocations
 for t=0,18 do F.sampleXY(field,50,10,51,12,t)end
 assert(allocations==start,'laser query allocated engine vectors')
 print('PASS laser crossings, endpoints, rings, translation, rotation, delay and allocation bound')
+-- Committed brimstone wind-up (Vis/Gluttony "Attack01<dir>") is a hit from
+-- the beam frame on; Chubber and unrelated animations add nothing.
+EntityType={ENTITY_VIS=39,ENTITY_GLUTTONY=49,ENTITY_URIEL=271,ENTITY_GABRIEL=272}
+local room={GetTopLeftPos=function()return Vector(40,40)end,GetBottomRightPos=function()return Vector(560,320)end}
+local function windUp(kind,variant,animation,frame)
+ return {Type=kind,Variant=variant,Position=Vector(300,180),Velocity=Vector(0,0),
+  GetSprite=function()return {GetAnimation=function()return animation end,GetFrame=function()return frame end}end}
+end
+local beams={};L.appendWarnings(windUp(49,0,'Attack01Horiz',20),room,beams)
+assert(#beams==2 and beams[1].activeFrom==7 and not beams[1].warning,'gluttony wind-up not predicted')
+assert(L.clearanceXY(beams[1],480,182,480,182,6,10)==math.huge,'beam active before its frame')
+assert(L.clearanceXY(beams[1],480,182,480,182,7,10)<0 and L.clearanceXY(beams[2],120,178,120,178,7,10)<0,'horizontal beam missed')
+assert(L.clearanceXY(beams[1],300,260,300,260,7,10)>0,'beam covers off-line position')
+beams={};L.appendWarnings(windUp(39,0,'Attack01Down',30),room,beams)
+assert(#beams==1 and beams[1].activeFrom==1 and L.clearanceXY(beams[1],300,300,300,300,1,10)<0,'vis down beam missed')
+beams={};L.appendWarnings(windUp(39,2,'Attack01Down',10),room,beams);assert(#beams==0,'chubber is not a brimstone shooter')
+beams={};L.appendWarnings(windUp(49,0,'Walk',10),room,beams);assert(#beams==0,'walking gluttony predicted a beam')
+print('PASS brimstone wind-up: Gluttony horizontal pair, Vis down, timing, Chubber/walk exclusions')
 -- Optional release comparison against a saved prior module. No production
 -- dependency on the old source; deterministic fixtures remain above.
 local baseline=os.getenv('IAD_LASER_BASELINE')

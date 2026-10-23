@@ -93,7 +93,30 @@ end
 -- downward beam / Gabriel's cardinal cross; state 10 is the diagonal pattern.
 -- I1=0 charges until StateFrame>25, then LaserShot's Shoot event at frame 4
 -- creates the beams. Do not infer a laser from unrelated attack states.
+-- Vis (not Chubber) and Gluttony fire brimstone from "Attack01<dir>".
+-- Game logs (0.9.2, 0.10.0) recorded the hit on animation frame 28, the
+-- first update the beam existed, so a beam-only detector cannot react.
+-- The beam is committed once the wind-up starts: predict it as a hit.
+local brimstoneAngles = {Horiz={0,180}, Left={180}, Right={0}, Down={90}, Up={270}}
+local BRIMSTONE_FRAME = 27
+local function appendBrimstone(npc, room, shapes)
+    if npc.Type == EntityType.ENTITY_VIS then
+        if npc.Variant == 2 then return end
+    elseif npc.Type ~= EntityType.ENTITY_GLUTTONY then return end
+    local sprite = npc:GetSprite()
+    local side = sprite:GetAnimation():match("^Attack01(%a+)$")
+    local angles = side and brimstoneAngles[side]
+    if not angles then return end
+    local activeFrom = math.max(1, BRIMSTONE_FRAME - sprite:GetFrame())
+    local reach = (room:GetBottomRightPos()-room:GetTopLeftPos()):Length()
+    for _,angle in ipairs(angles) do
+        shapes[#shapes+1] = {origin=npc.Position,velocity=npc.Velocity,
+            ring=false,width=18,points={Vector(0,0),Vector(reach,0):Rotated(angle)},
+            reach=reach,angularSpeed=0,delay=0,activeFrom=activeFrom}
+    end
+end
 function M.appendWarnings(npc, room, shapes)
+    appendBrimstone(npc, room, shapes)
     if npc.Type ~= EntityType.ENTITY_URIEL and npc.Type ~= EntityType.ENTITY_GABRIEL then return end
     local state = npc.State
     if state ~= NpcState.STATE_ATTACK2 and state ~= NpcState.STATE_ATTACK3 then return end
