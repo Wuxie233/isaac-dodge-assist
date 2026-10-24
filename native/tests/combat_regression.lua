@@ -145,19 +145,21 @@ local function holds(n,entities)
  for i=1,n do local _,_,_,h=update(s,entities or {target});pattern[i]=h and 'H' or 'r' end
  return table.concat(pattern)
 end
-local first=holds(24)
-assert(first==string.rep('H',21)..'rrH','first charge pattern: '..first)
-holds(4)
+-- Brimstone: after a release, stay released while waiting for the beam
+-- (here none comes: 4 updates), then charge again.
+local first=holds(28)
+assert(first==string.rep('H',21)..'rrrrrrH','first charge pattern: '..first)
 assert(s.bias==3,'no beam after release: bias '..s.bias)
--- need 25 now: release, then a laser comes out.
-s.held=24
-assert(holds(3)=='rrH')
+-- need 25 now: release, the beam comes out and lasts; no hold until it ends.
+s.held=23
+assert(holds(3)=='Hrr')
 local beam=attack(EntityType.ENTITY_LASER,{MaxDistance=0})
-update(s,{target,beam})
-assert(s.bias==2.5 and s.checkAt==nil,'beam seen: bias '..s.bias)
-for _=1,10 do update(s,{target,beam}) end
-assert(s.held==0,'charging waits for the beam')
+local during=holds(10,{target,beam})
+assert(during=='rrrrrrrrrr','held during the beam: '..during)
+assert(s.bias==2 and s.checkAt==nil,'beam seen: bias '..s.bias)
 beam.dead=true
+local after=holds(3)
+assert(after=='rHH','charge resumes one update after the beam: '..after)
 -- Not aligned: keep holding at full charge.
 p.Position=Vector(100,300)
 s.held=200

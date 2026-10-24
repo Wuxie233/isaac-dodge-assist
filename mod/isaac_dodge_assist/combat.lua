@@ -107,7 +107,7 @@ local function scanAttacks(state, entities, player)
         ATTACKS = {[T.ENTITY_TEAR]=true, [T.ENTITY_LASER]=true, [T.ENTITY_BOMB]=true, [T.ENTITY_KNIFE]=true}
     end
     local continuous = state.scanTick == state.tick - 1
-    local seen, alive, fresh, beam, reach = state.seen, {}, 0, false, nil
+    local seen, alive, fresh, beam, reach, lasers = state.seen, {}, 0, false, nil, 0
     for _, e in ipairs(entities) do
         if ATTACKS[e.Type] and ownedBy(e, player) then
             local key = e.Index .. ":" .. e.InitSeed
@@ -117,7 +117,10 @@ local function scanAttacks(state, entities, player)
                 if flying and continuous and not state.knives[key] then fresh = fresh + 1 end
                 alive[key] = flying or nil
             else
-                if continuous and not seen[key] then fresh = fresh + 1 end
+                if continuous and not seen[key] then
+                    fresh = fresh + 1
+                    if e.Type == T.ENTITY_LASER then lasers = lasers + 1 end
+                end
                 alive[key] = true
                 if e.Type == T.ENTITY_LASER and not e:IsDead() then
                     beam = true
@@ -129,7 +132,7 @@ local function scanAttacks(state, entities, player)
         end
     end
     state.seen, state.knives, state.scanTick = alive, alive, state.tick
-    return fresh, beam, reach
+    return fresh, beam, reach, lasers
 end
 local function hintSummary(player)
     local names = {}
@@ -145,18 +148,27 @@ end
 -- unbroken hold proves auto-fire, a long hold with nothing proves charging.
 local function fireControl(state, ctx, p, aligned)
     local delay = ctx.queueDelay or 0
-    local fresh, beam, reach = scanAttacks(state, ctx.entities, p)
+    local fresh, beam, reach, lasers = scanAttacks(state, ctx.entities, p)
     if reach then state.laserReach = reach end
     if state.tick - state.hintTick >= 15 then
         local hint = weaponKind(p)
         if hint ~= state.hint then log("IAD FIRE: hint=" .. hint .. " types=" .. hintSummary(p)) end
         state.hint, state.hintTick = hint, state.tick
+        state.brimstone = has(p, "HasWeaponType", WeaponType, {"WEAPON_BRIMSTONE"})
     end
     local need = math.ceil(max(1, p.MaxFireDelay or 10)) + MARGIN + floor(state.bias)
     local afterRelease = state.releasedAt and state.tick - state.releasedAt <= 4 + delay
-    if fresh > 0 and state.streak >= 3 + delay and not afterRelease then
-        if not state.autoFireAt then log("IAD FIRE: holding fires (auto-fire)") end
-        state.autoFireAt, state.stalled = state.tick, false
+    -- Auto-fire needs two attacks inside one unbroken hold. A Brimstone beam
+    -- that shows up late after a release is not evidence (0.12.1 flipped
+    -- Brimstone to auto-fire that way).
+    local evidence = state.brimstone and fresh - lasers or fresh
+    if state.streak == 0 then state.holdAttacks = 0 end
+    if evidence > 0 and state.streak >= 3 + delay and not afterRelease then
+        state.holdAttacks = (state.holdAttacks or 0) + evidence
+        if state.holdAttacks >= 2 then
+            if not state.autoFireAt then log("IAD FIRE: holding fires (auto-fire)") end
+            state.autoFireAt, state.stalled = state.tick, false
+        end
     end
     if state.streak > 0 and fresh == 0 then state.quiet = state.quiet + 1 elseif fresh > 0 then state.quiet = 0 end
     if not state.stalled and state.weapon == "tears" and state.quiet >= max(45, need*2) then
@@ -176,7 +188,7 @@ local function fireControl(state, ctx, p, aligned)
     if state.checkAt then
         if fresh > 0 then
             log(string.format("IAD CHARGE: fired held=%d need=%d bias=%.1f", state.checkHeld, need, state.bias))
-            state.bias, state.checkAt = max(0, state.bias - 0.5), nil
+            state.bias, state.checkAt = max(0, state.bias - 1), nil
         elseif state.tick - state.checkAt > 3 + delay then
             state.bias = min(BIAS_MAX, state.bias + 3)
             log(string.format("IAD CHARGE: nothing held=%d need=%d bias=%.1f", state.checkHeld, need, state.bias))
@@ -189,14 +201,25 @@ local function fireControl(state, ctx, p, aligned)
     elseif kind == "charge" then
         if state.releaseLeft > 0 then
             hold, state.releaseLeft = false, state.releaseLeft - 1
+        elseif state.brimstone and state.beamWait then
+            -- Holding fire during the beam cuts its damage short: stay
+            -- released until our beam has come and gone (or never came),
+            -- plus one update.
+            hold = false
+            if beam then state.beamSeen = true
+            elseif state.beamSeen or state.tick - state.beamWait > 4 + delay then
+                state.beamWait, state.beamSeen = nil, nil
+            end
         elseif beam then
             state.held = 0 -- the next charge starts when the beam ends
+            if state.brimstone then hold = false end
         else
             state.held = state.held + 1
             if state.held >= need and aligned then
                 -- Two updates released, so a 60Hz poll cannot miss it.
                 hold, state.releaseLeft = false, 1
                 state.releasedAt, state.checkAt, state.checkHeld, state.held = state.tick, state.tick, state.held, 0
+                state.beamWait = state.brimstone and state.tick or nil
             end
         end
     end
