@@ -431,7 +431,7 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
     end
     Overlay.render(game:GetRoom())
     if game:IsPaused() then emit(false) end
-    local label = "DODGE v0.12.2 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
+    local label = "DODGE v0.12.3 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
         "  " .. horizons[horizonIndex] .. "/" .. effectiveHorizon .. "ms" .. (Overlay.enabled() and "  VIEW" or "") ..
         (combat.mode > 0 and ("  " .. Combat.MODES[combat.mode]) or "")
     Isaac.RenderText(label, 48, 54, 1, 0.9, 0.35, 0.85)
@@ -440,4 +440,4 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
         Isaac.RenderText("DODGE P" .. (selected + 1), point.X - 25, point.Y - 55, 1, 0.9, 0.35, 0.8)
     end
 end)
-Isaac.DebugString("IAD: sensor 0.12.2 loaded")
+Isaac.DebugString("IAD: sensor 0.12.3 loaded")

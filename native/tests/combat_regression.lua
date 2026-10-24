@@ -14,6 +14,7 @@ local function enum()
 end
 for _,name in ipairs({'EntityType','EntityCollisionClass','GridCollisionClass','EntityFlag'})do _G[name]=enum()end
 GridCollisionClass.COLLISION_NONE=0
+EntityType.ENTITY_PLAYER=1
 WeaponType={WEAPON_TEARS=1,WEAPON_BRIMSTONE=2,WEAPON_LASER=3,WEAPON_KNIFE=4,WEAPON_MONSTROS_LUNGS=7,WEAPON_TECH_X=9,WEAPON_SPIRIT_SWORD=13}
 local Combat=dofile('mod/isaac_dodge_assist/combat.lua')
 
@@ -39,7 +40,7 @@ local directions={Vector(0,0),Vector(-1,0),Vector(1,0),Vector(0,-1),Vector(0,1),
  Vector(-1,-1):Normalized(),Vector(1,-1):Normalized(),Vector(-1,1):Normalized(),Vector(1,1):Normalized()}
 
 local weapons={}
-local p={Position=Vector(100,180),Velocity=Vector(0,0),Size=10,MoveSpeed=1,InitSeed=9,CanFly=false,ShotSpeed=1,TearRange=260}
+local p={Type=EntityType.ENTITY_PLAYER,Position=Vector(100,180),Velocity=Vector(0,0),Size=10,MoveSpeed=1,InitSeed=9,CanFly=false,ShotSpeed=1,TearRange=260}
 function p:HasWeaponType(w)return weapons[w]==true end
 function p:HasCollectible()return false end
 local seeds=100
@@ -176,10 +177,25 @@ end
 assert(s.weapon=='tears' and s.autoFireAt,'evidence beats the hint')
 assert(holds(30,{target,attack(EntityType.ENTITY_TEAR)}):find('r')==nil,'auto-fire holds')
 weapons={}
--- The hint says tears, but a long hold produces nothing: charging.
+-- A normal tear weapon must keep firing even when entity ownership is not
+-- observable (the 2026-10-25 co-op baby run regressed into charge mode).
 s=Combat.new();Combat.cycle(s);Combat.cycle(s)
-holds(50)
-assert(s.stalled and s.weapon=='charge','a silent hold switches to charge')
+local normal=holds(120)
+assert(not normal:find('r'),'normal tears released without attack evidence: '..normal)
+assert(s.weapon=='tears' and s.stalled,'silent normal weapon changed firing mode')
+-- Co-op baby shots may be parented to the main twin. Match its controller,
+-- never another player or a similarly indexed entity from the other player.
+assert(holds(30,{target}):sub(1,2)=='HH','continued silent hold')
+p.ControllerIndex=7
+local mainTwin={Index=99,ControllerIndex=7,Type=EntityType.ENTITY_PLAYER}
+local remote={Index=99,ControllerIndex=8,Type=EntityType.ENTITY_PLAYER}
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+update(s,{target})
+update(s,{target,attack(EntityType.ENTITY_TEAR,{Parent=mainTwin,SpawnerEntity=nil})})
+assert(s.quiet==0,'main-twin tear was not observed')
+update(s,{target,attack(EntityType.ENTITY_TEAR,{Parent=remote,SpawnerEntity=nil})})
+assert(s.quiet==1,'remote player tear counted as our attack')
+p.ControllerIndex=nil
 -- Azazel: the laser length caps the standing distance.
 s=Combat.new();Combat.cycle(s);Combat.cycle(s)
 weapons[WeaponType.WEAPON_BRIMSTONE]=true

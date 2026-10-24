@@ -91,11 +91,38 @@ local function same(a, b)
         local ok, equal = pcall(function() return GetPtrHash(a) == GetPtrHash(b) end)
         if ok then return equal end
     end
-    return a.Index == b.Index
+    return a.Index == b.Index and
+        (a.ControllerIndex == nil or b.ControllerIndex == nil or a.ControllerIndex == b.ControllerIndex)
 end
 local function ownedBy(e, player)
-    local ok, spawner, parent = pcall(function() return e.SpawnerEntity, e.Parent end)
-    return ok and (same(spawner, player) or same(parent, player))
+    -- Online co-op babies (player variant 9) may have both a spawner and a
+    -- parent player. Check both branches: a same-controller main twin proves
+    -- ownership, but any explicit remote-player link rejects it. In
+    -- particular, do not let the spawner branch hide a remote Parent.
+    local pending, known, hops = {e}, {}, 0
+    while #pending > 0 and hops < 12 do
+        local source = table.remove(pending)
+        if source and not known[source] then
+            known[source] = true
+            hops = hops + 1
+            local ok, spawner, parent, kind, controller = pcall(function()
+                return source.SpawnerEntity, source.Parent, source.Type, source.ControllerIndex
+            end)
+            if not ok then return false end
+            if kind == EntityType.ENTITY_PLAYER then
+                if controller ~= nil and player.ControllerIndex ~= nil and controller ~= player.ControllerIndex then
+                    return false
+                end
+                if same(source, player) then return true end
+                if controller ~= nil and player.ControllerIndex ~= nil and controller == player.ControllerIndex then
+                    return true
+                end
+            end
+            if spawner then pending[#pending+1] = spawner end
+            if parent then pending[#pending+1] = parent end
+        end
+    end
+    return false
 end
 local ATTACKS = {}
 -- New attacks by this player since the last update (tears, lasers, bombs
@@ -108,6 +135,7 @@ local function scanAttacks(state, entities, player)
     end
     local continuous = state.scanTick == state.tick - 1
     local seen, alive, fresh, beam, reach, lasers = state.seen, {}, 0, false, nil, 0
+    local counted = {}
     for _, e in ipairs(entities) do
         if ATTACKS[e.Type] and ownedBy(e, player) then
             local key = e.Index .. ":" .. e.InitSeed
@@ -117,7 +145,8 @@ local function scanAttacks(state, entities, player)
                 if flying and continuous and not state.knives[key] then fresh = fresh + 1 end
                 alive[key] = flying or nil
             else
-                if continuous and not seen[key] then
+                if continuous and not seen[key] and not counted[key] then
+                    counted[key] = true
                     fresh = fresh + 1
                     if e.Type == T.ENTITY_LASER then lasers = lasers + 1 end
                 end
@@ -167,18 +196,20 @@ local function fireControl(state, ctx, p, aligned)
         state.holdAttacks = (state.holdAttacks or 0) + evidence
         if state.holdAttacks >= 2 then
             if not state.autoFireAt then log("IAD FIRE: holding fires (auto-fire)") end
-            state.autoFireAt, state.stalled = state.tick, false
+            state.autoFireAt = state.tick
         end
     end
     if state.streak > 0 and fresh == 0 then state.quiet = state.quiet + 1 elseif fresh > 0 then state.quiet = 0 end
-    if not state.stalled and state.weapon == "tears" and state.quiet >= max(45, need*2) then
+    if state.hint == "tears" and state.streak > 0 and state.quiet >= max(45, need*2) then
+        -- A missing owner link must not turn ordinary tears into charged
+        -- shots (0.12.2 did exactly that throughout a co-op baby run).
         state.stalled = true
-        log("IAD FIRE: held " .. state.quiet .. " updates without an attack (charging)")
+        log("IAD FIRE: no owned attack observed for " .. state.quiet .. " updates; keeping tears")
     end
     local kind = state.hint
     if kind ~= "tap" then
         if state.autoFireAt and state.tick - state.autoFireAt < 150 then kind = "tears"
-        elseif kind == "charge" or state.stalled then kind = "charge" end
+        elseif kind == "charge" then kind = "charge" end
     end
     if kind ~= state.weapon then
         log("IAD FIRE: mode=" .. kind .. " need=" .. need .. " maxFireDelay=" .. string.format("%.2f", p.MaxFireDelay or -1))
