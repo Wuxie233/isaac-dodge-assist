@@ -49,7 +49,7 @@ function room:GetTopLeftPos()return Vector(LEFT,TOP)end
 function room:GetBottomRightPos()return Vector(RIGHT,BOTTOM)end
 local applied=Vector(0,0)
 local p={Type=EntityType.ENTITY_PLAYER,Variant=0,SubType=0,Position=Vector(300,180),Velocity=Vector(0,0),
- Size=10,MoveSpeed=1,InitSeed=9,CanFly=false,ControllerIndex=0,ShotSpeed=1,TearRange=260}
+ Size=10,MoveSpeed=1,InitSeed=9,Index=9,CanFly=false,ControllerIndex=0,ShotSpeed=1,TearRange=260,MaxFireDelay=10}
 function p:GetPlayerType()return -1 end
 function p:GetSubPlayer()return nil end
 function p:IsSubPlayer()return false end
@@ -140,7 +140,7 @@ for i=1,9 do dirs[i]=Vector(dx[i],dy[i]);if i>5 then dirs[i]=dirs[i]:Normalized(
 local seedCounter=100
 local function base(kind)
  seedCounter=seedCounter+1
- local e={Type=kind,Variant=0,SubType=0,InitSeed=seedCounter,SpawnerType=-1,Position=Vector(0,0),Velocity=Vector(0,0),
+ local e={Type=kind,Variant=0,SubType=0,InitSeed=seedCounter,Index=seedCounter,SpawnerType=-1,Position=Vector(0,0),Velocity=Vector(0,0),
   Size=13,Scale=1,SpriteScale=Vector(1,1),SizeMulti=Vector(1,1),CollisionDamage=1,
   EntityCollisionClass=EntityCollisionClass.ENTCOLL_ALL,SpriteOffset=Vector(0,0),FrameCount=0}
  for _,k in ipairs({'ToNPC','ToProjectile','ToBomb','ToLaser','ToEffect','ToTear'})do e[k]=function()return nil end end
@@ -242,7 +242,9 @@ local function tick()
  fireCooldown=fireCooldown-1
  if queued.fire and fireCooldown<=0 then
   fireCooldown=FIRE_TICKS;shots=shots+1
-  tears[#tears+1]={Position=p.Position,Velocity=shootDirs[queued.fire]*TEAR_SPEED,travel=0}
+  local t=base(EntityType.ENTITY_TEAR);t.Position=p.Position;t.Velocity=shootDirs[queued.fire]*TEAR_SPEED
+  t.travel,t.SpawnerEntity,t.SpawnerType,t.EntityCollisionClass=0,p,EntityType.ENTITY_PLAYER,EntityCollisionClass.ENTCOLL_ENEMIES
+  tears[#tears+1]=t
  end
  if choice then overrides=overrides+1 end
  if ticks%2==0 then
@@ -311,6 +313,7 @@ local function worldUpdate()
  scene={}
  for _,e in ipairs(npcs)do scene[#scene+1]=e end
  for _,b in ipairs(bullets)do scene[#scene+1]=b end
+ for _,t in ipairs(tears)do scene[#scene+1]=t end
 end
 local started=os.clock()
 for update=1,updates do
