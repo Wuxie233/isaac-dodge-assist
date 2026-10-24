@@ -30,7 +30,6 @@ static Decision lastDecision{-1,-1};
 static int lastChoice=-1;
 static DWORD lastAt;
 static void* lastDevice;
-static uint32_t lastSequence;
 static LONGLONG lastCounter, counterFrequency;
 
 static int rank(const double* risk, uint32_t blocked, int manual, int x, int y, int previous=-1) {
@@ -71,34 +70,38 @@ static Decision decide(const double* risk, uint32_t blocked, uint32_t combat, co
     }
     return d;
 }
-static Decision choose(void* device) {
+// Every query of one input poll gets the same answer, including "not
+// overriding". A packet, Shift or focus change mid-poll must not split it:
+// the game sends what one query saw and may simulate what another saw, and
+// in Online a mismatch desyncs (seen once in AUTO with 0.4). A poll ends 3ms
+// after its first query on the performance counter.
+static Decision evaluate(void* device, DWORD now) {
     const Decision none{-1,-1};
     DWORD pid=0; GetWindowThreadProcessId(GetForegroundWindow(), &pid);
-    if (!shared || pid!=GetCurrentProcessId() || (GetAsyncKeyState(VK_LSHIFT)&0x8000)) return none;
+    if (pid!=GetCurrentProcessId() || (GetAsyncKeyState(VK_LSHIFT)&0x8000)) return none;
     Shared sample{};
     DWORD wait=WaitForSingleObject(mutexHandle,0);
     if (wait==WAIT_ABANDONED) { shared->active=0; ReleaseMutex(mutexHandle); return none; }
     if (wait!=WAIT_OBJECT_0) return none;
     memcpy(&sample, shared, 104);
     ReleaseMutex(mutexHandle);
-    DWORD now=GetTickCount();
     if(sample.magic!=0x32444149 || sample.version!=1 || sample.pid!=pid || !sample.active || now-sample.stamp>120) return none;
-    if(!TryAcquireSRWLockExclusive(&decisionLock)) return none;
-    // Share one decision among the action queries of a single input poll.
-    // GetTickCount moves in ~16ms steps and could hold a decision across a
-    // 60Hz player tick; a new packet or 4ms on the performance counter ends it.
-    LARGE_INTEGER counter; QueryPerformanceCounter(&counter);
-    if(!counterFrequency){LARGE_INTEGER f;QueryPerformanceFrequency(&f);counterFrequency=f.QuadPart;}
-    if(lastDevice==device && lastSequence==sample.sequence &&
-       (counter.QuadPart-lastCounter)*250<counterFrequency) {
-        Decision result=lastDecision; ReleaseSRWLockExclusive(&decisionLock); return result;
-    }
     float raw[8]; for(int i=0;i<8;++i) raw[i]=originalValue(device,i);
     int previous=(lastDevice==device && now-lastAt<=120) ? lastChoice : -1;
-    lastDecision=decide(sample.risk,sample.blocked,sample.combat,raw,previous);
-    lastChoice=lastDecision.move;
-    lastAt=now; lastDevice=device; lastSequence=sample.sequence; lastCounter=counter.QuadPart;
-    InterlockedExchange(&shared->chosen,lastChoice);
+    return decide(sample.risk,sample.blocked,sample.combat,raw,previous);
+}
+static Decision choose(void* device) {
+    if (!shared) return Decision{-1,-1};
+    AcquireSRWLockExclusive(&decisionLock);
+    LARGE_INTEGER counter; QueryPerformanceCounter(&counter);
+    if(!counterFrequency){LARGE_INTEGER f;QueryPerformanceFrequency(&f);counterFrequency=f.QuadPart;}
+    if(lastDevice==device && (counter.QuadPart-lastCounter)*1000<counterFrequency*3) {
+        Decision result=lastDecision; ReleaseSRWLockExclusive(&decisionLock); return result;
+    }
+    DWORD now=GetTickCount();
+    lastDecision=evaluate(device,now);
+    lastChoice=lastDecision.move; lastAt=now; lastDevice=device; lastCounter=counter.QuadPart;
+    InterlockedExchange(&shared->chosen,lastDecision.move);
     Decision result=lastDecision; ReleaseSRWLockExclusive(&decisionLock); return result;
 }
 static int overridden(void* self, int action) {

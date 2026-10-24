@@ -146,7 +146,7 @@ internal static class NativeHost
                 }
                 if(!loaded)Inject(game,dll);
                 Application.EnableVisualStyles();
-                var form=new Form{Text="以撒原生输入躲避 0.4",Width=560,Height=270};
+                var form=new Form{Text="以撒原生输入躲避 0.4.1",Width=560,Height=270};
                 var toggle=new CheckBox{Text="启用原生移动接管",Checked=true,Left=20,Top=20,Width=300};
                 var label=new Label{Left=20,Top=60,Width=510,Height=160};
                 toggle.CheckedChanged+=delegate{enabled=toggle.Checked;if(!enabled)lock(sync)Publish(false,null,0);};
