@@ -1,4 +1,4 @@
-# 原生移动输入接管（NativeHost 0.4.1）
+# 原生移动输入接管（NativeHost 0.4.2）
 
 原生 DLL 接管游戏自己的键盘移动动作读取。Lua 0.9.2 继续检测威胁和输出九方向评分，NativeHost 读取评分并写入共享内存，DLL 在本机键盘输入设备上返回选择的方向。没有 SendInput 调用，不覆盖网络设备、不写角色位置或速度。
 
@@ -49,3 +49,15 @@ DLL 额外接管键盘设备的射击动作 4～7（同样只在本机键盘虚�
 ## 0.4.1 每次读键结果一致
 
 0.4 在同一次读键中途若到达新评分包会换用新决策，Online 下本机模拟与发出的输入可能不同（2026-10-24 AUTO 中出现一次失步，失步实体为本机角色速度）。0.4.1 以首个查询为起点，3ms 内对同一设备的所有动作查询返回同一决策，"不接管"也一起缓存；改用阻塞的 SRW 锁，避免并发查询时一半拿到"不接管"。共享内存与 IAD2 不变，Host 只改窗口标题。
+
+## 0.4.2 原始输入快照与 IAD2 配对
+
+0.4.1 只缓存了“是否接管”的决策；决策为透传时，`GetActionValue` 与 `IsActionPressed` 仍各自读取实时输入，同一小窗口内可看到不同的物理状态。0.4.2 在窗口首查询同时采样 8 个动作的原始 value 与 pressed，后续查询（包括透传）只读该快照，并缓存最终回答。窗口仍为同设备首查询后 3ms，这只是安全边界，不等于游戏真实的输入帧边界：超过 3ms 的同一次读键仍可能分裂，间隔小于 3ms 的两次读键也可能共用快照。
+
+NativeHost 0.4.2 还修复了 `IAD2` 配对残留：日志重连、截断、跳积压、畸形/错序/被校准拒收的包都会清空待配对战斗字，避免旧射击决策配到新评分包。新增 `tests/host_protocol_regression.cs`，覆盖一次性消费、错序、重置、畸形和重复行；ABI 测试增加原始输入快照与 3ms 重用边界。
+
+DLL 和 Host 都有变化，需要退出游戏后重新启动，再打开快捷方式（指向 0.4.2）。
+
+## 测试
+
+Linux：`bash native/build-dll.sh` 构建 DLL，交叉编译 `tests/abi_and_ranking.cpp` 后在 Windows 运行（覆盖评分、战斗决策、原始输入快照、3ms 重用边界与调用 ABI）。Host 配对：Windows 用 `csc /target:exe /main:HostProtocolRegression /out:HostProtocolRegression.exe PacketClock.cs tests\host_protocol_regression.cs`，再运行生成的 EXE（覆盖 `IAD2` 一次性消费、错序、重置、畸形与重复）。
