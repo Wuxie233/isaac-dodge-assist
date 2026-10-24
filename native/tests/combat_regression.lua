@@ -195,7 +195,57 @@ update(s,{target,attack(EntityType.ENTITY_TEAR,{Parent=mainTwin,SpawnerEntity=ni
 assert(s.quiet==0,'main-twin tear was not observed')
 update(s,{target,attack(EntityType.ENTITY_TEAR,{Parent=remote,SpawnerEntity=nil})})
 assert(s.quiet==1,'remote player tear counted as our attack')
+-- Conflicting links: a remote shot must be rejected even when its Parent is
+-- the local main twin. Traversal order must not decide ownership.
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+update(s,{target})
+update(s,{target,attack(EntityType.ENTITY_TEAR,{Parent=mainTwin,SpawnerEntity=remote})})
+assert(s.quiet==1,'remote SpawnerEntity hidden by local Parent')
 p.ControllerIndex=nil
+weapons={}
+-- Picking up a charge weapon after tear auto-fire must discard the old
+-- evidence and start charging rather than holding forever.
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+for i=1,8 do
+ local list={target}
+ if i>=6 then list[2]=attack(EntityType.ENTITY_TEAR) end
+ update(s,list)
+end
+assert(s.autoFireAt,'tear auto-fire setup')
+weapons[WeaponType.WEAPON_BRIMSTONE]=true
+assert(holds(45):find('r'),'Brimstone inherited stale tear auto-fire evidence')
+weapons={}
+-- Pending release/check state must not survive a mode cycle or an empty
+-- interval: neither may fire immediately or add a false charge bias.
+weapons[WeaponType.WEAPON_BRIMSTONE]=true
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+local released=false
+for i=1,40 do
+ local _,_,_,h=update(s,{target})
+ if not h then released=true;break end
+end
+assert(released,'Brimstone never released')
+for i=1,10 do update(s,{}) end
+local bias=s.bias
+update(s,{target})
+assert(s.bias==bias,'empty interval charged a failed release')
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+released=false
+for i=1,40 do
+ local _,_,_,h=update(s,{target})
+ if not h then released=true;break end
+end
+assert(released,'Brimstone never released before cycle')
+Combat.cycle(s);Combat.cycle(s);Combat.cycle(s)
+local _,_,_,h=update(s,{target})
+assert(h,'pending release survived mode cycle')
+weapons={}
+-- Queued movement moves the shot origin; current position would aim right.
+p.Position,p.Velocity=Vector(100,180),Vector(2.5,0)
+s=Combat.new();Combat.cycle(s)
+local _,_,aimed=update(s,{enemy(200,89)},{queueDelay=4})
+assert(aimed==3,'queued shooter displacement ignored: '..tostring(aimed))
+p.Velocity=Vector(0,0)
 -- Azazel: the laser length caps the standing distance.
 s=Combat.new();Combat.cycle(s);Combat.cycle(s)
 weapons[WeaponType.WEAPON_BRIMSTONE]=true

@@ -28,9 +28,21 @@ function M.new()
         seen={}, scanTick=-10, knives={}, autoFireAt=nil, stalled=false,
         hint="tears", hintTick=-100, weapon="tears", laserReach=nil, info=nil}
 end
+-- Drop pending fire decisions and attack history when play is interrupted
+-- (mode change, no target, room change). A held or released state from the
+-- previous room must not fire, release, or bias the next charge.
+local function clearAction(state)
+    state.targetSeed, state.goalX, state.goalY, state.info = nil, nil, nil, nil
+    state.held, state.streak, state.quiet = 0, 0, 0
+    state.releaseLeft, state.releasedAt, state.checkAt, state.checkHeld = 0, nil, nil, nil
+    state.beamWait, state.beamSeen = nil, nil
+    state.seen, state.knives, state.scanTick = {}, {}, -10
+    state.autoFireAt, state.holdAttacks, state.stalled = nil, 0, false
+    state.hintTick = -100
+end
 function M.cycle(state)
     state.mode = (state.mode + 1) % 3
-    state.targetSeed, state.goalX, state.goalY, state.held, state.info = nil, nil, nil, 0, nil
+    clearAction(state)
     return state.mode
 end
 
@@ -99,7 +111,7 @@ local function ownedBy(e, player)
     -- parent player. Check both branches: a same-controller main twin proves
     -- ownership, but any explicit remote-player link rejects it. In
     -- particular, do not let the spawner branch hide a remote Parent.
-    local pending, known, hops = {e}, {}, 0
+    local pending, known, hops, matched = {e}, {}, 0, false
     while #pending > 0 and hops < 12 do
         local source = table.remove(pending)
         if source and not known[source] then
@@ -111,18 +123,18 @@ local function ownedBy(e, player)
             if not ok then return false end
             if kind == EntityType.ENTITY_PLAYER then
                 if controller ~= nil and player.ControllerIndex ~= nil and controller ~= player.ControllerIndex then
-                    return false
+                    return false -- any remote-player link wins over a local one
                 end
-                if same(source, player) then return true end
-                if controller ~= nil and player.ControllerIndex ~= nil and controller == player.ControllerIndex then
-                    return true
+                if same(source, player) or
+                    (controller ~= nil and player.ControllerIndex ~= nil and controller == player.ControllerIndex) then
+                    matched = true
                 end
             end
             if spawner then pending[#pending+1] = spawner end
             if parent then pending[#pending+1] = parent end
         end
     end
-    return false
+    return matched
 end
 local ATTACKS = {}
 -- New attacks by this player since the last update (tears, lasers, bombs
@@ -181,7 +193,12 @@ local function fireControl(state, ctx, p, aligned)
     if reach then state.laserReach = reach end
     if state.tick - state.hintTick >= 15 then
         local hint = weaponKind(p)
-        if hint ~= state.hint then log("IAD FIRE: hint=" .. hint .. " types=" .. hintSummary(p)) end
+        if hint ~= state.hint then
+            log("IAD FIRE: hint=" .. hint .. " types=" .. hintSummary(p))
+            -- Evidence belongs to the weapon that produced it. Picking up
+            -- Brimstone after tears must start charging immediately.
+            state.autoFireAt, state.holdAttacks, state.held = nil, 0, 0
+        end
         state.hint, state.hintTick = hint, state.tick
         state.brimstone = has(p, "HasWeaponType", WeaponType, {"WEAPON_BRIMSTONE"})
     end
@@ -310,17 +327,23 @@ local function laneClear(room, g, ax, ay, bx, by, ignoreRocks)
     return true
 end
 
--- Lead the target by the tear travel time plus the online input queue.
+-- Lead the target by the tear travel time plus the online input queue, from
+-- where the queued command will actually fire. With latency the player has
+-- already moved, so aiming from the current position skews diagonals.
 local function aim(player, target, queueDelay)
     local p, t, v = player.Position, target.Position, target.Velocity
-    local distance = p:Distance(t)
+    local delay = queueDelay or 0
+    local velocity = player.Velocity or Vector(0, 0)
+    local origin = Vector(p.X + velocity.X*delay, p.Y + velocity.Y*delay)
+    local distance = origin:Distance(t)
     local tearSpeed = max(1, (player.ShotSpeed or 1) * 10)
-    local lead = min(12, max(1.5, distance / tearSpeed)) + (queueDelay or 0)
-    local dx, dy = t.X + v.X*lead - p.X, t.Y + v.Y*lead - p.Y
+    local lead = min(12, max(1.5, distance / tearSpeed)) + delay
+    local aimX, aimY = t.X + v.X*lead, t.Y + v.Y*lead
+    local dx, dy = aimX - origin.X, aimY - origin.Y
     local shoot, offset
     if abs(dx) >= abs(dy) then shoot, offset = dx >= 0 and 2 or 1, abs(dy)
     else shoot, offset = dy >= 0 and 4 or 3, abs(dx) end
-    return shoot, offset <= target.Size + 10, t.X + v.X*lead, t.Y + v.Y*lead
+    return shoot, offset <= target.Size + 10, aimX, aimY
 end
 
 local function pickTarget(state, player, enemies)
@@ -428,7 +451,7 @@ function M.update(state, ctx)
     local target = pickTarget(state, p, enemies)
     state.tick = state.tick + 1
     if not target then
-        state.targetSeed, state.goalX, state.goalY, state.held, state.streak = nil, nil, nil, 0, 0
+        clearAction(state)
         return M.word(state.mode, nil, 0, false)
     end
     state.targetSeed = target.InitSeed
