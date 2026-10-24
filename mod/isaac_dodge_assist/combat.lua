@@ -15,12 +15,18 @@ M.MODES = {[0]="OFF", "AIM", "AUTO"}
 local NO_MOVE = 15
 -- Updates of full-speed walking used to compare directions against the goal.
 local LOOK = 5
--- Charge release estimate (updates) adapts between these bounds.
-local CHARGE_MIN, CHARGE_MAX = 4, 90
+-- Charged attacks are full after ceil(MaxFireDelay) updates (wiki: Brimstone
+-- charge = rounded-up tear delay / 30 s; Chocolate Milk and Monstro's Lung
+-- fold their charge into the tear delay). MARGIN covers 60Hz/30Hz rounding;
+-- bias grows when a release produced no attack.
+local MARGIN, BIAS_MAX = 2, 30
+local function log(text) if Isaac and Isaac.DebugString then Isaac.DebugString(text) end end
 
 function M.new()
-    return {mode=0, targetSeed=nil, goalX=nil, goalY=nil, lastMove=1, held=0,
-        charge=20, released=nil, weaponFrame=-100, weapon="tears", info=nil}
+    return {mode=0, targetSeed=nil, goalX=nil, goalY=nil, lastMove=1, tick=0,
+        held=0, streak=0, quiet=0, bias=0, releaseLeft=0, releasedAt=nil, checkAt=nil,
+        seen={}, scanTick=-10, knives={}, autoFireAt=nil, stalled=false,
+        hint="tears", hintTick=-100, weapon="tears", laserReach=nil, info=nil}
 end
 function M.cycle(state)
     state.mode = (state.mode + 1) % 3
@@ -79,19 +85,123 @@ local function hostile(entity, playerOwned)
     return npc
 end
 
--- Did the player's attack actually come out (for the charge estimate)?
-local function shotSeen(entities, player)
+local function same(a, b)
+    if not (a and b) then return false end
+    if GetPtrHash then
+        local ok, equal = pcall(function() return GetPtrHash(a) == GetPtrHash(b) end)
+        if ok then return equal end
+    end
+    return a.Index == b.Index
+end
+local function ownedBy(e, player)
+    local ok, spawner, parent = pcall(function() return e.SpawnerEntity, e.Parent end)
+    return ok and (same(spawner, player) or same(parent, player))
+end
+local ATTACKS = {}
+-- New attacks by this player since the last update (tears, lasers, bombs
+-- from Dr. Fetus, knife throws), whether one of its lasers is still
+-- active, and the length of a capped laser (Azazel).
+local function scanAttacks(state, entities, player)
+    local T = EntityType
+    if not ATTACKS[T.ENTITY_TEAR] then
+        ATTACKS = {[T.ENTITY_TEAR]=true, [T.ENTITY_LASER]=true, [T.ENTITY_BOMB]=true, [T.ENTITY_KNIFE]=true}
+    end
+    local continuous = state.scanTick == state.tick - 1
+    local seen, alive, fresh, beam, reach = state.seen, {}, 0, false, nil
     for _, e in ipairs(entities) do
-        local source = e.SpawnerEntity or e.Parent
-        if source and source.InitSeed == player.InitSeed then
-            if (e.Type == EntityType.ENTITY_LASER or e.Type == EntityType.ENTITY_TEAR) and e.FrameCount <= 3 then return true end
-            if e.Type == EntityType.ENTITY_KNIFE then
+        if ATTACKS[e.Type] and ownedBy(e, player) then
+            local key = e.Index .. ":" .. e.InitSeed
+            if e.Type == T.ENTITY_KNIFE then
                 local knife = e.ToKnife and e:ToKnife()
-                if knife and knife.IsFlying and knife:IsFlying() then return true end
+                local flying = knife and knife.IsFlying and knife:IsFlying() or false
+                if flying and continuous and not state.knives[key] then fresh = fresh + 1 end
+                alive[key] = flying or nil
+            else
+                if continuous and not seen[key] then fresh = fresh + 1 end
+                alive[key] = true
+                if e.Type == T.ENTITY_LASER and not e:IsDead() then
+                    beam = true
+                    local laser = e.ToLaser and e:ToLaser()
+                    local distance = laser and laser.MaxDistance or 0
+                    if distance and distance > 0 then reach = distance end
+                end
             end
         end
     end
-    return false
+    state.seen, state.knives, state.scanTick = alive, alive, state.tick
+    return fresh, beam, reach
+end
+local function hintSummary(player)
+    local names = {}
+    for _, name in ipairs({"WEAPON_TEARS", "WEAPON_BRIMSTONE", "WEAPON_LASER", "WEAPON_KNIFE", "WEAPON_BOMBS",
+        "WEAPON_ROCKETS", "WEAPON_MONSTROS_LUNGS", "WEAPON_LUDOVICO_TECHNIQUE", "WEAPON_TECH_X", "WEAPON_SPIRIT_SWORD"}) do
+        if has(player, "HasWeaponType", WeaponType, {name}) then names[#names+1] = name:sub(8) end
+    end
+    return table.concat(names, ",")
+end
+
+-- AUTO fire control. The item hint says whether a held button fires or
+-- charges; what the game actually does overrides it: an attack during an
+-- unbroken hold proves auto-fire, a long hold with nothing proves charging.
+local function fireControl(state, ctx, p, aligned)
+    local delay = ctx.queueDelay or 0
+    local fresh, beam, reach = scanAttacks(state, ctx.entities, p)
+    if reach then state.laserReach = reach end
+    if state.tick - state.hintTick >= 15 then
+        local hint = weaponKind(p)
+        if hint ~= state.hint then log("IAD FIRE: hint=" .. hint .. " types=" .. hintSummary(p)) end
+        state.hint, state.hintTick = hint, state.tick
+    end
+    local need = math.ceil(max(1, p.MaxFireDelay or 10)) + MARGIN + floor(state.bias)
+    local afterRelease = state.releasedAt and state.tick - state.releasedAt <= 4 + delay
+    if fresh > 0 and state.streak >= 3 + delay and not afterRelease then
+        if not state.autoFireAt then log("IAD FIRE: holding fires (auto-fire)") end
+        state.autoFireAt, state.stalled = state.tick, false
+    end
+    if state.streak > 0 and fresh == 0 then state.quiet = state.quiet + 1 elseif fresh > 0 then state.quiet = 0 end
+    if not state.stalled and state.weapon == "tears" and state.quiet >= max(45, need*2) then
+        state.stalled = true
+        log("IAD FIRE: held " .. state.quiet .. " updates without an attack (charging)")
+    end
+    local kind = state.hint
+    if kind ~= "tap" then
+        if state.autoFireAt and state.tick - state.autoFireAt < 150 then kind = "tears"
+        elseif kind == "charge" or state.stalled then kind = "charge" end
+    end
+    if kind ~= state.weapon then
+        log("IAD FIRE: mode=" .. kind .. " need=" .. need .. " maxFireDelay=" .. string.format("%.2f", p.MaxFireDelay or -1))
+        state.weapon, state.held, state.quiet = kind, 0, 0
+    end
+    -- Judge the last release: an attack within the queue delay + 3 updates.
+    if state.checkAt then
+        if fresh > 0 then
+            log(string.format("IAD CHARGE: fired held=%d need=%d bias=%.1f", state.checkHeld, need, state.bias))
+            state.bias, state.checkAt = max(0, state.bias - 0.5), nil
+        elseif state.tick - state.checkAt > 3 + delay then
+            state.bias = min(BIAS_MAX, state.bias + 3)
+            log(string.format("IAD CHARGE: nothing held=%d need=%d bias=%.1f", state.checkHeld, need, state.bias))
+            state.checkAt = nil
+        end
+    end
+    local hold = true
+    if kind == "tap" then
+        hold = state.tick % 2 == 0
+    elseif kind == "charge" then
+        if state.releaseLeft > 0 then
+            hold, state.releaseLeft = false, state.releaseLeft - 1
+        elseif beam then
+            state.held = 0 -- the next charge starts when the beam ends
+        else
+            state.held = state.held + 1
+            if state.held >= need and aligned then
+                -- Two updates released, so a 60Hz poll cannot miss it.
+                hold, state.releaseLeft = false, 1
+                state.releasedAt, state.checkAt, state.checkHeld, state.held = state.tick, state.tick, state.held, 0
+            end
+        end
+    end
+    state.streak = hold and state.streak + 1 or 0
+    return hold
 end
 
 -- Grid passability for walking and for tears, refreshed every 15 updates
@@ -173,7 +283,8 @@ end
 -- clear lane, close to us and away from the other enemies.
 local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
     local p, room = ctx.player, ctx.room
-    local range = p.TearRange or 260
+    -- Azazel's laser stops at MaxDistance; aim from inside it.
+    local range = state.laserReach and min(state.laserReach, p.TearRange or 260) or p.TearRange or 260
     -- Closed-loop sim (8-tick queue): 0.8 of the range halved hits against
     -- 0.45 (5.8 -> 2.9 per minute) at about the same kill rate.
     local preferred = min(240, max(90, range*0.8))
@@ -261,8 +372,9 @@ function M.update(state, ctx)
         if npc then enemies[#enemies+1] = npc end
     end
     local target = pickTarget(state, p, enemies)
+    state.tick = state.tick + 1
     if not target then
-        state.targetSeed, state.goalX, state.goalY, state.held = nil, nil, nil, 0
+        state.targetSeed, state.goalX, state.goalY, state.held, state.streak = nil, nil, nil, 0, 0
         return M.word(state.mode, nil, 0, false)
     end
     state.targetSeed = target.InitSeed
@@ -271,24 +383,7 @@ function M.update(state, ctx)
     state.info = info
     if state.mode == 1 then return M.word(1, nil, shoot, false) end
 
-    -- AUTO: fire control.
-    if ctx.frame - state.weaponFrame >= 15 then state.weapon, state.weaponFrame = weaponKind(p), ctx.frame end
-    local hold = true
-    if state.weapon == "charge" then
-        if state.released then
-            if shotSeen(ctx.entities, p) then
-                state.charge, state.released = max(CHARGE_MIN, state.charge*0.92), nil
-            elseif ctx.frame - state.released > 3 + (ctx.queueDelay or 0) then
-                state.charge, state.released = min(CHARGE_MAX, state.charge*1.3 + 1), nil
-            end
-        end
-        state.held = state.held + 1
-        if state.held >= state.charge and aligned then
-            hold, state.held, state.released = false, 0, ctx.frame
-        end
-    elseif state.weapon == "tap" then
-        hold = ctx.frame % 2 == 0
-    end
+    local hold = fireControl(state, ctx, p, aligned)
 
     -- AUTO: movement.
     local g = grid(state, room, p, ctx.frame)

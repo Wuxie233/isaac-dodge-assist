@@ -122,34 +122,67 @@ m,mv=update(s,{enemy(400,180)},{scores=scores,blocked=1})
 assert(mv==1,'least hard risk among open: '..tostring(mv))
 print('PASS auto goal lanes, rock lane switch, goal walking, dodge priority')
 
--- Charge weapons hold, then release once aligned; the estimate grows when
--- no attack comes out and shrinks when one does.
+-- Charge weapons: full after ceil(MaxFireDelay)+2 updates, released once
+-- aligned for two updates; a release with no attack adds bias, an attack
+-- removes some; the next charge waits for the beam to end.
+p.Index,p.MaxFireDelay=1,19.5
+local nextIndex=1000
+local function attack(kind,extra)
+ nextIndex=nextIndex+1
+ local e={Type=kind,Index=nextIndex,InitSeed=nextIndex,FrameCount=0,SpawnerEntity=p,dead=false}
+ function e:ToNPC()return nil end
+ function e:IsDead()return self.dead end
+ function e:ToLaser()return self end
+ for k,v in pairs(extra or {})do e[k]=v end
+ return e
+end
 weapons[WeaponType.WEAPON_BRIMSTONE]=true
 s=Combat.new();Combat.cycle(s);Combat.cycle(s)
 p.Position=Vector(100,180)
 local target=enemy(400,180)
-local released
-for i=1,40 do
- m,mv,sh,hold=update(s,{target})
- if not hold then released=i;break end
+local function holds(n,entities)
+ local pattern={}
+ for i=1,n do local _,_,_,h=update(s,entities or {target});pattern[i]=h and 'H' or 'r' end
+ return table.concat(pattern)
 end
-assert(released and released>=18 and released<=22,'released after the initial estimate: '..tostring(released))
-local before=s.charge
-for _=1,6 do update(s,{target}) end
-assert(s.charge>before,'no laser seen: estimate grows')
-local grown=s.charge
--- Release again with a laser appearing.
-s.held=s.charge
-update(s,{target})
-local laser={Type=EntityType.ENTITY_LASER,FrameCount=1,SpawnerEntity=p,InitSeed=500}
-function laser:ToNPC()return nil end
-update(s,{target,laser})
-assert(s.charge<grown,'laser seen: estimate shrinks')
+local first=holds(24)
+assert(first==string.rep('H',21)..'rrH','first charge pattern: '..first)
+holds(4)
+assert(s.bias==3,'no beam after release: bias '..s.bias)
+-- need 25 now: release, then a laser comes out.
+s.held=24
+assert(holds(3)=='rrH')
+local beam=attack(EntityType.ENTITY_LASER,{MaxDistance=0})
+update(s,{target,beam})
+assert(s.bias==2.5 and s.checkAt==nil,'beam seen: bias '..s.bias)
+for _=1,10 do update(s,{target,beam}) end
+assert(s.held==0,'charging waits for the beam')
+beam.dead=true
 -- Not aligned: keep holding at full charge.
-s.held=200
-m,mv,sh,hold=update(s,{enemy(300,40,0,0)})
 p.Position=Vector(100,300)
-m,mv,sh,hold=update(s,{enemy(400,60)})
-assert(hold,'misaligned charge is held')
+s.held=200
+local _,_,_,h=update(s,{enemy(400,60)})
+assert(h,'misaligned charge is held')
+p.Position=Vector(100,180)
+-- The hint says charge, but tears come out of an unbroken hold: auto-fire.
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+for i=1,8 do
+ local list={target}
+ if i>=6 then list[2]=attack(EntityType.ENTITY_TEAR) end
+ update(s,list)
+end
+assert(s.weapon=='tears' and s.autoFireAt,'evidence beats the hint')
+assert(holds(30,{target,attack(EntityType.ENTITY_TEAR)}):find('r')==nil,'auto-fire holds')
 weapons={}
-print('PASS charge hold, aligned release, adaptive estimate')
+-- The hint says tears, but a long hold produces nothing: charging.
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+holds(50)
+assert(s.stalled and s.weapon=='charge','a silent hold switches to charge')
+-- Azazel: the laser length caps the standing distance.
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+weapons[WeaponType.WEAPON_BRIMSTONE]=true
+update(s,{target});update(s,{target,attack(EntityType.ENTITY_LASER,{MaxDistance=110})})
+assert(s.laserReach==110 and s.info.goalX,'laser reach recorded')
+assert(math.abs(s.info.goalX-400)+math.abs(s.info.goalY-180)<=110,'goal inside the laser')
+weapons={}
+print('PASS charge timing from MaxFireDelay, release check, beam wait, fire evidence, laser reach')
