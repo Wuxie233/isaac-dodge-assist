@@ -2,6 +2,10 @@
 #include <cassert>
 static float __attribute__((thiscall)) fakeValue(void* self,int action) {return *static_cast<float*>(self)+action;}
 static bool __attribute__((thiscall)) fakePressed(void*,int action) {return action==2;}
+static float mutableValue[8];
+static bool mutablePressed[8];
+static float __attribute__((thiscall)) changingValue(void*,int action) {return mutableValue[action];}
+static bool __attribute__((thiscall)) changingPressed(void*,int action) {return mutablePressed[action];}
 int main(){
     double safe[9]={};assert(rank(safe,0,0,0,0)==-1);
     double danger[9]={100,0,90,100,100,100,100,100,100};
@@ -24,6 +28,22 @@ int main(){
     keys[7]=1;d=decide(safe,0,1|(15<<2)|(1<<6),keys,-1);assert(d.move==-1 && d.fire==1); // AIM redirects a held shot.
     d=decide(safe,0,1|(15<<2)|(1<<6),idle,-1);assert(d.fire==-1); // AIM never fires on its own.
     d=decide(safe,0,2|(15<<2),idle,-1);assert(d.move==-1 && d.fire==-1); // AUTO without target.
+    // Raw values and pressed edges must be frozen together. A later query in
+    // the same short window must not observe changed physical input, even
+    // when the decision says passthrough.
+    originalValue=changingValue;originalPressed=changingPressed;
+    for(int i=0;i<8;++i){mutableValue[i]=i*0.125f;mutablePressed[i]=(i%2)==0;}
+    float rawBase=0;Poll snap;sampleRaw(&rawBase,snap.raw,snap.pressed);
+    for(int i=0;i<8;++i){mutableValue[i]=9.f;mutablePressed[i]=!mutablePressed[i];}
+    for(int i=0;i<8;++i){assert(snap.raw[i]==i*0.125f);assert(snap.pressed[i]==((i%2)==0));}
+    Poll answer;answer.decision=Decision{1,2};
+    assert(overridden(answer,0)==1 && overridden(answer,1)==0 && overridden(answer,2)==0 && overridden(answer,3)==0);
+    assert(overridden(answer,4)==0 && overridden(answer,5)==1 && overridden(answer,6)==0 && overridden(answer,7)==0);
+    lastPollValid=false;lastDevice=&rawBase;lastCounter=1000000;counterFrequency=1000000;
+    assert(!reusable(&rawBase,1000001,counterFrequency));
+    lastPollValid=true;assert(reusable(&rawBase,1002999,counterFrequency));
+    assert(!reusable(&rawBase,1003000,counterFrequency));
+    lastPollValid=false;
     Shared sample{};shared=&sample;originalValue=fakeValue;originalPressed=fakePressed;
     ValueFn volatile value=reinterpret_cast<ValueFn>(valueHook);
     BoolFn volatile pressed=reinterpret_cast<BoolFn>(pressedHook);
@@ -31,5 +51,5 @@ int main(){
     asm volatile("mov %%esp,%0":"=r"(before));
     for(int i=0;i<200000;++i){int a=i%32;assert(value(&base,a)==base+a);assert(pressed(&base,a)==(a==2));}
     asm volatile("mov %%esp,%0":"=r"(after));
-    assert(before==after);puts("PASS ranking, combat decisions, inactive passthrough, x87 float/bool return, 200000 thiscall/fastcall pairs, balanced stack");
+    assert(before==after);puts("PASS ranking, combat decisions, raw/pressed poll snapshot, 3ms reuse boundary, inactive passthrough, x87 float/bool return, 200000 thiscall/fastcall pairs, balanced stack");
 }

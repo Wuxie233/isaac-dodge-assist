@@ -30,8 +30,14 @@ internal static class NativeHost
     static long packets;
     static uint sequence;
     // IAD2 (sensor 0.12+) precedes the IAD1 packet whose sequence it names.
-    static long combatSeq=-1;
-    static uint combatWord,lastCombat;
+    static readonly CombatPairing pairing=new CombatPairing();
+    static uint lastCombat;
+    static void ResetStream()
+    {
+        pending="";
+        calibration.Reset();
+        pairing.Reset();
+    }
     static void Publish(bool active,double[] risk,int blocked,uint combat=0)
     {
         bool acquired=false;
@@ -46,34 +52,33 @@ internal static class NativeHost
     }
     static void ReadLog(string path)
     {
-        if(log==null){log=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);log.Seek(0,SeekOrigin.End);opened=clock.ElapsedMilliseconds;calibration.Reset();pending="";Publish(false,null,0);return;}
-        if(log.Length<log.Position || clock.ElapsedMilliseconds-Math.Max(opened,received)>1000){log.Dispose();log=null;Publish(false,null,0);return;}
-        if(log.Length-log.Position>65536){log.Seek(0,SeekOrigin.End);pending="";calibration.Reset();Publish(false,null,0);note="跳过积压，重新校准";return;}
+        if(log==null){log=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);log.Seek(0,SeekOrigin.End);opened=clock.ElapsedMilliseconds;ResetStream();Publish(false,null,0);return;}
+        if(log.Length<log.Position || clock.ElapsedMilliseconds-Math.Max(opened,received)>1000){if(log!=null)log.Dispose();log=null;ResetStream();Publish(false,null,0);return;}
+        if(log.Length-log.Position>65536){log.Seek(0,SeekOrigin.End);ResetStream();Publish(false,null,0);note="跳过积压，重新校准";return;}
         byte[] bytes=new byte[8192];int count;
         while((count=log.Read(bytes,0,bytes.Length))>0) {
             pending+=Encoding.UTF8.GetString(bytes,0,count);
             int newline;
             while((newline=pending.IndexOf('\n'))>=0){string line=pending.Substring(0,newline).Trim();pending=pending.Substring(newline+1);int start=line.IndexOf("IAD1|");if(start>=0)Parse(line.Substring(start));else{start=line.IndexOf("IAD2|");if(start>=0)ParseCombat(line.Substring(start));}}
-            if(pending.Length>16384)pending="";
+            if(pending.Length>16384){pending="";pairing.Reset();}
         }
     }
     static void ParseCombat(string line)
     {
-        string[] f=line.Split('|');long seq;uint word;
-        if(f.Length==3 && long.TryParse(f[1],out seq) && uint.TryParse(f[2],out word)){combatSeq=seq;combatWord=word;}
+        pairing.ReceiveLine(line);
     }
     static void Parse(string line)
     {
         string[] f=line.Split('|');long seq;double stamp;int blocked;
-        if(f.Length!=8 || !long.TryParse(f[1],out seq) || !double.TryParse(f[2],NumberStyles.Float,CultureInfo.InvariantCulture,out stamp) || double.IsNaN(stamp) || double.IsInfinity(stamp) || stamp<0 || !int.TryParse(f[7],out blocked))return;
-        string[] r=f[6].Split(',');if(r.Length!=9)return;double[] risk=new double[9];
-        for(int i=0;i<9;i++)if(!double.TryParse(r[i],NumberStyles.Float,CultureInfo.InvariantCulture,out risk[i]) || double.IsNaN(risk[i]) || double.IsInfinity(risk[i]))return;
+        if(f.Length!=8 || !long.TryParse(f[1],out seq) || !double.TryParse(f[2],NumberStyles.Float,CultureInfo.InvariantCulture,out stamp) || double.IsNaN(stamp) || double.IsInfinity(stamp) || stamp<0 || !int.TryParse(f[7],out blocked)){pairing.Reset();return;}
+        string[] r=f[6].Split(',');if(r.Length!=9){pairing.Reset();return;}double[] risk=new double[9];
+        for(int i=0;i<9;i++)if(!double.TryParse(r[i],NumberStyles.Float,CultureInfo.InvariantCulture,out risk[i]) || double.IsNaN(risk[i]) || double.IsInfinity(risk[i])){pairing.Reset();return;}
         long absolute=Stopwatch.GetTimestamp()*1000/Stopwatch.Frequency-(long)stamp;
         if(absolute>=0 && absolute<5000){sameClock++;delays[delayNext]=(int)absolute;delayNext=(delayNext+1)%delays.Length;if(delayCount<delays.Length)delayCount++;}
         else otherClock++;
-        if(!calibration.Accept(unchecked((uint)(long)stamp),seq,clock.ElapsedMilliseconds)){rejected++;Publish(false,null,0);note="校准时钟或等待实时数据";return;}
+        if(!calibration.Accept(unchecked((uint)(long)stamp),seq,clock.ElapsedMilliseconds)){rejected++;pairing.Reset();Publish(false,null,0);note="校准时钟或等待实时数据";return;}
         received=clock.ElapsedMilliseconds;packets++;
-        uint combat=combatSeq==seq?combatWord:0u;combatSeq=-1;lastCombat=combat;
+        uint combat=pairing.Take(seq);lastCombat=combat;
         Publish(enabled && f[3]=="1",risk,blocked,combat);note="传感器已连接，原生键盘输入入口";
     }
     static string DelaySummary()
@@ -92,8 +97,8 @@ internal static class NativeHost
                     if(view==null)return;
                     try{
                         ReadLog((string)path);
-                        if(clock.ElapsedMilliseconds-received>120)Publish(false,null,0);
-                    }catch(IOException){Publish(false,null,0);if(log!=null)log.Dispose();log=null;note="等待游戏日志";}
+                        if(clock.ElapsedMilliseconds-received>120){pairing.Reset();Publish(false,null,0);}
+                    }catch(IOException){pairing.Reset();Publish(false,null,0);if(log!=null)log.Dispose();log=null;note="等待游戏日志";}
                 }
                 Thread.Sleep(1);
             }
@@ -146,7 +151,7 @@ internal static class NativeHost
                 }
                 if(!loaded)Inject(game,dll);
                 Application.EnableVisualStyles();
-                var form=new Form{Text="以撒原生输入躲避 0.4.1",Width=560,Height=270};
+                var form=new Form{Text="以撒原生输入躲避 0.4.2",Width=560,Height=270};
                 var toggle=new CheckBox{Text="启用原生移动接管",Checked=true,Left=20,Top=20,Width=300};
                 var label=new Label{Left=20,Top=60,Width=510,Height=160};
                 toggle.CheckedChanged+=delegate{enabled=toggle.Checked;if(!enabled)lock(sync)Publish(false,null,0);};

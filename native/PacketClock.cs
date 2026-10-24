@@ -28,3 +28,33 @@ internal sealed class PacketClock
     }
 }
 
+// One IAD2 word may precede exactly one IAD1 packet with the same sequence.
+// Any stream discontinuity, malformed packet or rejected packet clears it so
+// a new sensor session cannot inherit a stale combat decision.
+internal sealed class CombatPairing
+{
+    long sequence = -1;
+    uint word;
+    internal void Reset() { sequence = -1; word = 0; }
+    internal void Receive(long seq, uint value) { sequence = seq; word = value; }
+    internal bool ReceiveLine(string line)
+    {
+        string[] f = line.Split('|');
+        long seq;
+        uint value;
+        if (f.Length == 3 && long.TryParse(f[1], out seq) && uint.TryParse(f[2], out value))
+        {
+            Receive(seq, value);
+            return true;
+        }
+        Reset();
+        return false;
+    }
+    internal uint Take(long seq)
+    {
+        uint result = sequence == seq ? word : 0;
+        Reset();
+        return result;
+    }
+}
+

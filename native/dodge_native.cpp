@@ -26,7 +26,16 @@ static SRWLOCK decisionLock=SRWLOCK_INIT;
 // move: candidate index or -1 (original input); fire: bitmask over the
 // shoot actions 4-7 or -1 (original input).
 struct Decision { int move, fire; };
-static Decision lastDecision{-1,-1};
+// One cached answer for every action query in the same short window. The raw
+// value and pressed arrays are sampled once too: a passthrough answer must
+// not read live input again while the game is still building one input frame.
+struct Poll {
+    Decision decision{-1,-1};
+    float raw[8]{};
+    bool pressed[8]{};
+};
+static Poll lastPoll;
+static bool lastPollValid;
 static int lastChoice=-1;
 static DWORD lastAt;
 static void* lastDevice;
@@ -70,12 +79,13 @@ static Decision decide(const double* risk, uint32_t blocked, uint32_t combat, co
     }
     return d;
 }
-// Every query of one input poll gets the same answer, including "not
-// overriding". A packet, Shift or focus change mid-poll must not split it:
-// the game sends what one query saw and may simulate what another saw, and
-// in Online a mismatch desyncs (seen once in AUTO with 0.4). A poll ends 3ms
-// after its first query on the performance counter.
-static Decision evaluate(void* device, DWORD now) {
+// The cached window is a safety boundary, not a claim about the engine's
+// real input-poll boundary: mid-poll packets, focus or Shift changes can
+// still split a poll longer than 3ms, and two distinct polls closer than 3ms
+// share this snapshot. It does make every value and pressed answer (including
+// passthrough) come from one raw sample, which the 0.4.1 decision-only cache
+// did not.
+static Decision evaluate(void* device, DWORD now, const float* raw) {
     const Decision none{-1,-1};
     DWORD pid=0; GetWindowThreadProcessId(GetForegroundWindow(), &pid);
     if (pid!=GetCurrentProcessId() || (GetAsyncKeyState(VK_LSHIFT)&0x8000)) return none;
@@ -86,41 +96,59 @@ static Decision evaluate(void* device, DWORD now) {
     memcpy(&sample, shared, 104);
     ReleaseMutex(mutexHandle);
     if(sample.magic!=0x32444149 || sample.version!=1 || sample.pid!=pid || !sample.active || now-sample.stamp>120) return none;
-    float raw[8]; for(int i=0;i<8;++i) raw[i]=originalValue(device,i);
     int previous=(lastDevice==device && now-lastAt<=120) ? lastChoice : -1;
     return decide(sample.risk,sample.blocked,sample.combat,raw,previous);
 }
-static Decision choose(void* device) {
-    if (!shared) return Decision{-1,-1};
+static void sampleRaw(void* device, float* raw, bool* pressed) {
+    for(int i=0;i<8;++i) {
+        raw[i]=originalValue(device,i);
+        pressed[i]=originalPressed(device,i);
+    }
+}
+static bool reusable(void* device, LONGLONG counter, LONGLONG frequency) {
+    return lastPollValid && lastDevice==device &&
+        (counter-lastCounter)*1000<frequency*3;
+}
+static Poll choose(void* device) {
+    Poll result{};
+    if (!shared) { sampleRaw(device,result.raw,result.pressed); return result; }
     AcquireSRWLockExclusive(&decisionLock);
     LARGE_INTEGER counter; QueryPerformanceCounter(&counter);
     if(!counterFrequency){LARGE_INTEGER f;QueryPerformanceFrequency(&f);counterFrequency=f.QuadPart;}
-    if(lastDevice==device && (counter.QuadPart-lastCounter)*1000<counterFrequency*3) {
-        Decision result=lastDecision; ReleaseSRWLockExclusive(&decisionLock); return result;
+    if(reusable(device,counter.QuadPart,counterFrequency)) {
+        result=lastPoll;
+    } else {
+        sampleRaw(device,result.raw,result.pressed);
+        DWORD now=GetTickCount();
+        result.decision=evaluate(device,now,result.raw);
+        lastPoll=result; lastPollValid=true;
+        lastChoice=result.decision.move; lastAt=now; lastDevice=device; lastCounter=counter.QuadPart;
+        InterlockedExchange(&shared->chosen,result.decision.move);
     }
-    DWORD now=GetTickCount();
-    lastDecision=evaluate(device,now);
-    lastChoice=lastDecision.move; lastAt=now; lastDevice=device; lastCounter=counter.QuadPart;
-    InterlockedExchange(&shared->chosen,lastDecision.move);
-    Decision result=lastDecision; ReleaseSRWLockExclusive(&decisionLock); return result;
+    ReleaseSRWLockExclusive(&decisionLock);
+    return result;
 }
-static int overridden(void* self, int action) {
-    Decision d=choose(self);
+static int overridden(const Poll& poll, int action) {
+    const Decision& d=poll.decision;
     if(action<4) return d.move<0 ? -1 : (masks[d.move]>>action)&1;
     return d.fire<0 ? -1 : (d.fire>>(action-4))&1;
 }
 static float __attribute__((fastcall)) valueHook(void* self, void*, int action) {
     if(action>=0 && action<8) {
         if(action<4) InterlockedIncrement(&shared->polls);
-        int value=overridden(self,action);
+        Poll poll=choose(self);
+        int value=overridden(poll,action);
         if(value>=0){InterlockedIncrement(action<4 ? &shared->overrides : &shared->shots);return value?1.f:0.f;}
+        return poll.raw[action];
     }
     return originalValue(self,action);
 }
 static bool __attribute__((fastcall)) pressedHook(void* self, void*, int action) {
     if(action>=0 && action<8) {
-        int value=overridden(self,action);
+        Poll poll=choose(self);
+        int value=overridden(poll,action);
         if(value>=0) return value!=0;
+        return poll.pressed[action];
     }
     return originalPressed(self,action);
 }
