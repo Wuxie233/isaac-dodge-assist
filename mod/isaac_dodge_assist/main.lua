@@ -67,6 +67,19 @@ local function bind(index)
     selected = index
     boundSeed = seed
 end
+-- Follow our player across roster changes instead of parking the sensor until
+-- F7: the bound seed identifies it wherever the roster moved it, and a lone
+-- player is unambiguous. Anything else still asks for F7.
+local function findBound(count)
+    if boundSeed then
+        for i = 0, count-1 do
+            local candidate = Isaac.GetPlayer(i)
+            if candidate and candidate.InitSeed == boundSeed then return i end
+        end
+    end
+    if count == 1 then return 0 end
+    return nil
+end
 local function gridSafeXY(room,p,x,y)
     if not terrain then terrain=Terrain.new(room,p,directions) end
     return Terrain.safe(terrain,x,y)
@@ -234,6 +247,25 @@ local function buildField(p,steps,bullets,contacts,bombs,areas,lasers)
     end
     return field
 end
+-- Grid hazard cells (spikes, red poop, TNT, bomb rocks) are listed once per
+-- room instead of walking all 625 cells every update, which cost 625 native
+-- calls for nothing in the common case. Cached cells are re-read each update,
+-- so a retracting spike or a spent TNT is never stale; only a hazard that
+-- appears mid-room waits for the next rescan.
+local GRID_RESCAN = 6
+local gridCells, gridRoom, gridScanAt = {}, nil, -GRID_RESCAN
+local function gridHazard(kind)
+    return kind == GridEntityType.GRID_SPIKES or kind == GridEntityType.GRID_SPIKES_ONOFF or
+        kind == GridEntityType.GRID_POOP or kind == GridEntityType.GRID_TNT or
+        kind == GridEntityType.GRID_ROCK_BOMB
+end
+local function rescanGrid(room, frame)
+    gridCells, gridRoom, gridScanAt = {}, room, frame
+    for index = 0, room:GetGridSize()-1 do
+        local grid = room:GetGridEntity(index)
+        if grid and gridHazard(grid:GetType()) then gridCells[#gridCells+1] = index end
+    end
+end
 mod:AddCallback(ModCallbacks.MC_POST_GAME_STARTED, reset)
 local function flushKinematics(reason)
     if kinematics.idleN+kinematics.driveN+kinematics.kN>0 then
@@ -246,13 +278,26 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     frame = frame + 1
     local count = game:GetNumPlayers()
     if count ~= previousCount then
-        bind(-1)
-        if count == 1 then bind(0) end -- Only unambiguous single-player is auto-bound.
+        -- A co-op partner joining or leaving, or a re-hosted online lobby,
+        -- changes the roster. Keep the current slot whenever it still exists:
+        -- the local player keeps its index, and going dark until F7 is
+        -- pressed (0.12.4 logs: 5277 inactive packets, twice for minutes) is
+        -- strictly worse than any slot shift, which F7 can still correct.
         previousCount = count
+        local keep = selected >= 0 and selected < count and selected or findBound(count)
+        if keep then bind(keep) else bind(-1) end
     end
-    if selected < 0 or selected >= count then state = "F7: SELECT YOUR PLAYER"; emit(false); return end
+    if selected < 0 or selected >= count then
+        local keep = findBound(count)
+        if not keep then state = "F7: SELECT YOUR PLAYER"; emit(false); return end
+        bind(keep)
+    end
     local p = Isaac.GetPlayer(selected)
-    if p.InitSeed ~= boundSeed then bind(-1); state = "F7: RESELECT PLAYER"; emit(false); return end
+    if p.InitSeed ~= boundSeed then
+        local keep = findBound(count)
+        if not keep then bind(-1); state = "F7: RESELECT PLAYER"; emit(false); return end
+        bind(keep); p = Isaac.GetPlayer(keep)
+    end
     if not enabled then state = "OFF"; emit(false); return end
     if unsupported(p) then state = "UNSUPPORTED CHARACTER"; emit(false); return end
     local reason
@@ -330,7 +375,14 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     Diagnostics.observe(frame,entities,p,playerOwned,#lasers)
     -- Grid damage exists even when the room has no enemy entities.
     local room = game:GetRoom()
-    for index=0,room:GetGridSize()-1 do
+    if gridRoom ~= room or #gridCells > 0 or frame - gridScanAt >= GRID_RESCAN then
+        -- A room that already has hazards is re-listed every update, so a
+        -- retracting spike or a spent TNT is always current. A clean room is
+        -- re-listed at least every GRID_RESCAN updates to catch a hazard that
+        -- appears mid-fight.
+        rescanGrid(room, frame)
+    end
+    for _, index in ipairs(gridCells) do
         local grid = room:GetGridEntity(index)
         if grid then
             local kind = grid:GetType()
@@ -431,7 +483,7 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
     end
     Overlay.render(game:GetRoom())
     if game:IsPaused() then emit(false) end
-    local label = "DODGE v0.12.4 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
+    local label = "DODGE v0.12.5 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
         "  " .. horizons[horizonIndex] .. "/" .. effectiveHorizon .. "ms" .. (Overlay.enabled() and "  VIEW" or "") ..
         (combat.mode > 0 and ("  " .. Combat.MODES[combat.mode]) or "")
     Isaac.RenderText(label, 48, 54, 1, 0.9, 0.35, 0.85)
@@ -440,4 +492,4 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
         Isaac.RenderText("DODGE P" .. (selected + 1), point.X - 25, point.Y - 55, 1, 0.9, 0.35, 0.8)
     end
 end)
-Isaac.DebugString("IAD: sensor 0.12.4 loaded")
+Isaac.DebugString("IAD: sensor 0.12.5 loaded")

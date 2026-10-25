@@ -24,9 +24,11 @@ function p:IsCoopGhost()return false end
 function p:AreControlsEnabled()return true end
 function p:ToPlayer()return self end
 local paused=false
-function Game()return {GetNumPlayers=function()return 1 end,GetRoom=function()return room end,IsPaused=function()return paused end}end
+-- Mutable roster: co-op joins/leaves and lobby restarts change it mid-run.
+local roster,rosterCount={p},1
+function Game()return {GetNumPlayers=function()return rosterCount end,GetRoom=function()return room end,IsPaused=function()return paused end}end
 Input={IsButtonPressed=function()return false end,IsButtonTriggered=function()return false end}
-Isaac={GetTime=function()return os.clock()*1000 end,GetPlayer=function()return p end,
+Isaac={GetTime=function()return os.clock()*1000 end,GetPlayer=function(i)return roster[(i or 0)+1] or p end,
  GetRoomEntities=function()return scene end,DebugString=function(s)logs[#logs+1]=s end,
  RenderText=function()end,WorldToScreen=function(v)return v end}
 dofile('mod/isaac_dodge_assist/main.lua')
@@ -147,7 +149,9 @@ end
 function room:GetGridCollision(i)return i==poopIndex and GridCollisionClass.COLLISION_SOLID or 0 end
 scene={};p.Position=Vector(470,500);p.Velocity=Vector(0,0)
 callbacks[ModCallbacks.MC_POST_GAME_STARTED]()
-for i=1,5 do tick()end
+-- The hazard list is refreshed at least every six updates, so a grid that
+-- appears mid-room is picked up within that window and never later.
+for i=1,12 do tick()end
 values=packet()
 assert(values[3]>0 and values[1]<=0 and values[2]<=0,'red poop contact not avoided')
 poopVariant=0;tick();values=packet()
@@ -207,3 +211,47 @@ tick();assert(combatPair()==nil,'combat word while paused by Shift')
 Input.IsButtonPressed=function()return false end
 f10();tick();assert(combatPair()==nil,'combat word after OFF')
 print('PASS F10 combat modes: IAD2 contract, AIM and AUTO words, Shift and OFF release')
+
+-- Roster changes: a co-op partner joining or leaving must keep the sensor on
+-- our player. 0.12.4 game logs parked it on "F7: SELECT YOUR PLAYER" for 5277
+-- packets (twice for over a minute) until F7 was pressed by hand.
+local partner={}
+for key,value in pairs(p)do partner[key]=value end
+partner.InitSeed=777;partner.Position=Vector(300,300);partner.ControllerIndex=1
+local function lastPacket()
+ local parts={}
+ for part in logs[#logs]:gmatch('[^|]+')do parts[#parts+1]=part end
+ return parts
+end
+local function expectBound(message)
+ local parts=lastPacket()
+ assert(parts[1]=='IAD1' and parts[4]=='1','sensor inactive after '..message..': '..logs[#logs])
+ return parts
+end
+local function press(key)
+ Input.IsButtonTriggered=function(pressed)return pressed==key end
+ callbacks[ModCallbacks.MC_POST_RENDER]()
+ Input.IsButtonTriggered=function()return false end
+end
+p.ControllerIndex=0
+roster,p.Count=({p,partner}),2
+tick()
+assert(expectBound('a co-op join')[5]=='0','co-op join moved the slot')
+rosterCount=1;tick();assert(expectBound('a co-op leave')[5]=='0','co-op leave moved the slot')
+rosterCount=2;tick();assert(expectBound('a co-op rejoin')[5]=='0','co-op rejoin moved the slot')
+press(Keyboard.KEY_F7);tick()
+local picked=expectBound('F7')[5]
+assert(picked=='1','F7 did not cycle to the second player: '..picked)
+partner.Position=Vector(560,500);partner.Velocity=Vector(0,0)
+local npc3=entity(EntityType.ENTITY_NPC,0)
+function npc3:ToNPC()return self end;function npc3:IsBoss()return false end;function npc3:IsActiveEnemy()return true end
+npc3.Position=Vector(600,500);npc3.Velocity=Vector(0,0);npc3.Size=10
+scene={npc3};tick();assert(math.min(table.unpack(packet()))>0,'bound co-op player was not planned for')
+scene={};tick()
+roster={p,partner};rosterCount=1;tick();assert(expectBound('a lobby restart')[5]=='0','lobby restart did not fall back to single player')
+local newcomer={}
+for key,value in pairs(p)do newcomer[key]=value end
+newcomer.InitSeed=4242;newcomer.Position=Vector(120,120)
+roster,p.Count=({newcomer}),1
+tick();assert(expectBound('a new seeded player')[5]=='0','a recycled slot stopped the sensor')
+print('PASS co-op roster changes keep the bound player and fall back safely')

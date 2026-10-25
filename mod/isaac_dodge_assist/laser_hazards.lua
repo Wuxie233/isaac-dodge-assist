@@ -152,6 +152,82 @@ end
 -- Geometry is shared by all candidate paths using this immutable snapshot.
 -- Each snapshot owns its cache, so the next sensing update cannot reuse stale
 -- positions, angles or widths from a previous entity update.
+-- Clearance at or above this value costs the same in the planner: the
+-- tie-break cost saturates at 24. Every broad-phase reject below therefore
+-- returns a lower bound >= CLEAR, which cannot change any decision.
+local CLEAR = 24
+local pi, atan, sin = math.pi, math.atan, math.sin
+
+-- Angular extent of the beam polyline around its origin, unwrapped so that a
+-- straight or gently curved beam yields a narrow cone.
+local function baseCone(shape)
+    if shape.baseCone then return shape.baseCone end
+    local lo, hi, previous, far
+    local points = shape.points
+    for i = 1, #points do
+        local point = points[i]
+        local radius = point.X*point.X + point.Y*point.Y
+        if radius > 1e-12 then
+            radius = sqrt(radius)
+            if not far or radius > far then far = radius end
+            local a = atan(point.Y, point.X)
+            if previous then
+                while a - previous > pi do a = a - 2*pi end
+                while previous - a > pi do a = a + 2*pi end
+            end
+            previous = a
+            if not lo or a < lo then lo = a end
+            if not hi or a > hi then hi = a end
+        end
+    end
+    lo, hi = lo or 0, hi or 0
+    -- The declared reach must cover the polyline for the radial bound to hold,
+    -- so keep the measured maximum extent alongside it. The angular bound also
+    -- needs the polyline to start at the snapshot origin; every shape the mod
+    -- builds does, but never assume it for a foreign one.
+    local anchor = points[1]
+    shape.baseCone = {center = (lo+hi)*0.5, half = (hi-lo)*0.5, far = far or 0,
+        anchored = anchor ~= nil and anchor.X*anchor.X + anchor.Y*anchor.Y <= 1e-12}
+    return shape.baseCone
+end
+
+local function wrapped(a)
+    while a > pi do a = a - 2*pi end
+    while a < -pi do a = a + 2*pi end
+    return a
+end
+
+-- Lower bound on the distance from a straight query segment to the beam, or
+-- nil to fall through to the exact geometry. The beam lives inside the disc
+-- of radius reach and inside the cone swept by its polyline, so the bound can
+-- only overstate the safety of a query that is already at least CLEAR away.
+local function broadGap(shape, ax, ay, bx, by, firstTime, lastTime, radius)
+    local cone = baseCone(shape)
+    local inner = sqrt(pointSegmentSquared(0,0,ax,ay,bx,by))
+    local radial = inner - math.max(shape.reach, cone.far) - radius
+    if radial >= CLEAR then return radial end
+    if not cone.anchored then return nil end
+    if inner <= radius or ax*bx + ay*by <= 0 then return nil end
+    local speed = shape.angularSpeed or 0
+    local a0 = speed*math.max(0,firstTime-shape.delay)
+    local a1 = speed*math.max(0,lastTime-shape.delay)
+    local half = cone.half + math.abs(a1-a0)*0.5
+    if half >= pi*0.5 then return nil end
+    local center = cone.center + (a0+a1)*0.5
+    -- The angular distance of a straight segment to a cone peaks at one of its
+    -- endpoints only when the cone axis is outside the segment's angular
+    -- interval; a segment crossing the axis can touch the beam at its middle.
+    local cx, cy = math.cos(center), math.sin(center)
+    local ab, ac, cb = ax*by-ay*bx, ax*cy-ay*cx, cx*by-cy*bx
+    if (ab > 0 and ac > 0 and cb > 0) or (ab < 0 and ac < 0 and cb < 0) then return nil end
+    local gap = math.min(math.abs(wrapped(atan(ay,ax)-center)),
+        math.abs(wrapped(atan(by,bx)-center))) - half
+    if gap <= 0 then return nil end
+    local side = inner*sin(math.min(gap, pi*0.5)) - radius
+    if side >= CLEAR then return side end
+    return nil
+end
+
 local function sweepSlices(shape, step)
     if shape.angularSpeed==0 then
         if not shape.staticSweep then
@@ -168,10 +244,11 @@ local function sweepSlices(shape, step)
         return shape.angularSpeed*math.max(0,t-shape.delay)
     end
     local startAngle,endAngle = angle(firstTime),angle(lastTime)
-    -- Bound each angular interval's endpoint displacement to about 3 units.
-    -- The cap controls cost; the displacement bound remains even at the cap.
+    -- Widen each angular interval to about 10 units of endpoint travel. The
+    -- margin is the exact half-arc, so a wider slice stays conservative: it
+    -- can only report a smaller clearance, never a larger one.
     local arc = shape.reach*math.rad(math.abs(endAngle-startAngle))
-    local subdivisions = math.max(1,math.min(16,math.ceil(arc/6)))
+    local subdivisions = math.max(1,math.min(8,math.ceil(arc/10)))
     local slices = {}
     for j=1,subdivisions do
         local u,v = (j-1)/subdivisions,j/subdivisions
@@ -193,6 +270,8 @@ function M.clearanceXY(shape,ox,oy,px,py,step,playerRadius)
     if step==0 then
         local x,y=px-shape.origin.X,py-shape.origin.Y
         if shape.ring then return abs(sqrt(x*x+y*y)-shape.radius)-radius end
+        local far=broadGap(shape,x,y,x,y,0,0,radius)
+        if far then return far end
         shape.baseSegments=shape.baseSegments or segments(shape.points,0)
         return sqrt(nearestSquared(shape.baseSegments,x,y,x,y))-radius
     end
@@ -206,6 +285,8 @@ function M.clearanceXY(shape,ox,oy,px,py,step,playerRadius)
         local far=sqrt(max(ax*ax+ay*ay,bx*bx+by*by))
         return max(near-shape.radius,shape.radius-far,0)-radius
     end
+    local far=broadGap(shape,ax,ay,bx,by,firstTime,lastTime,radius)
+    if far then return far end
     local clearance = math.huge
     for _,slice in ipairs(sweepSlices(shape,step)) do
         local dx,dy=bx-ax,by-ay

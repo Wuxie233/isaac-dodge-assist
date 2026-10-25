@@ -46,7 +46,14 @@ dofile(modRoot..'main.lua')
 local function tick()callbacks[ModCallbacks.MC_POST_UPDATE]()end
 callbacks[ModCallbacks.MC_POST_GAME_STARTED]()
 for i=1,6 do tick()end
-assert(logs[#logs]:find('|1|0|250|0,0,0,0,0,0,0,0,0|0',1,true),'empty room must release input')
+local function packetFields(line)
+ local parts={}
+ for part in line:gmatch('[^|]+')do parts[#parts+1]=part end
+ return parts
+end
+local first=packetFields(logs[#logs])
+assert(first[1]=='IAD1' and first[4]=='1' and first[5]=='0' and first[7]=='0,0,0,0,0,0,0,0,0' and first[8]=='0',
+ 'empty room must release input: '..logs[#logs])
 local function entity(typ,variant)
  local e={Type=typ,Variant=variant,SubType=0,InitSeed=typ*100+variant,SpawnerType=-1,
  Position=Vector(480,480),Velocity=Vector(0,0),Size=30,Scale=1,SpriteScale=Vector(1,1),SizeMulti=Vector(1,1),
@@ -69,8 +76,8 @@ local function run(name,n)
  for i=1,n do tick()end
  local elapsed=(os.clock()-start)*1000/n
  local total=0;for _,v in pairs(counts)do total=total+v end
- print(string.format('BENCH %s ms=%.3f roomCalls=%d vectors=%d',name,elapsed,total/n,allocated/n))
- for _,k in ipairs({'IsPositionInRoom','GetGridIndex','GetGridCollision','GetGridEntity'})do print(k..'='..((counts[k] or 0)/n))end
+ print(string.format('BENCH %s ms=%.3f roomCalls=%.1f vectors=%.1f',name,elapsed,total/n,allocated/n))
+ for _,k in ipairs({'IsPositionInRoom','GetGridIndex','GetGridCollision','GetGridEntity'})do print(string.format('%s=%.1f',k,(counts[k] or 0)/n))end
  if os.getenv('PERF_ASSERT') then
   assert(total/n<1500,'excess native room calls')
   assert((counts.IsPositionInRoom or 0)/n<500,'excess repeated room-boundary calls')

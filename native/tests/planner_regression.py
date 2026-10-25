@@ -28,3 +28,8 @@ if __name__ == '__main__':
     if len(sys.argv) == 1:
         for name in ('laser_regression.lua', 'diagnostics_regression.lua', 'combat_regression.lua'):
             run((root/'native/tests'/name).read_text())
+        # Performance guardrails: real main.lua callbacks against a simulated
+        # 625-cell room. Budgets must fail loudly instead of drifting.
+        os.environ['PERF_ASSERT'] = '1'
+        run((root/'native/tests'/'performance_regression.lua').read_text())
+        os.environ.pop('PERF_ASSERT', None)
