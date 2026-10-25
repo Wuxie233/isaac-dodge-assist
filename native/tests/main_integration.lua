@@ -2,7 +2,7 @@
 local function enum()
  return setmetatable({}, {__index=function(t,k)local n=(rawget(t,'_next') or 0)+1;t._next=n;rawset(t,k,n);return n end})
 end
-for _,name in ipairs({'EntityType','EffectVariant','EntityCollisionClass','GridCollisionClass','GridEntityType','EntityFlag','PlayerType','ModCallbacks','Keyboard','BombVariant','ProjectileFlags'})do _G[name]=enum()end
+for _,name in ipairs({'EntityType','EffectVariant','EntityCollisionClass','GridCollisionClass','GridEntityType','EntityFlag','PlayerType','ModCallbacks','Keyboard','BombVariant','ProjectileFlags','ButtonAction'})do _G[name]=enum()end
 GridCollisionClass.COLLISION_NONE=0
 local callbacks,logs,scene={}, {}, {}
 function RegisterMod()return {AddCallback=function(_,kind,fn)callbacks[kind]=fn end}end
@@ -24,15 +24,31 @@ function p:IsCoopGhost()return false end
 function p:AreControlsEnabled()return true end
 function p:ToPlayer()return self end
 local paused=false
+-- Local device streams. Only controller 0 (our keyboard) reports a value, and
+-- the applied movement follows it one update later; a co-op partner on
+-- controller 1 has no local device at all.
+local currentAt=0
+local deviceDir, appliedDir = {}, {}
+local function dirAt(table_,frame) return table_[frame] or {X=0,Y=0} end
+function p.GetMovementInput() return dirAt(appliedDir,currentAt) end
+Input={IsButtonPressed=function()return false end,IsButtonTriggered=function()return false end}
+function Input.GetActionValue(action,controller)
+ if controller~=0 then return 0 end
+ local value=dirAt(deviceDir,currentAt)
+ if action==ButtonAction.ACTION_LEFT then return math.max(0,-value.X) end
+ if action==ButtonAction.ACTION_RIGHT then return math.max(0,value.X) end
+ if action==ButtonAction.ACTION_UP then return math.max(0,-value.Y) end
+ if action==ButtonAction.ACTION_DOWN then return math.max(0,value.Y) end
+ return 0
+end
 -- Mutable roster: co-op joins/leaves and lobby restarts change it mid-run.
 local roster,rosterCount={p},1
 function Game()return {GetNumPlayers=function()return rosterCount end,GetRoom=function()return room end,IsPaused=function()return paused end}end
-Input={IsButtonPressed=function()return false end,IsButtonTriggered=function()return false end}
 Isaac={GetTime=function()return os.clock()*1000 end,GetPlayer=function(i)return roster[(i or 0)+1] or p end,
  GetRoomEntities=function()return scene end,DebugString=function(s)logs[#logs+1]=s end,
  RenderText=function()end,WorldToScreen=function(v)return v end}
 dofile('mod/isaac_dodge_assist/main.lua')
-local function tick()callbacks[ModCallbacks.MC_POST_UPDATE]()end
+local function tick() currentAt=currentAt+1; callbacks[ModCallbacks.MC_POST_UPDATE]() end
 callbacks[ModCallbacks.MC_POST_GAME_STARTED]()
 for i=1,6 do tick()end
 assert(logs[#logs]:find('|1|0|450|0,0,0,0,0,0,0,0,0|0',1,true),'empty room must release input')
@@ -234,7 +250,7 @@ local function press(key)
  Input.IsButtonTriggered=function()return false end
 end
 p.ControllerIndex=0
-roster,p.Count=({p,partner}),2
+roster,rosterCount=({p,partner}),2
 tick()
 assert(expectBound('a co-op join')[5]=='0','co-op join moved the slot')
 rosterCount=1;tick();assert(expectBound('a co-op leave')[5]=='0','co-op leave moved the slot')
@@ -252,6 +268,39 @@ roster={p,partner};rosterCount=1;tick();assert(expectBound('a lobby restart')[5]
 local newcomer={}
 for key,value in pairs(p)do newcomer[key]=value end
 newcomer.InitSeed=4242;newcomer.Position=Vector(120,120)
-roster,p.Count=({newcomer}),1
+roster,rosterCount=({newcomer}),1
 tick();assert(expectBound('a new seeded player')[5]=='0','a recycled slot stopped the sensor')
 print('PASS co-op roster changes keep the bound player and fall back safely')
+
+-- Starting an Online lobby with two players must bind by itself: the partner's
+-- controller has no local device behind it, ours does, so the applied movement
+-- follows the polled value only for our slot. F7 is never pressed here.
+roster,rosterCount=({p,partner}),2
+callbacks[ModCallbacks.MC_POST_GAME_STARTED]()
+assert(lastPacket()[5]=='-1','game start kept a stale slot')
+for frame=currentAt+1,currentAt+60 do
+ local moving=math.floor((frame-currentAt-1)/5)%2==0
+ deviceDir[frame]=moving and {X=1,Y=0} or {X=0,Y=0}
+ appliedDir[frame]=deviceDir[frame-1] or {X=0,Y=0}
+end
+scene={}
+local boundAt
+for frame=1,60 do
+ tick()
+ if lastPacket()[4]=='1' then boundAt=boundAt or frame end
+end
+local bound=expectBound('device evidence')
+assert(bound[5]=='0','device evidence bound slot '..bound[5]..': '..logs[#logs])
+-- Six matched changes at the slowest walk cadence: about one second.
+assert(boundAt and boundAt<=45,'binding took '..tostring(boundAt)..' updates')
+local announced=false
+for _,line in ipairs(logs)do
+ if line:find('IAD BIND: auto slot=0',1,true)then announced=true end
+end
+assert(announced,'auto binding was not logged')
+-- A partner moving on the network alone (no local device) must not steal it.
+deviceDir,appliedDir={},{}
+for frame=currentAt+1,currentAt+40 do appliedDir[frame]={X=0,Y=1} end
+for frame=1,40 do tick() end
+assert(expectBound('remote-only movement')[5]=='0','remote movement rebound the sensor')
+print('PASS co-op lobby binds by device evidence without F7')

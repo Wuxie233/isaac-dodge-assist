@@ -12,10 +12,14 @@ local Overlay = include("overlay")
 local PlayerMotion = include("player_motion")
 local InputQueue = include("input_queue")
 local Combat = include("combat")
+local PlayerBinding = include("player_binding")
 local terrain
 local kinematics = PlayerMotion.new()
 local inputs = InputQueue.new()
 local combat, combatWord = Combat.new(), 0
+-- Slot evidence for "which player does this keyboard drive" (see player_binding).
+local binding = PlayerBinding.new()
+local manualUntil = -1
 -- Engine contact is the circle sum; this margin covers sensing error only.
 local CONTACT_MARGIN = 3
 local RED_POOP = 1 -- grid poop variant
@@ -47,6 +51,8 @@ local function emit(active, scores, blocked)
 end
 local function reset()
     Diagnostics.reset("game-start")
+    PlayerBinding.reset(binding)
+    manualUntil = -1 -- a new run must not inherit an old F7 override
     selected, boundSeed, previousCount = -1, nil, -1
     motion = {}
     frame, state = 0, "WAITING"
@@ -79,6 +85,15 @@ local function findBound(count)
     end
     if count == 1 then return 0 end
     return nil
+end
+-- Bind from device evidence: the slot whose applied movement follows the
+-- polled value for its controller id is the one we actually control.
+local function autoBind()
+    local index, events, runnerUp = PlayerBinding.best(binding)
+    if not index then return nil end
+    Isaac.DebugString("IAD BIND: auto slot=" .. index .. " matched=" .. events ..
+        " next=" .. runnerUp .. " all=" .. PlayerBinding.summary(binding))
+    return index
 end
 local function gridSafeXY(room,p,x,y)
     if not terrain then terrain=Terrain.new(room,p,directions) end
@@ -284,11 +299,18 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
         -- pressed (0.12.4 logs: 5277 inactive packets, twice for minutes) is
         -- strictly worse than any slot shift, which F7 can still correct.
         previousCount = count
+        PlayerBinding.reset(binding)
         local keep = selected >= 0 and selected < count and selected or findBound(count)
         if keep then bind(keep) else bind(-1) end
     end
+    for index = 0, count-1 do
+        local candidate = Isaac.GetPlayer(index)
+        if candidate and not candidate:IsCoopGhost() then
+            PlayerBinding.observe(binding, index, InputQueue.polled(candidate), PlayerMotion.input(candidate))
+        end
+    end
     if selected < 0 or selected >= count then
-        local keep = findBound(count)
+        local keep = findBound(count) or (frame > manualUntil and autoBind() or nil)
         if not keep then state = "F7: SELECT YOUR PLAYER"; emit(false); return end
         bind(keep)
     end
@@ -297,6 +319,12 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
         local keep = findBound(count)
         if not keep then bind(-1); state = "F7: RESELECT PLAYER"; emit(false); return end
         bind(keep); p = Isaac.GetPlayer(keep)
+    end
+    if frame > manualUntil and PlayerBinding.events(binding, selected) == 0 then
+        -- Our slot shows no device match at all while another one does: the
+        -- binding is stale (a mis-press of F7, or a slot that changed owner).
+        local auto = autoBind()
+        if auto and auto ~= selected then bind(auto) end
     end
     if not enabled then state = "OFF"; emit(false); return end
     if unsupported(p) then state = "UNSUPPORTED CHARACTER"; emit(false); return end
@@ -474,6 +502,7 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
     if Input.IsButtonTriggered(Keyboard.KEY_F7, 0) then
         local count = game:GetNumPlayers()
         if count > 0 then bind((selected + 1) % count) end
+        manualUntil = frame + 900 -- F7 wins over the device guess for a while
         emit(false)
     end
     if Input.IsButtonTriggered(Keyboard.KEY_F8, 0) then horizonIndex = horizonIndex % #horizons + 1 end
@@ -483,7 +512,7 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
     end
     Overlay.render(game:GetRoom())
     if game:IsPaused() then emit(false) end
-    local label = "DODGE v0.12.5 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
+    local label = "DODGE v0.12.6 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
         "  " .. horizons[horizonIndex] .. "/" .. effectiveHorizon .. "ms" .. (Overlay.enabled() and "  VIEW" or "") ..
         (combat.mode > 0 and ("  " .. Combat.MODES[combat.mode]) or "")
     Isaac.RenderText(label, 48, 54, 1, 0.9, 0.35, 0.85)
@@ -492,4 +521,4 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
         Isaac.RenderText("DODGE P" .. (selected + 1), point.X - 25, point.Y - 55, 1, 0.9, 0.35, 0.8)
     end
 end)
-Isaac.DebugString("IAD: sensor 0.12.5 loaded")
+Isaac.DebugString("IAD: sensor 0.12.6 loaded")
