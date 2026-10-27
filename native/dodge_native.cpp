@@ -52,7 +52,8 @@ static int rank(const double* risk, uint32_t blocked, int manual, int x, int y, 
             if(value<score){score=value;best=i;}
         }
     }
-    if(best==manual || risk[best]>=risk[manual]) return -1;
+    if(best==manual) return -1; // No safer direction: keep the real key.
+    if(risk[manual]<=0) return -1; // Safe manual movement always wins.
     // Retain the last escape only within the same damage score. The 65536
     // tolerance is 64 endpoint-cost units; never retain a worse damage tier.
     if(previous>=0 && previous<9 && !(blocked&(1u<<previous)) &&
@@ -63,16 +64,29 @@ static int rank(const double* risk, uint32_t blocked, int manual, int x, int y, 
 }
 
 // Hands off the movement keys in AUTO: walk where Lua chose (dodge already
-// included). Any shoot key in AIM/AUTO: fire toward the target instead.
+// included). Keyboard directions are binary, so only an actual key-down level
+// (>=0.5) is a manual override; analog noise must not masquerade as a key.
+// Any shoot key in AIM/AUTO: fire toward the target instead.
 // No shoot key in AUTO: fire as Lua holds/releases.
 static Decision decide(const double* risk, uint32_t blocked, uint32_t combat, const float* raw, int previous) {
-    int x=(raw[1]>0.1f)-(raw[0]>0.1f), y=(raw[3]>0.1f)-(raw[2]>0.1f), manual=0;
-    for(int i=0;i<9;++i) if(dx[i]==x && dy[i]==y) manual=i;
+    int x=(raw[1]>0.5f)-(raw[0]>0.5f), y=(raw[3]>0.5f)-(raw[2]>0.5f), manual=0;
+    for(int i=1;i<9;++i) if(dx[i]==x && dy[i]==y) manual=i;
+    // Candidate 0 is idle; it is not a separate "no manual input" flag.
+    const bool hasManual=(x!=0 || y!=0);
+    // Opposite keys cancel. Do not let a zero net vector masquerade as a
+    // deliberate idle override and freeze AUTO in place.
     int mode=combat&3, move=(combat>>2)&15, shoot=(combat>>6)&7;
     bool hold=(combat>>9)&1;
     Decision d{rank(risk,blocked,manual,x,y,previous),-1};
-    if(mode==2 && manual==0 && move<9) d.move=move;
-    bool firing=raw[4]>0.1f || raw[5]>0.1f || raw[6]>0.1f || raw[7]>0.1f;
+    if(mode==2 && move<9) {
+        // A real direction key always wins over AUTO, including the case where
+        // rank() selected the same direction with an equal (zero) score.
+        // Idle input is different: only then may AUTO walk on its own.
+        if(!hasManual) d.move=move;
+        else if(d.move>=0 && risk[manual]>0) d.move=d.move;
+        else d.move=-1;
+    }
+    bool firing=raw[4]>0.5f || raw[5]>0.5f || raw[6]>0.5f || raw[7]>0.5f;
     if(mode>=1 && mode<=2 && shoot>=1 && shoot<=4) {
         if(firing) d.fire=1<<(shoot-1);
         else if(mode==2) d.fire=hold ? 1<<(shoot-1) : 0;

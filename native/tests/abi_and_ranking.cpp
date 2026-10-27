@@ -23,6 +23,13 @@ int main(){
     d=decide(safe,0,2|(3<<2)|(2<<6)|512,idle,-1);assert(d.move==3 && d.fire==2); // AUTO walks up, holds right.
     d=decide(safe,0,2|(3<<2)|(2<<6),idle,-1);assert(d.fire==0); // AUTO release frame.
     d=decide(safe,0,2|(3<<2)|(2<<6)|512,keys,-1);assert(d.move==-1); // Manual movement wins (safe).
+    float analog[8]={};analog[0]=0.2f;
+    d=decide(safe,0,2|(3<<2)|(2<<6)|512,analog,-1);assert(d.move==3); // Analog noise is not a manual key.
+    float bothKeys[8]={};bothKeys[0]=bothKeys[1]=1;
+    d=decide(safe,0,2|(3<<2)|(2<<6)|512,bothKeys,-1);assert(d.move==3); // Opposite keys cancel, AUTO continues.
+    float leftOnly[8]={};leftOnly[0]=1;
+    d=decide(safe,0,2|(3<<2)|(2<<6)|512,leftOnly,-1);assert(d.move==-1); // Manual left suppresses AUTO.
+    d=decide(safe,0,0,leftOnly,-1);assert(d.move==-1); // Manual left is preserved without combat.
     double threat[9]={100,0,90,100,100,100,100,100,100};
     d=decide(threat,0,2|(3<<2)|(4<<6)|512,keys,-1);assert(d.move==1); // ...still dodged.
     keys[7]=1;d=decide(safe,0,1|(15<<2)|(1<<6),keys,-1);assert(d.move==-1 && d.fire==1); // AIM redirects a held shot.
@@ -39,6 +46,17 @@ int main(){
     Poll answer;answer.decision=Decision{1,2};
     assert(overridden(answer,0)==1 && overridden(answer,1)==0 && overridden(answer,2)==0 && overridden(answer,3)==0);
     assert(overridden(answer,4)==0 && overridden(answer,5)==1 && overridden(answer,6)==0 && overridden(answer,7)==0);
+    for(int move=0;move<9;++move){
+        Poll direction{};direction.decision=Decision{move,-1};
+        for(int action=0;action<4;++action){
+            int expected=(masks[move]>>action)&1;
+            assert(overridden(direction,action)==expected);
+        }
+        for(int a=0;a<4;++a)for(int b=a+1;b<4;++b){
+            bool opposite=(a==0&&b==1)||(a==2&&b==3);
+            if(opposite)assert(!(overridden(direction,a)&&overridden(direction,b)));
+        }
+    }
     lastPollValid=false;lastDevice=&rawBase;lastCounter=1000000;counterFrequency=1000000;
     assert(!reusable(&rawBase,1000001,counterFrequency));
     lastPollValid=true;assert(reusable(&rawBase,1002999,counterFrequency));
