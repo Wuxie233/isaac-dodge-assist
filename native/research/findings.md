@@ -12,4 +12,4 @@
 
 据此选择只替换键盘设备的两个虚表槽，让替代值在本机输入打包前产生。此处具有进入原有同步链路的静态依据；实际 Online 是否一致仍待运行验证。
 
-原始反汇编保存在 /flyshop/dev/tmp/isaac-native-input/input-snapshot.asm、/flyshop/dev/tmp/isaac-native-input/keyboard-action.asm、/flyshop/dev/tmp/isaac-native-input/net-device.asm。公开 REPENTOGON 的完整函数签名未匹配此版本，故没有直接套用其偏移。
+原始反汇编保存在 <work>/isaac-native-input/input-snapshot.asm、<work>/isaac-native-input/keyboard-action.asm、<work>/isaac-native-input/net-device.asm。公开 REPENTOGON 的完整函数签名未匹配此版本，故没有直接套用其偏移。
