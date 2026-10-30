@@ -25,7 +25,8 @@ local function log(text) if Isaac and Isaac.DebugString then Isaac.DebugString(t
 function M.new()
     return {mode=0, targetSeed=nil, goalX=nil, goalY=nil, lastMove=1, tick=0,
         held=0, streak=0, quiet=0, bias=0, releaseLeft=0, releasedAt=nil, checkAt=nil,
-        seen={}, scanTick=-10, knives={}, autoFireAt=nil, stalled=false,
+        seen={}, scanTick=-10, knives={}, autoFireAt=nil, provenAuto=false, stalled=false,
+        targetSince=0, goalSide=nil, aimLogs=0, stats=nil,
         hint="tears", hintTick=-100, weapon="tears", laserReach=nil, info=nil}
 end
 -- Drop pending fire decisions and attack history when play is interrupted
@@ -37,7 +38,11 @@ local function clearAction(state)
     state.releaseLeft, state.releasedAt, state.checkAt, state.checkHeld = 0, nil, nil, nil
     state.beamWait, state.beamSeen = nil, nil
     state.seen, state.knives, state.scanTick = {}, {}, -10
-    state.autoFireAt, state.holdAttacks, state.stalled = nil, 0, false
+    -- Proven auto-fire belongs to the build, not the room: 0.12.6 dropped it
+    -- on every room change and re-learned it 83 times in one session,
+    -- releasing and re-charging each time. Only a weapon change clears it.
+    state.holdAttacks, state.stalled = 0, false
+    state.goalSide = nil
     state.hintTick = -100
 end
 function M.cycle(state)
@@ -67,12 +72,15 @@ local function has(player, method, enum, names)
     end
     return false
 end
+-- Items that turn held tears into a charge. Neptunus is not one: held fire
+-- shoots normally and it only charges while you are not firing.
+local CHARGE_ITEMS = {"COLLECTIBLE_CHOCOLATE_MILK", "COLLECTIBLE_CURSED_EYE"}
 -- "charge": hold to charge, release to fire. "tap": a held button never
 -- attacks (Spirit Sword charges its spin). Everything else fires while held.
 local function weaponKind(player)
     if has(player, "HasWeaponType", WeaponType, {"WEAPON_SPIRIT_SWORD"}) then return "tap" end
     if has(player, "HasWeaponType", WeaponType, {"WEAPON_BRIMSTONE", "WEAPON_KNIFE", "WEAPON_MONSTROS_LUNGS", "WEAPON_TECH_X"}) or
-        has(player, "HasCollectible", CollectibleType, {"COLLECTIBLE_CHOCOLATE_MILK", "COLLECTIBLE_CURSED_EYE", "COLLECTIBLE_NEPTUNUS"}) then
+        has(player, "HasCollectible", CollectibleType, CHARGE_ITEMS) then
         return "charge"
     end
     return "tears"
@@ -147,6 +155,7 @@ local function scanAttacks(state, entities, player)
     end
     local continuous = state.scanTick == state.tick - 1
     local seen, alive, fresh, beam, reach, lasers = state.seen, {}, 0, false, nil, 0
+    local newTear
     local counted = {}
     for _, e in ipairs(entities) do
         if ATTACKS[e.Type] and ownedBy(e, player) then
@@ -161,6 +170,7 @@ local function scanAttacks(state, entities, player)
                     counted[key] = true
                     fresh = fresh + 1
                     if e.Type == T.ENTITY_LASER then lasers = lasers + 1 end
+                    if e.Type == T.ENTITY_TEAR and not newTear then newTear = e end
                 end
                 alive[key] = true
                 if e.Type == T.ENTITY_LASER and not e:IsDead() then
@@ -173,13 +183,16 @@ local function scanAttacks(state, entities, player)
         end
     end
     state.seen, state.knives, state.scanTick = alive, alive, state.tick
-    return fresh, beam, reach, lasers
+    return fresh, beam, reach, lasers, newTear
 end
 local function hintSummary(player)
     local names = {}
     for _, name in ipairs({"WEAPON_TEARS", "WEAPON_BRIMSTONE", "WEAPON_LASER", "WEAPON_KNIFE", "WEAPON_BOMBS",
         "WEAPON_ROCKETS", "WEAPON_MONSTROS_LUNGS", "WEAPON_LUDOVICO_TECHNIQUE", "WEAPON_TECH_X", "WEAPON_SPIRIT_SWORD"}) do
         if has(player, "HasWeaponType", WeaponType, {name}) then names[#names+1] = name:sub(8) end
+    end
+    for _, name in ipairs(CHARGE_ITEMS) do
+        if has(player, "HasCollectible", CollectibleType, {name}) then names[#names+1] = name:sub(13) end
     end
     return table.concat(names, ",")
 end
@@ -189,15 +202,23 @@ end
 -- unbroken hold proves auto-fire, a long hold with nothing proves charging.
 local function fireControl(state, ctx, p, aligned)
     local delay = ctx.queueDelay or 0
-    local fresh, beam, reach, lasers = scanAttacks(state, ctx.entities, p)
+    local fresh, beam, reach, lasers, newTear = scanAttacks(state, ctx.entities, p)
     if reach then state.laserReach = reach end
+    if state.stats then state.stats.tears = state.stats.tears + fresh end
+    -- Calibration for a later aim fix: does a tear inherit player motion?
+    if newTear and state.aimLogs < 30 then
+        state.aimLogs = state.aimLogs + 1
+        local v, pv = newTear.Velocity or Vector(0, 0), p.Velocity or Vector(0, 0)
+        log(string.format("IAD AIM: tear=%.2f,%.2f player=%.2f,%.2f shot=%d speed=%.2f",
+            v.X, v.Y, pv.X, pv.Y, state.lastShoot or 0, p.ShotSpeed or -1))
+    end
     if state.tick - state.hintTick >= 15 then
         local hint = weaponKind(p)
         if hint ~= state.hint then
             log("IAD FIRE: hint=" .. hint .. " types=" .. hintSummary(p))
             -- Evidence belongs to the weapon that produced it. Picking up
             -- Brimstone after tears must start charging immediately.
-            state.autoFireAt, state.holdAttacks, state.held = nil, 0, 0
+            state.autoFireAt, state.provenAuto, state.holdAttacks, state.held = nil, false, 0, 0
         end
         state.hint, state.hintTick = hint, state.tick
         state.brimstone = has(p, "HasWeaponType", WeaponType, {"WEAPON_BRIMSTONE"})
@@ -212,8 +233,8 @@ local function fireControl(state, ctx, p, aligned)
     if evidence > 0 and state.streak >= 3 + delay and not afterRelease then
         state.holdAttacks = (state.holdAttacks or 0) + evidence
         if state.holdAttacks >= 2 then
-            if not state.autoFireAt then log("IAD FIRE: holding fires (auto-fire)") end
-            state.autoFireAt = state.tick
+            if not state.provenAuto then log("IAD FIRE: holding fires (auto-fire)") end
+            state.autoFireAt, state.provenAuto = state.tick, true
         end
     end
     if state.streak > 0 and fresh == 0 then state.quiet = state.quiet + 1
@@ -229,7 +250,7 @@ local function fireControl(state, ctx, p, aligned)
     end
     local kind = state.hint
     if kind ~= "tap" then
-        if state.autoFireAt and state.tick - state.autoFireAt < 150 then kind = "tears"
+        if state.provenAuto then kind = "tears"
         elseif kind == "charge" then kind = "charge" end
     end
     if kind ~= state.weapon then
@@ -312,6 +333,7 @@ local function flood(g, start)
             if ox ~= 0 or oy ~= 0 then
                 local nx, j = x + ox, i + ox + oy*w
                 if nx >= 0 and nx < w and j >= 0 and j < g.size and dist[j] == nil and g.walk[j] and
+                    not (g.hazard and g.hazard[j]) and
                     (ox == 0 or oy == 0 or (g.walk[i+ox] and g.walk[i+oy*w])) then
                     dist[j] = d; queue[#queue+1] = j
                 end
@@ -347,15 +369,35 @@ local function aim(player, target, queueDelay)
     local shoot, offset
     if abs(dx) >= abs(dy) then shoot, offset = dx >= 0 and 2 or 1, abs(dy)
     else shoot, offset = dy >= 0 and 4 or 3, abs(dx) end
-    return shoot, offset <= target.Size + 10, aimX, aimY
+    return shoot, offset <= target.Size + 6, aimX, aimY
 end
 
-local function pickTarget(state, player, enemies)
-    local best, bestCost
+-- Nearest is the base cost. A blocked lane, being out of range and a fresh
+-- target all cost extra; an enemy one or two shots from death costs less.
+-- The current target is kept for DWELL updates unless another costs less
+-- than half, then only for a clear (30%+20) improvement.
+local DWELL = 30
+local function targetCost(state, player, e, g, room, ignoreRocks)
+    local p, t = player.Position, e.Position
+    local cost = t:Distance(p)
+    local range = player.TearRange or 260
+    if cost > range then cost = cost + (cost - range)*2 end
+    if g and not laneClear(room, g, p.X, p.Y, t.X, t.Y, ignoreRocks) then cost = cost + 150 end
+    if (e.HitPoints or 99) <= max(3.5, (player.Damage or 3.5)*2) then cost = cost - 60 end
+    return cost
+end
+local function pickTarget(state, player, enemies, g, room)
+    local ignoreRocks = spectral(player) or laserWeapon(player)
+    local best, bestCost, current, currentCost
     for _, e in ipairs(enemies) do
-        local cost = e.Position:Distance(player.Position)
-        if e.InitSeed == state.targetSeed then cost = cost * 0.7 - 20 end
+        local cost = targetCost(state, player, e, g, room, ignoreRocks)
+        if e.InitSeed == state.targetSeed then current, currentCost = e, cost end
         if not bestCost or cost < bestCost then best, bestCost = e, cost end
+    end
+    if current and best ~= current then
+        local dwell = state.tick - (state.targetSince or 0) < DWELL
+        local limit = dwell and currentCost*0.5 or currentCost*0.7 - 20
+        if bestCost >= limit then return current end
     end
     return best
 end
@@ -368,17 +410,18 @@ local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
     local range = state.laserReach and min(state.laserReach, p.TearRange or 260) or p.TearRange or 260
     -- Closed-loop sim (8-tick queue): 0.8 of the range halved hits against
     -- 0.45 (5.8 -> 2.9 per minute) at about the same kill rate.
-    local preferred = min(240, max(90, range*0.8))
+    -- 0.14: at least 120 away (90 put the player next to chasers).
+    local preferred = min(240, max(120, range*0.8), max(60, range-20))
     -- Exploders (boom flies etc.) blew up 57-83 units from the player after
     -- being shot: kill them from outside the blast whenever range allows.
     local exploder = ctx.exploder or function() return false end
     if exploder(target) then preferred = max(preferred, min(130, range-20)) end
     local tx, ty = target.Position.X, target.Position.Y
     local ignoreRocks = spectral(p) or laserWeapon(p)
-    local best, bestCost, bx, by
+    local best, bestCost, bx, by, bestSide
     for pass = 1, 2 do
         for _, d in ipairs({preferred, preferred*0.75, min(preferred*1.3, range-20)}) do
-            for _, o in ipairs({{d,0}, {-d,0}, {0,d}, {0,-d}}) do
+            for side, o in ipairs({{d,0}, {-d,0}, {0,d}, {0,-d}}) do
                 local x, y = tx + o[1], ty + o[2]
                 local i = cellOf(room, g, x, y)
                 local steps = i and fromPlayer[i]
@@ -388,18 +431,22 @@ local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
                     for _, e in ipairs(enemies) do
                         if e ~= target then
                             local gap = e.Position:Distance(Vector(x, y)) - e.Size
-                            local keep = exploder(e) and 120 or 90
-                            if gap < keep then cost = cost + (keep-gap)*3 end
+                            local keep = exploder(e) and 130 or 110
+                            if gap < keep then cost = cost + (keep-gap)*5 end
                         end
                     end
                     if state.goalX and abs(state.goalX-x) + abs(state.goalY-y) < 30 then cost = cost - 50 end
-                    if not bestCost or cost < bestCost then best, bestCost, bx, by = i, cost, x, y end
+                    -- Circling to the other side of the same target is what
+                    -- made AUTO run around: it must be clearly better. 60 (not
+                    -- 120) keeps the simulated chaser hits at the 0.13 level.
+                    if state.goalSide and side ~= state.goalSide then cost = cost + 60 end
+                    if not bestCost or cost < bestCost then best, bestCost, bx, by, bestSide = i, cost, x, y, side end
                 end
             end
         end
         if best then break end
     end
-    return best, bx, by
+    return best, bx, by, bestSide
 end
 
 -- Endpoint after LOOK updates of full-speed walking, cut at the first
@@ -445,6 +492,21 @@ local function chooseMove(state, ctx, costs)
     return best
 end
 
+-- Per-room AUTO summary (IAD COMBAT STATS), flushed by main.lua.
+function M.stats(state)
+    if not state.stats then
+        state.stats = {ticks=0, firing=0, aligned=0, switches=0, sides=0, distance=0, tears=0}
+    end
+    return state.stats
+end
+function M.flushStats(state, reason)
+    local s = state.stats
+    state.stats = nil
+    if not s or s.ticks == 0 then return end
+    log(string.format("IAD COMBAT STATS: ticks=%d firing=%.0f%% aligned=%.0f%% switches=%d sides=%d meanDist=%.0f tears=%d reason=%s",
+        s.ticks, s.firing*100/s.ticks, s.aligned*100/s.ticks, s.switches, s.sides, s.distance/s.ticks, s.tears, reason))
+end
+
 -- ctx: player, room, frame, entities, playerOwned, gridSafeXY, directions,
 -- stride (full-speed displacement per update), queueDelay (updates),
 -- scores/blocked (nil when nothing threatens). Returns the IAD2 word.
@@ -457,30 +519,43 @@ function M.update(state, ctx)
         local npc = hostile(e, ctx.playerOwned)
         if npc then enemies[#enemies+1] = npc end
     end
-    local target = pickTarget(state, p, enemies)
+    local g = grid(state, room, p, ctx.frame)
+    g.hazard = ctx.hazardCells
     state.tick = state.tick + 1
+    local previousSeed = state.targetSeed
+    local target = pickTarget(state, p, enemies, g, room)
     if not target then
         clearAction(state)
         return M.word(state.mode, nil, 0, false)
     end
+    local stats = state.mode == 2 and M.stats(state) or nil
+    if target.InitSeed ~= previousSeed then
+        state.targetSince, state.goalSide = state.tick, nil
+        if stats and previousSeed then stats.switches = stats.switches + 1 end
+    end
     state.targetSeed = target.InitSeed
     local shoot, aligned, ax, ay = aim(p, target, ctx.queueDelay)
+    state.lastShoot = shoot
     local info = {targetX=target.Position.X, targetY=target.Position.Y, targetR=target.Size, aimX=ax, aimY=ay}
     state.info = info
     if state.mode == 1 then return M.word(1, nil, shoot, false) end
 
     local hold = fireControl(state, ctx, p, aligned)
+    stats.ticks, stats.distance = stats.ticks + 1, stats.distance + target.Position:Distance(p.Position)
+    if hold then stats.firing = stats.firing + 1 end
+    if aligned then stats.aligned = stats.aligned + 1 end
 
     -- AUTO: movement.
-    local g = grid(state, room, p, ctx.frame)
     local start = cellOf(room, g, p.Position.X, p.Position.Y)
     local costs = {}
-    local goal, gx, gy
+    local goal, gx, gy, side
     if start then
         local fromPlayer = flood(g, start)
-        goal, gx, gy = pickGoal(state, ctx, g, target, enemies, fromPlayer)
+        goal, gx, gy, side = pickGoal(state, ctx, g, target, enemies, fromPlayer)
     end
     if goal then
+        if state.goalSide and side ~= state.goalSide then stats.sides = stats.sides + 1 end
+        state.goalSide = side
         state.goalX, state.goalY = gx, gy
         info.goalX, info.goalY = gx, gy
         local field = flood(g, goal)

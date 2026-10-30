@@ -254,3 +254,51 @@ assert(s.laserReach==110 and s.info.goalX,'laser reach recorded')
 assert(math.abs(s.info.goalX-400)+math.abs(s.info.goalY-180)<=110,'goal inside the laser')
 weapons={}
 print('PASS charge timing from MaxFireDelay, release check, beam wait, fire evidence, laser reach')
+
+-- 0.14: firing continuity, target dwell, goal stickiness, hazard pathing.
+-- Neptunus fires while held: not a charge hint.
+CollectibleType={COLLECTIBLE_CHOCOLATE_MILK=69,COLLECTIBLE_CURSED_EYE=316,COLLECTIBLE_NEPTUNUS=597}
+local items={}
+function p:HasCollectible(id)return items[id]==true end
+items[597]=true
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+assert(not holds(60):find('r'),'Neptunus treated as a charge weapon')
+items={}
+-- Proven auto-fire survives a room/no-target interval (0.12.6 re-learned it
+-- 83 times in one session); a weapon change still clears it.
+items[69]=true
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+for i=1,8 do
+ local list={target}
+ if i>=6 then list[2]=attack(EntityType.ENTITY_TEAR) end
+ update(s,list)
+end
+assert(s.provenAuto and s.weapon=='tears','auto-fire evidence not learned')
+for i=1,200 do update(s,{}) end
+assert(not holds(40):find('r'),'auto-fire proof lost after an empty interval')
+items={}
+-- Target dwell: a slightly closer newcomer does not steal the target.
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+p.Position=Vector(100,180)
+local first,second=enemy(300,180),enemy(330,180)
+update(s,{first});assert(s.targetSeed==first.InitSeed)
+second.Position=Vector(100,300) -- 120 away vs 200: better, not twice as good
+update(s,{first,second});assert(s.targetSeed==first.InitSeed,'target switched inside dwell')
+second.Position=Vector(100,240) -- 60 vs 200: more than twice as good
+update(s,{first,second});assert(s.targetSeed==second.InitSeed,'clearly better target ignored')
+-- Goal side is sticky for the same target.
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+local still=enemy(300,180)
+update(s,{still});local side=s.goalSide
+assert(side,'goal side recorded')
+p.Position=Vector(300+(side==2 and 40 or -40),180)
+for i=1,5 do update(s,{still}) end
+assert(s.goalSide==side,'goal side flipped without reason')
+-- AUTO pathing treats hazard cells (spikes) as walls.
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+p.Position=Vector(100,180)
+local hazard={}
+for y=1,7 do hazard[room:GetGridIndex(Vector(180,y*40+20))]=true end
+local _,mv=update(s,{enemy(460,180)},{hazardCells=hazard})
+assert(s.info.goalX==nil or s.info.goalX<180,'goal behind a spike wall: '..tostring(s.info.goalX))
+print('PASS 0.14 combat: Neptunus hint, persistent auto-fire proof, target dwell, sticky goal side, hazard pathing')

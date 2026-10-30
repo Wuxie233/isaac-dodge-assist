@@ -4,7 +4,7 @@
 
 An emergency dodge assist for The Binding of Isaac: Repentance+ on Windows: it takes over local keyboard movement only when your path is about to enter danger and a safer direction exists, with optional auto-aim and auto-combat modes.
 
-当前版本：Lua 传感器 0.13.0，原生输入程序 NativeHost 0.4.4。旧 SendInput 辅助已不再使用。
+当前版本：Lua 传感器 0.14.0，原生输入程序 NativeHost 0.4.4。旧 SendInput 辅助已不再使用。
 
 ## 它做什么
 
@@ -70,7 +70,7 @@ Lua 传感器（游戏内模组） -> 威胁与危险建模 -> 九方向规划�
 
 1. 重启游戏，在 Mods 菜单启用 Isaac Dodge Assist。
 2. 打开桌面的“以撒原生输入躲避”（指向 NativeHost 0.4.4），保留原生辅助窗口；旧“以撒紧急躲弹”辅助应关闭。
-3. 确认 HUD 显示 `DODGE v0.13.0`。`600/612ms` 表示设置窗口/实际预测窗口（联机时会加上测得的输入延迟）；HUD 的威胁状态不等同于输入已执行。
+3. 确认 HUD 显示 `DODGE v0.14.0`。`600/612ms` 表示设置窗口/实际预测窗口（联机时会加上测得的输入延迟）；HUD 的威胁状态不等同于输入已执行。
 4. F6 开关，左 Shift 按一下暂停、再按一下恢复（换房间也保持；联机表情占用左 Alt），F8 切换 250 / 350 / 450 / 600ms（默认 600）。多人时按本机输入设备自动识别你的角色；判断不出来（或想纠正）时用 F7 切换，F7 之后 30 秒内不再自动改绑。当前原生执行器仅适配本机键盘设备。
 5. F9 开关危险预览，F10 切换战斗辅助：关 → 自动瞄准（AIM）→ 自动战斗（AUTO）→ 关。
 

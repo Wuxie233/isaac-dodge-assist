@@ -205,9 +205,12 @@ local function contactThreat(entity)
     if entity.CollisionDamage <= 0 then return false end
     return entity.Type == EntityType.ENTITY_FIREPLACE or entity:IsActiveEnemy(false)
 end
+-- Grid cells AUTO must not path through (active spikes, red poop).
+local hazardCells = {}
 local function engage(p, room, entities, scores, blocked)
     combatWord = Combat.update(combat, {player=p, room=room, frame=frame, entities=entities,
-        playerOwned=playerOwned, exploder=NpcHazards.exploder, gridSafeXY=gridSafeXY, directions=directions,
+        playerOwned=playerOwned, exploder=NpcHazards.exploder, hazardCells=hazardCells,
+        gridSafeXY=gridSafeXY, directions=directions,
         stride=kinematics.k*p.MoveSpeed*PlayerMotion.TICKS, queueDelay=inputs.delay,
         scores=scores, blocked=blocked})
     Overlay.combat(combat.info)
@@ -308,8 +311,8 @@ local function flushKinematics(reason)
         Isaac.DebugString("IAD KIN: "..PlayerMotion.summary(kinematics).." "..InputQueue.summary(inputs).." reason="..reason)
     end
 end
-mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); frame = 0; motion = {}; gridLogged = false; Diagnostics.reset("room"); emit(false) end)
-mod:AddCallback(ModCallbacks.MC_PRE_GAME_EXIT, function() flushKinematics("game-exit"); Diagnostics.flushPerformance("game-exit"); emit(false); selected = -1 end)
+mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); Combat.flushStats(combat, "room"); frame = 0; motion = {}; gridLogged = false; Diagnostics.reset("room"); emit(false) end)
+mod:AddCallback(ModCallbacks.MC_PRE_GAME_EXIT, function() flushKinematics("game-exit"); Combat.flushStats(combat, "game-exit"); Diagnostics.flushPerformance("game-exit"); emit(false); selected = -1 end)
 mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     frame = frame + 1
     local count = game:GetNumPlayers()
@@ -439,17 +442,20 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
         rescanGrid(room, frame)
         logGrid(room)
     end
+    hazardCells = {}
     for _, index in ipairs(gridCells) do
         local grid = room:GetGridEntity(index)
         if grid then
             local kind = grid:GetType()
             if not p.CanFly and spikesActive(grid, kind) then
                 areas[#areas+1] = {position=grid.Position,velocity=Vector(0,0),radius=20}
+                hazardCells[index] = true
             elseif kind == GridEntityType.GRID_POOP and not p.CanFly and grid:GetVariant() == RED_POOP and
                 room:GetGridCollision(index) ~= GridCollisionClass.COLLISION_NONE then
                 -- Red poop hurts on contact (DAMAGE_POOP): 6 of 26 hits in
                 -- the 0.10.0 session. Solid 40-unit cell: half size + margin.
                 areas[#areas+1] = {position=grid.Position,velocity=Vector(0,0),radius=26}
+                hazardCells[index] = true
             elseif kind == GridEntityType.GRID_ROCK_BOMB and grid.State == 3 then
                 areas[#areas+1] = {position=grid.Position,velocity=Vector(0,0),radius=100,warning=true}
             elseif kind == GridEntityType.GRID_TNT and grid.State < 4 and
@@ -544,7 +550,7 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
     end
     Overlay.render(game:GetRoom())
     if game:IsPaused() then emit(false) end
-    local label = "DODGE v0.13.0 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
+    local label = "DODGE v0.14.0 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
         "  " .. horizons[horizonIndex] .. "/" .. effectiveHorizon .. "ms" .. (Overlay.enabled() and "  VIEW" or "") ..
         (combat.mode > 0 and ("  " .. Combat.MODES[combat.mode]) or "")
     Isaac.RenderText(label, 48, 54, 1, 0.9, 0.35, 0.85)
@@ -553,4 +559,4 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
         Isaac.RenderText("DODGE P" .. (selected + 1), point.X - 25, point.Y - 55, 1, 0.9, 0.35, 0.8)
     end
 end)
-Isaac.DebugString("IAD: sensor 0.13.0 loaded")
+Isaac.DebugString("IAD: sensor 0.14.0 loaded")
