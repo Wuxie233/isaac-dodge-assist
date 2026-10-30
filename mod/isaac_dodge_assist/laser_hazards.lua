@@ -115,8 +115,29 @@ local function appendBrimstone(npc, room, shapes)
             reach=reach,angularSpeed=0,delay=0,activeFrom=activeFrom}
     end
 end
+-- Rage Creep (241) crawls along a wall and fires brimstone straight into the
+-- room from "Attack". Both 2026-10-30 hits landed on Attack frame 16, the
+-- update the beam appeared, while the sensor still saw no laser.
+local RAGE_FRAME = 15
+local function appendRageCreep(npc, room, shapes)
+    if npc.Type ~= EntityType.ENTITY_RAGE_CREEP then return end
+    local sprite = npc:GetSprite()
+    if sprite:GetAnimation() ~= "Attack" then return end
+    -- The beam leaves perpendicular to the wall the creep clings to.
+    local p, tl, br = npc.Position, room:GetTopLeftPos(), room:GetBottomRightPos()
+    local angle, gap = 0, p.X-tl.X
+    if br.X-p.X < gap then angle, gap = 180, br.X-p.X end
+    if p.Y-tl.Y < gap then angle, gap = 90, p.Y-tl.Y end
+    if br.Y-p.Y < gap then angle = 270 end
+    local reach = (br-tl):Length()
+    shapes[#shapes+1] = {origin=p,velocity=npc.Velocity,
+        ring=false,width=18,points={Vector(0,0),Vector(reach,0):Rotated(angle)},
+        reach=reach,angularSpeed=0,delay=0,activeFrom=math.max(1, RAGE_FRAME-sprite:GetFrame())}
+end
+
 function M.appendWarnings(npc, room, shapes)
     appendBrimstone(npc, room, shapes)
+    appendRageCreep(npc, room, shapes)
     if npc.Type ~= EntityType.ENTITY_URIEL and npc.Type ~= EntityType.ENTITY_GABRIEL then return end
     local state = npc.State
     if state ~= NpcState.STATE_ATTACK2 and state ~= NpcState.STATE_ATTACK3 then return end

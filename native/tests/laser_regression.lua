@@ -69,6 +69,19 @@ assert(#beams==1 and beams[1].activeFrom==1 and L.clearanceXY(beams[1],300,300,3
 beams={};L.appendWarnings(windUp(39,2,'Attack01Down',10),room,beams);assert(#beams==0,'chubber is not a brimstone shooter')
 beams={};L.appendWarnings(windUp(49,0,'Walk',10),room,beams);assert(#beams==0,'walking gluttony predicted a beam')
 print('PASS brimstone wind-up: Gluttony horizontal pair, Vis down, timing, Chubber/walk exclusions')
+-- Rage Creep fires from its wall into the room (room 40..560 x 40..320).
+EntityType.ENTITY_RAGE_CREEP=241
+local function creep(x,y,animation,frame)
+ local c=windUp(241,0,animation,frame);c.Position=Vector(x,y);return c
+end
+for _,case in ipairs({{555,180,100,180},{45,180,500,180},{300,45,300,300},{300,315,300,60}}) do
+ beams={};L.appendWarnings(creep(case[1],case[2],'Attack',5),room,beams)
+ assert(#beams==1 and beams[1].activeFrom==10 and not beams[1].warning,'rage creep beam missing')
+ assert(L.clearanceXY(beams[1],case[3],case[4],case[3],case[4],10,10)<0,'rage creep beam points the wrong way')
+ assert(L.clearanceXY(beams[1],case[3],case[4],case[3],case[4],9,10)==math.huge,'rage creep beam early')
+end
+beams={};L.appendWarnings(creep(555,180,'Walk',5),room,beams);assert(#beams==0,'walking rage creep fired')
+print('PASS Rage Creep wind-up: beam from each wall into the room, timing, walk exclusion')
 -- Swept rotating beams are approximated by a few rotated slices plus an arc
 -- margin, and distant queries are rejected by a radial/cone lower bound. Both
 -- must stay on the safe side of a dense sweep: never report more clearance

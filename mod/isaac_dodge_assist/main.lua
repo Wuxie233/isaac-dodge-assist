@@ -6,6 +6,7 @@ local ThreatField = include("threat_field")
 local Planner = include("dodge_planner")
 local EscapeSpace = include("escape_space")
 local TNT = include("tnt_hazards")
+local NpcHazards = include("npc_hazards")
 local Diagnostics = include("diagnostics")
 local Terrain = include("terrain_snapshot")
 local Overlay = include("overlay")
@@ -202,7 +203,7 @@ local function contactThreat(entity)
 end
 local function engage(p, room, entities, scores, blocked)
     combatWord = Combat.update(combat, {player=p, room=room, frame=frame, entities=entities,
-        playerOwned=playerOwned, gridSafeXY=gridSafeXY, directions=directions,
+        playerOwned=playerOwned, exploder=NpcHazards.exploder, gridSafeXY=gridSafeXY, directions=directions,
         stride=kinematics.k*p.MoveSpeed*PlayerMotion.TICKS, queueDelay=inputs.delay,
         scores=scores, blocked=blocked})
     Overlay.combat(combat.info)
@@ -214,8 +215,10 @@ local function buildField(p,steps,bullets,contacts,bombs,areas,lasers)
     local field=ThreatField.new(steps,p.Size,lasers,LaserHazards)
     -- Blood/creep patches are usually stationary: index them once, not once
     -- per future tick. Moving effects retain their time-indexed sweeps.
+    -- A timed area (from/to) is a hit only in those future updates.
+    local function static(area) return not area.from and area.velocity:LengthSquared()<0.000001 end
     for _,area in ipairs(areas) do
-        if area.velocity:LengthSquared()<0.000001 then
+        if static(area) then
             ThreatField.add(field,nil,area.position,area.position,area.radius,area.warning)
         end
     end
@@ -254,7 +257,7 @@ local function buildField(p,steps,bullets,contacts,bombs,areas,lasers)
                 bomb.Position+bomb.Velocity*t,bombRadius(bomb),true)
         end
         for _,area in ipairs(areas) do
-            if area.velocity:LengthSquared()>=0.000001 then
+            if not static(area) and (not area.from or (t>=area.from and t<=area.to)) then
                 ThreatField.add(field,t,area.position+area.velocity*previous,
                     area.position+area.velocity*t,area.radius,area.warning)
             end
@@ -348,21 +351,28 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     -- the distance needed to get out of a large footprint at low movement speed.
     local stride = PlayerMotion.reach(kinematics,p)
     -- Queued online input is committed; plan the selected window after it.
+    local entities = Isaac.GetRoomEntities()
+    -- A fuse that ends past the window must still be planned for: by the time
+    -- a 14-update window saw the 0.12.6 troll bomb, the player was cornered.
     local steps = math.min(22,math.max(math.ceil(horizons[horizonIndex]*30/1000),
-        math.ceil((p.Size+22)/math.max(2,stride))+3)+#pending)
+        math.ceil((p.Size+22)/math.max(2,stride))+3,NpcHazards.blastHorizon(entities,p,22))+#pending)
     effectiveHorizon=math.floor(steps*1000/30+0.5)
     local reach=stride*steps+p.Size
-    local entities = Isaac.GetRoomEntities()
     motion = MotionPrediction.track(entities,motion)
     for _, entity in ipairs(entities) do
         local npc = entity:ToNPC()
         if npc and not npc:IsDead() and not playerOwned(npc) then
             LaserHazards.appendWarnings(npc,game:GetRoom(),lasers)
+            NpcHazards.momArm(npc,game:GetRoom(),areas)
+            local burst = NpcHazards.deathBurst(npc,p)
+            if burst then areas[#areas+1] = burst end
         end
         local bomb = entity:ToBomb()
         if bomb and not bomb:IsDead() and bomb.ExplosionDamage > 0 and
             bomb.Position:Distance(p.Position) < bombRadius(bomb) + reach + bomb.Velocity:Length() * steps then
             bombs[#bombs+1] = bomb
+            local blast = NpcHazards.bombBlast(bomb)
+            if blast then areas[#areas+1] = blast end
         end
         local laser = entity:ToLaser()
         local effect = entity:ToEffect()
@@ -512,7 +522,7 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
     end
     Overlay.render(game:GetRoom())
     if game:IsPaused() then emit(false) end
-    local label = "DODGE v0.12.6 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
+    local label = "DODGE v0.13.0 " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
         "  " .. horizons[horizonIndex] .. "/" .. effectiveHorizon .. "ms" .. (Overlay.enabled() and "  VIEW" or "") ..
         (combat.mode > 0 and ("  " .. Combat.MODES[combat.mode]) or "")
     Isaac.RenderText(label, 48, 54, 1, 0.9, 0.35, 0.85)
@@ -521,4 +531,4 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
         Isaac.RenderText("DODGE P" .. (selected + 1), point.X - 25, point.Y - 55, 1, 0.9, 0.35, 0.8)
     end
 end)
-Isaac.DebugString("IAD: sensor 0.12.6 loaded")
+Isaac.DebugString("IAD: sensor 0.13.0 loaded")

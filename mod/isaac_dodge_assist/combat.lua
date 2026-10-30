@@ -216,12 +216,16 @@ local function fireControl(state, ctx, p, aligned)
             state.autoFireAt = state.tick
         end
     end
-    if state.streak > 0 and fresh == 0 then state.quiet = state.quiet + 1 elseif fresh > 0 then state.quiet = 0 end
+    if state.streak > 0 and fresh == 0 then state.quiet = state.quiet + 1
+    elseif fresh > 0 then state.quiet, state.stalled = 0, false end
     if state.hint == "tears" and state.streak > 0 and state.quiet >= max(45, need*2) then
         -- A missing owner link must not turn ordinary tears into charged
         -- shots (0.12.2 did exactly that throughout a co-op baby run).
+        -- Report the transition once: 0.12.6 repeated it every update.
+        if not state.stalled then
+            log("IAD FIRE: no owned attack observed for " .. state.quiet .. " updates; keeping tears")
+        end
         state.stalled = true
-        log("IAD FIRE: no owned attack observed for " .. state.quiet .. " updates; keeping tears")
     end
     local kind = state.hint
     if kind ~= "tap" then
@@ -365,6 +369,10 @@ local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
     -- Closed-loop sim (8-tick queue): 0.8 of the range halved hits against
     -- 0.45 (5.8 -> 2.9 per minute) at about the same kill rate.
     local preferred = min(240, max(90, range*0.8))
+    -- Exploders (boom flies etc.) blew up 57-83 units from the player after
+    -- being shot: kill them from outside the blast whenever range allows.
+    local exploder = ctx.exploder or function() return false end
+    if exploder(target) then preferred = max(preferred, min(130, range-20)) end
     local tx, ty = target.Position.X, target.Position.Y
     local ignoreRocks = spectral(p) or laserWeapon(p)
     local best, bestCost, bx, by
@@ -380,7 +388,8 @@ local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
                     for _, e in ipairs(enemies) do
                         if e ~= target then
                             local gap = e.Position:Distance(Vector(x, y)) - e.Size
-                            if gap < 90 then cost = cost + (90-gap)*3 end
+                            local keep = exploder(e) and 120 or 90
+                            if gap < keep then cost = cost + (keep-gap)*3 end
                         end
                     end
                     if state.goalX and abs(state.goalX-x) + abs(state.goalY-y) < 30 then cost = cost - 50 end

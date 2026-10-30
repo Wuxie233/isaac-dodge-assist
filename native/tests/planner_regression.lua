@@ -176,3 +176,4 @@ q=Queue.new();for f=1,200 do Queue.observe(q,f,seq[f],seq[f]) end
 assert(q.delay==0 and #Queue.pending(q)==0,'offline play gained a queue')
 print('PASS online input queue: lag 4 learned, pending order, committed motion, offline zero')
 dofile('native/tests/main_integration.lua')
+dofile('native/tests/hazard_replay_regression.lua')
