@@ -145,4 +145,23 @@ function M.hit(frame,player,source,amount,flags,entities)
         Isaac.DebugString("IAD DIAG END: effectsNear="..nearby.." cap=12 history="..#history)
     end)
 end
+function M.gridCell(grid)
+    local text=grid:GetType().."."..grid:GetVariant().." s="..tostring(grid.State)
+    local ok,sprite=pcall(grid.GetSprite,grid)
+    if ok and sprite then text=text.." "..sprite:GetAnimation()..":"..sprite:GetFrame() end
+    return text.."@"..xy(grid.Position)
+end
+-- Grid cells around the player on a grid-type hit (spikes, poop, no source).
+function M.grid(room,player)
+    safe(function()
+        local parts={}
+        local p=player.Position
+        for dy=-1,1 do for dx=-1,1 do
+            local index=room:GetGridIndex(Vector(p.X+dx*40,p.Y+dy*40))
+            local grid=index>=0 and room:GetGridEntity(index)
+            if grid then parts[#parts+1]=M.gridCell(grid).." c="..tostring(room:GetGridCollision(index)) end
+        end end
+        Isaac.DebugString("IAD DIAG GRID: player="..xy(p).." "..(#parts>0 and table.concat(parts," ") or "empty"))
+    end)
+end
 return M

@@ -108,8 +108,11 @@ local function spikesActive(grid, kind)
     if kind ~= GridEntityType.GRID_SPIKES and kind ~= GridEntityType.GRID_SPIKES_ONOFF then
         return false
     end
-    -- Both switch-retracted and timed spikes use 1 for the disabled state.
-    if grid.State == 1 then return false end
+    -- Switch-retracted and timed spikes use State 1 when disabled. Plain
+    -- spikes (and the Sacrifice Room spike) are not trusted to: four hits in
+    -- the 0.12.4/0.12.6 logs landed on spikes the sensor never listed. Only a
+    -- finished retraction animation clears them.
+    if kind == GridEntityType.GRID_SPIKES_ONOFF and grid.State == 1 then return false end
     -- Retraction can also be held on its last animation frame (e.g. Flat File).
     -- GetAnimation works for stopped sprites, unlike IsPlaying alone.
     local sprite = grid:GetSprite()
@@ -285,13 +288,27 @@ local function rescanGrid(room, frame)
         if grid and gridHazard(grid:GetType()) then gridCells[#gridCells+1] = index end
     end
 end
+-- One line per room with every listed grid hazard, so the next session can
+-- confirm which spike/poop states the game actually reports.
+local gridLogged = false
+local function logGrid(room)
+    if gridLogged or #gridCells == 0 then return end
+    gridLogged = true
+    local parts = {}
+    for i, index in ipairs(gridCells) do
+        if i > 12 then parts[#parts+1] = "+" .. (#gridCells-12); break end
+        local grid = room:GetGridEntity(index)
+        if grid then parts[#parts+1] = Diagnostics.gridCell(grid) end
+    end
+    Isaac.DebugString("IAD GRID: " .. table.concat(parts, " "))
+end
 mod:AddCallback(ModCallbacks.MC_POST_GAME_STARTED, reset)
 local function flushKinematics(reason)
     if kinematics.idleN+kinematics.driveN+kinematics.kN>0 then
         Isaac.DebugString("IAD KIN: "..PlayerMotion.summary(kinematics).." "..InputQueue.summary(inputs).." reason="..reason)
     end
 end
-mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); frame = 0; motion = {}; Diagnostics.reset("room"); emit(false) end)
+mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); frame = 0; motion = {}; gridLogged = false; Diagnostics.reset("room"); emit(false) end)
 mod:AddCallback(ModCallbacks.MC_PRE_GAME_EXIT, function() flushKinematics("game-exit"); Diagnostics.flushPerformance("game-exit"); emit(false); selected = -1 end)
 mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     frame = frame + 1
@@ -420,6 +437,7 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
         -- re-listed at least every GRID_RESCAN updates to catch a hazard that
         -- appears mid-fight.
         rescanGrid(room, frame)
+        logGrid(room)
     end
     for _, index in ipairs(gridCells) do
         local grid = room:GetGridEntity(index)
@@ -501,6 +519,8 @@ mod:AddCallback(ModCallbacks.MC_ENTITY_TAKE_DMG, function(_, entity, amount, fla
     local player = entity:ToPlayer()
     if not player or player.InitSeed ~= boundSeed then return end
     Diagnostics.hit(frame,player,source,amount,flags,Isaac.GetRoomEntities())
+    -- Spikes, poop and sourceless hits come from the grid: record it.
+    if flags & (128 | 512) ~= 0 or not source.Entity then Diagnostics.grid(game:GetRoom(),player) end
     local hit = source.Entity
     Isaac.DebugString("IAD HIT: state=" .. state .. " flags=" .. tostring(flags) ..
         " source=" .. (hit and (hit.Type .. "." .. hit.Variant .. "." .. hit.SubType) or "none") ..

@@ -175,7 +175,40 @@ for _,s in ipairs(values)do assert(s==0,'normal poop treated as damaging')end
 poopVariant=1;p.CanFly=true;tick();values=packet()
 for _,s in ipairs(values)do assert(s==0,'flying player avoided red poop')end
 p.CanFly=false
+local gridLine=false
+for _,line in ipairs(logs)do if line:find('IAD GRID: ',1,true) then gridLine=true end end
+assert(gridLine,'room grid hazards were not logged')
 print('PASS red poop contact, normal poop and flight exclusions')
+-- Spikes: a plain spike counts whatever its State (four logged hits were on
+-- spikes the sensor never listed); timed/switch spikes at State 1 and a
+-- finished retraction do not.
+local spikeKind,spikeState,spikeAnim=GridEntityType.GRID_SPIKES,1,'Idle'
+-- Later checks still expect the red poop room set up above.
+local poopEntity,poopCollision=room.GetGridEntity,room.GetGridCollision
+function room:GetGridEntity(i)
+ if i~=poopIndex then return nil end
+ return {Position=room:GetGridPosition(i),State=spikeState,GetType=function()return spikeKind end,
+  GetVariant=function()return 0 end,
+  GetSprite=function()return {GetAnimation=function()return spikeAnim end,GetFrame=function()return 12 end,
+   IsFinished=function()return spikeAnim:sub(1,8)=='Unsummon' end}end}
+end
+function room:GetGridCollision()return 0 end
+for i=1,7 do tick()end
+values=packet()
+assert(values[3]>0 and values[1]<=0,'plain spike at State 1 not avoided')
+spikeAnim='Unsummon';tick();values=packet()
+for _,s in ipairs(values)do assert(s==0,'retracted spike treated as damaging')end
+spikeAnim,spikeKind='Idle',GridEntityType.GRID_SPIKES_ONOFF;tick();values=packet()
+for _,s in ipairs(values)do assert(s==0,'disabled on/off spike treated as damaging')end
+spikeState=0;tick();values=packet()
+assert(values[3]>0,'active on/off spike not avoided')
+p.Position=Vector(530,500);callbacks[ModCallbacks.MC_ENTITY_TAKE_DMG](nil,p,1,128,{})
+local gridHit
+for i=#logs-3,#logs do if logs[i]:find('IAD DIAG GRID: ',1,true) then gridHit=logs[i] end end
+assert(gridHit and gridHit:find(' s=0 Idle:12@540.0,500.0',1,true),'spike hit did not record the grid cell')
+p.Position=Vector(470,500)
+room.GetGridEntity,room.GetGridCollision=poopEntity,poopCollision
+print('PASS spikes: plain spike at any State, on/off State 1 and retracted exclusions, grid hit record')
 -- F9 danger preview: off by default, toggles, captures and renders lines.
 local renders,loaded=0,nil
 function Sprite()return {Load=function(_,path)loaded=path end,Play=function()end,
