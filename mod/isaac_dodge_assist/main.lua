@@ -24,7 +24,8 @@ local manualUntil = -1
 -- Engine contact is the circle sum; this margin covers sensing error only.
 local CONTACT_MARGIN = 3
 local RED_POOP = 1 -- grid poop variant
-local enabled, selected, boundSeed = true, -1, nil
+-- Left Shift toggles a pause of dodging and combat (it used to be held).
+local enabled, paused, selected, boundSeed = true, false, -1, nil
 local horizons, horizonIndex = {250, 350, 450, 600}, 3
 local effectiveHorizon=250
 local motion = {}
@@ -337,7 +338,7 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     elseif p:IsDead() then reason = "DEAD"
     elseif p:IsCoopGhost() then reason = "GHOST"
     elseif not p:AreControlsEnabled() then reason = "CONTROLS LOCKED"
-    elseif Input.IsButtonPressed(Keyboard.KEY_LEFT_SHIFT, 0) then reason = "SHIFT HELD" end
+    elseif paused then reason = "PAUSED (SHIFT)" end
     if reason then motion = {}; state = reason; Overlay.clear(); emit(false); return end
     local input = PlayerMotion.input(p)
     PlayerMotion.observe(kinematics,p,input,frame)
@@ -509,6 +510,7 @@ mod:AddCallback(ModCallbacks.MC_ENTITY_TAKE_DMG, function(_, entity, amount, fla
 end, EntityType.ENTITY_PLAYER)
 mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
     if Input.IsButtonTriggered(Keyboard.KEY_F6, 0) then enabled = not enabled; emit(false) end
+    if Input.IsButtonTriggered(Keyboard.KEY_LEFT_SHIFT, 0) then paused = not paused; emit(false) end
     if Input.IsButtonTriggered(Keyboard.KEY_F7, 0) then
         local count = game:GetNumPlayers()
         if count > 0 then bind((selected + 1) % count) end

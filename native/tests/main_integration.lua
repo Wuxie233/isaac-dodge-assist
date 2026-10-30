@@ -222,11 +222,21 @@ local word=assert(combatPair(),'AIM word missing')
 assert(word&3==1 and (word>>6)&7==2,'AIM must shoot right: '..word)
 f10();tick();word=assert(combatPair(),'AUTO word missing')
 assert(word&3==2 and (word>>6)&7==2 and word&512~=0 and ((word>>2)&15)<9,'AUTO word: '..word)
-Input.IsButtonPressed=function(key)return key==Keyboard.KEY_LEFT_SHIFT end
-tick();assert(combatPair()==nil,'combat word while paused by Shift')
-Input.IsButtonPressed=function()return false end
+-- Left Shift toggles: one press pauses (surviving a room change), holding
+-- is not needed, the next press resumes.
+local function shift()
+ Input.IsButtonTriggered=function(key)return key==Keyboard.KEY_LEFT_SHIFT end
+ callbacks[ModCallbacks.MC_POST_RENDER]();Input.IsButtonTriggered=function()return false end
+end
+shift();tick();assert(combatPair()==nil,'combat word while paused by Shift')
+assert(logs[#logs]:find('|0|',1,true),'Shift pause still active')
+callbacks[ModCallbacks.MC_POST_NEW_ROOM]();for i=1,5 do tick()end
+assert(combatPair()==nil and logs[#logs]:find('|0|',1,true),'Shift pause lost on room change')
+local paused=false;for _,line in ipairs(logs)do if line=='IAD STATE: PAUSED (SHIFT)' then paused=true end end
+assert(paused,'pause state not reported')
+shift();tick();assert(combatPair(),'second Shift press did not resume')
 f10();tick();assert(combatPair()==nil,'combat word after OFF')
-print('PASS F10 combat modes: IAD2 contract, AIM and AUTO words, Shift and OFF release')
+print('PASS F10 combat modes: IAD2 contract, AIM and AUTO words, Shift toggle (room-persistent) and OFF release')
 
 -- Roster changes: a co-op partner joining or leaving must keep the sensor on
 -- our player. 0.12.4 game logs parked it on "F7: SELECT YOUR PLAYER" for 5277
