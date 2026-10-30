@@ -142,6 +142,16 @@ static Poll choose(void* device) {
     ReleaseSRWLockExclusive(&decisionLock);
     return result;
 }
+// Lock-free hint: does the host currently publish an active, fresh plan?
+// When it does not (lobby, F7, pause, sensor off, host closed), every query
+// goes straight to the original function, exactly as without the DLL. The
+// 2026-10-29 Online desync happened in that state while 0.4.3 still served
+// 3ms raw snapshots; inactive play no longer shifts any read in time.
+static bool engaged() {
+    if(!shared) return false;
+    const volatile Shared* s=shared;
+    return s->magic==0x32444149 && s->version==1 && s->active && GetTickCount()-s->stamp<=120;
+}
 static int overridden(const Poll& poll, int action) {
     const Decision& d=poll.decision;
     if(action<4) return d.move<0 ? -1 : (masks[d.move]>>action)&1;
@@ -150,6 +160,7 @@ static int overridden(const Poll& poll, int action) {
 static float __attribute__((fastcall)) valueHook(void* self, void*, int action) {
     if(action>=0 && action<8) {
         if(action<4) InterlockedIncrement(&shared->polls);
+        if(!engaged()) return originalValue(self,action);
         Poll poll=choose(self);
         int value=overridden(poll,action);
         if(value>=0){InterlockedIncrement(action<4 ? &shared->overrides : &shared->shots);return value?1.f:0.f;}
@@ -159,6 +170,7 @@ static float __attribute__((fastcall)) valueHook(void* self, void*, int action) 
 }
 static bool __attribute__((fastcall)) pressedHook(void* self, void*, int action) {
     if(action>=0 && action<8) {
+        if(!engaged()) return originalPressed(self,action);
         Poll poll=choose(self);
         int value=overridden(poll,action);
         if(value>=0) return value!=0;

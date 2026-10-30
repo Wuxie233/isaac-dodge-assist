@@ -62,6 +62,25 @@ int main(){
     lastPollValid=true;assert(reusable(&rawBase,1002999,counterFrequency));
     assert(!reusable(&rawBase,1003000,counterFrequency));
     lastPollValid=false;
+    // Inactive IPC (lobby, F7, host closed): every query reads the original
+    // function live, with no 3ms snapshot in between.
+    Shared idleShared{};shared=&idleShared;
+    ValueFn volatile liveValue=reinterpret_cast<ValueFn>(valueHook);
+    BoolFn volatile livePressed=reinterpret_cast<BoolFn>(pressedHook);
+    originalValue=changingValue;originalPressed=changingPressed;
+    mutableValue[0]=0.25f;mutablePressed[0]=false;
+    assert(liveValue(&rawBase,0)==0.25f && !livePressed(&rawBase,0));
+    mutableValue[0]=1.f;mutablePressed[0]=true;
+    assert(liveValue(&rawBase,0)==1.f && livePressed(&rawBase,0)); // no stale snapshot
+    assert(!lastPollValid); // nothing was sampled or cached
+    // Active, fresh plan: the window snapshot still applies (0.4.2 contract).
+    idleShared.magic=0x32444149;idleShared.version=1;idleShared.active=1;idleShared.stamp=GetTickCount();
+    mutableValue[0]=0.5f;
+    assert(liveValue(&rawBase,0)==0.5f);
+    mutableValue[0]=0.75f;
+    assert(liveValue(&rawBase,0)==0.5f); // same poll window answers alike
+    idleShared.active=0;assert(liveValue(&rawBase,0)==0.75f);
+    lastPollValid=false;
     Shared sample{};shared=&sample;originalValue=fakeValue;originalPressed=fakePressed;
     ValueFn volatile value=reinterpret_cast<ValueFn>(valueHook);
     BoolFn volatile pressed=reinterpret_cast<BoolFn>(pressedHook);
@@ -69,5 +88,5 @@ int main(){
     asm volatile("mov %%esp,%0":"=r"(before));
     for(int i=0;i<200000;++i){int a=i%32;assert(value(&base,a)==base+a);assert(pressed(&base,a)==(a==2));}
     asm volatile("mov %%esp,%0":"=r"(after));
-    assert(before==after);puts("PASS ranking, combat decisions, raw/pressed poll snapshot, 3ms reuse boundary, inactive passthrough, x87 float/bool return, 200000 thiscall/fastcall pairs, balanced stack");
+    assert(before==after);puts("PASS ranking, combat decisions, raw/pressed poll snapshot, 3ms reuse boundary, inactive live passthrough, x87 float/bool return, 200000 thiscall/fastcall pairs, balanced stack");
 }

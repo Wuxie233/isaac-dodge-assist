@@ -4,7 +4,7 @@
 
 An emergency dodge assist for The Binding of Isaac: Repentance+ on Windows: it takes over local keyboard movement only when your path is about to enter danger and a safer direction exists, with optional auto-aim and auto-combat modes.
 
-当前版本：Lua 传感器 0.13.0，原生输入程序 NativeHost 0.4.3。旧 SendInput 辅助已不再使用。
+当前版本：Lua 传感器 0.13.0，原生输入程序 NativeHost 0.4.4。旧 SendInput 辅助已不再使用。
 
 ## 它做什么
 
@@ -20,7 +20,7 @@ An emergency dodge assist for The Binding of Isaac: Repentance+ on Windows: it t
 
 - **游戏**：The Binding of Isaac: Repentance+。原生 DLL 只支持 SHA256 为 `210cade2a1de98550cef52d012174108189d1a0d3926a22c3a1ec12fb3ae4831` 的游戏程序，游戏升级后拒绝安装 Hook。开发调查时的游戏日志版本为 Repentance+ `1.9.7.17.J460`（见 [SPEC.md](SPEC.md)）。
 - **系统**：Windows。原生执行器仅适配本机键盘设备。
-- **Online**：设计面向仅本机安装的场景，房主和其他玩家无需安装配套组件。联机会把本机输入排队若干次更新后才执行，传感器会测量这段延迟并计入预测窗口。已有 Online 实机日志；0.4.3 修复了一个可复现的输入所有权问题，但不宣称已经根治 Online 失步。
+- **Online**：设计面向仅本机安装的场景，房主和其他玩家无需安装配套组件。联机会把本机输入排队若干次更新后才执行，传感器会测量这段延迟并计入预测窗口。已有 Online 实机日志；0.4.3 修复了一个可复现的输入所有权问题，0.4.4 让未接管时的读键与原版完全一致，但不宣称已经根治 Online 失步。
 - **尚未做到或尚未验证**：
   - 目标是覆盖全部怪物攻击，目前不能声称已经达到，缺口见 [COVERAGE.md](COVERAGE.md) 和下文“当前检测”。
   - 雅各与以扫、遗骸/魂等多实体角色仍显示不支持。
@@ -69,7 +69,7 @@ Lua 传感器（游戏内模组） -> 威胁与危险建模 -> 九方向规划�
 ## 使用与按键
 
 1. 重启游戏，在 Mods 菜单启用 Isaac Dodge Assist。
-2. 打开桌面的“以撒原生输入躲避”（指向 NativeHost 0.4.3），保留原生辅助窗口；旧“以撒紧急躲弹”辅助应关闭。
+2. 打开桌面的“以撒原生输入躲避”（指向 NativeHost 0.4.4），保留原生辅助窗口；旧“以撒紧急躲弹”辅助应关闭。
 3. 确认 HUD 显示 `DODGE v0.13.0`。`600/612ms` 表示设置窗口/实际预测窗口（联机时会加上测得的输入延迟）；HUD 的威胁状态不等同于输入已执行。
 4. F6 开关，左 Shift 按住暂停（联机表情占用左 Alt），F8 切换 250 / 350 / 450 / 600ms（默认 600）。多人时按本机输入设备自动识别你的角色；判断不出来（或想纠正）时用 F7 切换，F7 之后 30 秒内不再自动改绑。当前原生执行器仅适配本机键盘设备。
 5. F9 开关危险预览，F10 切换战斗辅助：关 → 自动瞄准（AIM）→ 自动战斗（AUTO）→ 关。
