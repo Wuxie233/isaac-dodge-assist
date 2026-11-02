@@ -19,7 +19,7 @@ local LOOK = 5
 -- charge = rounded-up tear delay / 30 s; Chocolate Milk and Monstro's Lung
 -- fold their charge into the tear delay). MARGIN covers 60Hz/30Hz rounding;
 -- bias grows when a release produced no attack.
-local MARGIN, BIAS_MAX = 2, 30
+local MARGIN, BIAS_MAX = 2, 16
 local function log(text) if Isaac and Isaac.DebugString then Isaac.DebugString(text) end end
 
 function M.new()
@@ -44,6 +44,11 @@ local function clearAction(state)
     state.holdAttacks, state.stalled = 0, false
     state.goalSide = nil
     state.hintTick = -100
+end
+-- Another player is now ours: its weapon evidence and charge timing differ.
+function M.forget(state)
+    clearAction(state)
+    state.bias, state.provenAuto, state.autoFireAt, state.hintTick = 0, false, nil, -100
 end
 function M.cycle(state)
     state.mode = (state.mode + 1) % 3
@@ -263,7 +268,11 @@ local function fireControl(state, ctx, p, aligned)
             log(string.format("IAD CHARGE: fired held=%d need=%d bias=%.1f", state.checkHeld, need, state.bias))
             state.bias, state.checkAt = max(0, state.bias - 1), nil
         elseif state.tick - state.checkAt > 3 + delay then
-            state.bias = min(BIAS_MAX, state.bias + 3)
+            -- Only a release right at the threshold says the charge was too
+            -- short. 2026-11-02: ten misses in a row while bound to the
+            -- wrong player drove the bias to 30 (mean 10.4 over 111
+            -- charges), although holds of 70+ updates failed just the same.
+            if state.checkHeld <= need + 2 then state.bias = min(BIAS_MAX, state.bias + 2) end
             log(string.format("IAD CHARGE: nothing held=%d need=%d bias=%.1f", state.checkHeld, need, state.bias))
             state.checkAt = nil
         end
@@ -353,24 +362,49 @@ local function laneClear(room, g, ax, ay, bx, by, ignoreRocks)
     return true
 end
 
--- Lead the target by the tear travel time plus the online input queue, from
--- where the queued command will actually fire. With latency the player has
--- already moved, so aiming from the current position skews diagonals.
+-- Tears inherit about 1.3x the shooter's velocity: all of the sideways part,
+-- and the forward part only when moving the way they fly (2026-11-02 IAD AIM
+-- samples, 30 tears: sideways ratio median 1.3, nothing taken off when moving
+-- backwards). AUTO walks while it shoots, so ignoring this sent tears wide.
+local INHERIT = 1.3
+local AXES = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}} -- shoot 1 left, 2 right, 3 up, 4 down
+-- For each shooting axis: lead the target by the tear's flight time plus the
+-- online input queue, from where the queued command will actually fire, and
+-- measure how far the drifting tear passes from it. Pick the closest pass.
 local function aim(player, target, queueDelay)
     local p, t, v = player.Position, target.Position, target.Velocity
     local delay = queueDelay or 0
-    local velocity = player.Velocity or Vector(0, 0)
-    local origin = Vector(p.X + velocity.X*delay, p.Y + velocity.Y*delay)
-    local distance = origin:Distance(t)
+    local pv = player.Velocity or Vector(0, 0)
+    local ox, oy = p.X + pv.X*delay, p.Y + pv.Y*delay
     local tearSpeed = max(1, (player.ShotSpeed or 1) * 10)
-    local lead = min(12, max(1.5, distance / tearSpeed)) + delay
-    local aimX, aimY = t.X + v.X*lead, t.Y + v.Y*lead
-    local dx, dy = aimX - origin.X, aimY - origin.Y
-    local shoot, offset
-    if abs(dx) >= abs(dy) then shoot, offset = dx >= 0 and 2 or 1, abs(dy)
-    else shoot, offset = dy >= 0 and 4 or 3, abs(dx) end
-    return shoot, offset <= target.Size + 6, aimX, aimY
+    local best, bestMiss, bestX, bestY
+    for shoot, axis in ipairs(AXES) do
+        local ax, ay = axis[1], axis[2]
+        local along = pv.X*ax + pv.Y*ay
+        local speed = tearSpeed + INHERIT*max(0, along)
+        local driftX, driftY = (pv.X - along*ax)*INHERIT, (pv.Y - along*ay)*INHERIT
+        local time = min(12, max(1.5, t:Distance(Vector(ox, oy)) / speed))
+        local px, py, forward
+        for _ = 1, 2 do
+            px, py = t.X + v.X*(time + delay), t.Y + v.Y*(time + delay)
+            forward = (px - ox)*ax + (py - oy)*ay
+            time = min(12, max(1.5, forward / speed))
+        end
+        if forward > 0 then
+            -- Sideways offset of the target from the tear when it arrives.
+            local sx, sy = px - ox - driftX*time, py - oy - driftY*time
+            local miss = abs(sx*ay - sy*ax)
+            if not bestMiss or miss < bestMiss then best, bestMiss, bestX, bestY = shoot, miss, px, py end
+        end
+    end
+    if not best then
+        local dx, dy = t.X - ox, t.Y - oy
+        if abs(dx) >= abs(dy) then best = dx >= 0 and 2 or 1 else best = dy >= 0 and 4 or 3 end
+        bestMiss, bestX, bestY = math.huge, t.X, t.Y
+    end
+    return best, bestMiss <= target.Size + 6, bestX, bestY
 end
+M.aim = aim -- exposed for tests
 
 -- Nearest is the base cost. A blocked lane, being out of range and a fresh
 -- target all cost extra; an enemy one or two shots from death costs less.
@@ -572,6 +606,16 @@ function M.update(state, ctx)
         for i, dir in ipairs(ctx.directions) do
             local x, y = endpoint(ctx, dir, ctx.stride)
             costs[i] = -sqrt((x-t.X)^2 + (y-t.Y)^2)
+        end
+    end
+    -- Tears inherit sideways motion, so while firing, walking across the
+    -- shot costs. Simulated AUTO with the measured 1.3 inheritance: weight 20
+    -- raised kills 5-24% with no scenario taking more hits (30-60 killed more
+    -- but took more hits from flies).
+    if hold and shoot >= 1 and shoot <= 4 then
+        local axis = AXES[shoot]
+        for i, dir in ipairs(ctx.directions) do
+            costs[i] = costs[i] + 20*abs(dir.X*axis[2] - dir.Y*axis[1])
         end
     end
     local move = chooseMove(state, ctx, costs)

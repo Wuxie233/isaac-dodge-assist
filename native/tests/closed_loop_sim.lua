@@ -185,6 +185,7 @@ local hits,overrides,ticks,invulnerable=0,0,0,0
 local tears,kills,shots,fireCooldown,respawns={},0,0,0,{}
 -- Base tears: about 2.7 shots per second, 3.5 damage, 10 units per update.
 local FIRE_TICKS,TEAR_DAMAGE,TEAR_SPEED=22,3.5,10
+local TEAR_INHERIT=tonumber(os.getenv('SIM_TEAR_INHERIT') or 1.3)
 local pending={}
 -- Online play queues every local input (manual and native override) for a
 -- fixed number of 60Hz ticks before it moves the player (SIM_INPUT_DELAY).
@@ -242,7 +243,14 @@ local function tick()
  fireCooldown=fireCooldown-1
  if queued.fire and fireCooldown<=0 then
   fireCooldown=FIRE_TICKS;shots=shots+1
-  local t=base(EntityType.ENTITY_TEAR);t.Position=p.Position;t.Velocity=shootDirs[queued.fire]*TEAR_SPEED
+  -- Tears inherit SIM_TEAR_INHERIT (default 1.3, measured in the 2026-11-02
+  -- IAD AIM samples) of the player's sideways velocity, and of its forward
+  -- velocity only when moving the way they fly.
+  local d=shootDirs[queued.fire]
+  local along=p.Velocity.X*d.X+p.Velocity.Y*d.Y
+  local side=Vector(p.Velocity.X-along*d.X,p.Velocity.Y-along*d.Y)
+  local t=base(EntityType.ENTITY_TEAR);t.Position=p.Position
+  t.Velocity=d*(TEAR_SPEED+TEAR_INHERIT*math.max(0,along))+side*TEAR_INHERIT
   t.travel,t.SpawnerEntity,t.SpawnerType,t.EntityCollisionClass=0,p,EntityType.ENTITY_PLAYER,EntityCollisionClass.ENTCOLL_ENEMIES
   tears[#tears+1]=t
  end

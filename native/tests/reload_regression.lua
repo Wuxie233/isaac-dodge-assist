@@ -58,7 +58,7 @@ local function logged(text)
 end
 callbacks[ModCallbacks.MC_POST_GAME_STARTED]()
 for _=1,6 do tick()end
-assert(loader.build()=='A' and logged('IAD: sensor 0.15.0 build A loaded'),'cold start')
+assert(loader.build()=='A' and logged('IAD: sensor 0.16.0 build A loaded'),'cold start')
 press(Keyboard.KEY_F8)   -- 450 -> 600
 press(Keyboard.KEY_F10)  -- OFF -> AIM
 press(Keyboard.KEY_LEFT_SHIFT) -- pause
@@ -71,7 +71,7 @@ local seq=tonumber(before[2])
 build='B'
 for _=1,60 do render()end
 assert(loader.build()=='B' and logged('IAD LOADER: reloaded A -> B'),'reload not applied')
-assert(logged('IAD: sensor 0.15.0 build B reloaded'),'new core did not announce itself')
+assert(logged('IAD: sensor 0.16.0 build B reloaded'),'new core did not announce itself')
 tick()
 local after=lastPacket()
 assert(tonumber(after[2])>seq,'IAD1 sequence went backwards across reload')

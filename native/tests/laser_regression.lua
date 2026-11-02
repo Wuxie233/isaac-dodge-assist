@@ -82,6 +82,20 @@ for _,case in ipairs({{555,180,100,180},{45,180,500,180},{300,45,300,300},{300,3
 end
 beams={};L.appendWarnings(creep(555,180,'Walk',5),room,beams);assert(#beams==0,'walking rage creep fired')
 print('PASS Rage Creep wind-up: beam from each wall into the room, timing, walk exclusion')
+-- Boss beams from named animations: Monstro II "Taunt" along its row from
+-- frame 20, Dark One "Attack2" straight down from frame 19.
+EntityType.ENTITY_MONSTRO2,EntityType.ENTITY_DARK_ONE=43,267
+local Fresh=dofile('mod/isaac_dodge_assist/laser_hazards.lua')
+local function boss(kind,animation,frame)local b=windUp(kind,0,animation,frame);b.Position=Vector(300,180);return b end
+beams={};Fresh.appendWarnings(boss(43,'Taunt',10),room,beams)
+assert(#beams==2 and beams[1].activeFrom==10 and not beams[1].warning,'Monstro II beam missing')
+assert(Fresh.clearanceXY(beams[1],500,182,500,182,10,10)<0 and Fresh.clearanceXY(beams[2],100,178,100,178,10,10)<0,'Monstro II row not covered')
+assert(Fresh.clearanceXY(beams[1],500,182,500,182,9,10)==math.huge,'Monstro II beam early')
+beams={};Fresh.appendWarnings(boss(267,'Attack2',15),room,beams)
+assert(#beams==1 and Fresh.clearanceXY(beams[1],300,300,300,300,4,10)<0,'Dark One beam not downward')
+assert(Fresh.clearanceXY(beams[1],300,60,300,60,4,10)>0,'Dark One beam covers above it')
+beams={};Fresh.appendWarnings(boss(43,'Walk',10),room,beams);assert(#beams==0,'walking Monstro II fired')
+print('PASS boss beams: Monstro II Taunt row, Dark One Attack2 down, timing, walk exclusion')
 -- Swept rotating beams are approximated by a few rotated slices plus an arc
 -- margin, and distant queries are rejected by a radial/cone lower bound. Both
 -- must stay on the safe side of a dense sweep: never report more clearance

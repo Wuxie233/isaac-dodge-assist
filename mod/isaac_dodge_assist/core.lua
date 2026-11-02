@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.15.0"
+local VERSION = "0.16.0"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
@@ -95,7 +95,10 @@ local function unsupported(p)
 end
 local function bind(index)
     local seed = index >= 0 and Isaac.GetPlayer(index).InitSeed or nil
-    if seed ~= boundSeed then kinematics, inputs = PlayerMotion.new(), InputQueue.new() end
+    if seed ~= boundSeed then
+        kinematics, inputs = PlayerMotion.new(), InputQueue.new()
+        Combat.forget(combat)
+    end
     selected = index
     boundSeed = seed
 end
@@ -306,7 +309,7 @@ local gridCells, gridRoom, gridScanAt = {}, nil, -GRID_RESCAN
 local function gridHazard(kind)
     return kind == GridEntityType.GRID_SPIKES or kind == GridEntityType.GRID_SPIKES_ONOFF or
         kind == GridEntityType.GRID_POOP or kind == GridEntityType.GRID_TNT or
-        kind == GridEntityType.GRID_ROCK_BOMB
+        kind == GridEntityType.GRID_ROCK_BOMB or kind == GridEntityType.GRID_ROCK_SPIKED
 end
 local function rescanGrid(room, frame)
     gridCells, gridRoom, gridScanAt = {}, room, frame
@@ -478,6 +481,12 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
                 room:GetGridCollision(index) ~= GridCollisionClass.COLLISION_NONE then
                 -- Red poop hurts on contact (DAMAGE_POOP): 6 of 26 hits in
                 -- the 0.10.0 session. Solid 40-unit cell: half size + margin.
+                areas[#areas+1] = {position=grid.Position,velocity=Vector(0,0),radius=26}
+                hazardCells[index] = true
+            elseif kind == GridEntityType.GRID_ROCK_SPIKED and not p.CanFly and
+                room:GetGridCollision(index) ~= GridCollisionClass.COLLISION_NONE then
+                -- Spiked rocks hurt on touch: a 2026-11-02 sourceless hit
+                -- (flags 0) had one 36 units away. Solid cell + margin.
                 areas[#areas+1] = {position=grid.Position,velocity=Vector(0,0),radius=26}
                 hazardCells[index] = true
             elseif kind == GridEntityType.GRID_ROCK_BOMB and grid.State == 3 then

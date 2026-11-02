@@ -150,14 +150,14 @@ end
 -- (here none comes: 4 updates), then charge again.
 local first=holds(28)
 assert(first==string.rep('H',21)..'rrrrrrH','first charge pattern: '..first)
-assert(s.bias==3,'no beam after release: bias '..s.bias)
--- need 25 now: release, the beam comes out and lasts; no hold until it ends.
-s.held=23
+assert(s.bias==2,'no beam after release: bias '..s.bias)
+-- need 24 now: release, the beam comes out and lasts; no hold until it ends.
+s.held=22
 assert(holds(3)=='Hrr')
 local beam=attack(EntityType.ENTITY_LASER,{MaxDistance=0})
 local during=holds(10,{target,beam})
 assert(during=='rrrrrrrrrr','held during the beam: '..during)
-assert(s.bias==2 and s.checkAt==nil,'beam seen: bias '..s.bias)
+assert(s.bias==1 and s.checkAt==nil,'beam seen: bias '..s.bias)
 beam.dead=true
 local after=holds(3)
 assert(after=='rHH','charge resumes one update after the beam: '..after)
@@ -301,4 +301,30 @@ local hazard={}
 for y=1,7 do hazard[room:GetGridIndex(Vector(180,y*40+20))]=true end
 local _,mv=update(s,{enemy(460,180)},{hazardCells=hazard})
 assert(s.info.goalX==nil or s.info.goalX<180,'goal behind a spike wall: '..tostring(s.info.goalX))
+-- A long hold that still fired nothing is not a short charge: no bias.
+weapons[WeaponType.WEAPON_BRIMSTONE]=true
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+p.Position=Vector(100,300)
+s.held=60;update(s,{enemy(400,60)})        -- misaligned: keeps holding past need
+p.Position=Vector(100,180)
+for i=1,8 do update(s,{target}) end
+assert(s.bias==0,'long failed hold raised the bias: '..s.bias)
+-- A new bound player starts from zero bias and no auto-fire proof.
+s.bias,s.provenAuto=12,true;Combat.forget(s)
+assert(s.bias==0 and not s.provenAuto,'forget kept old weapon evidence')
+weapons={}
+-- Tears inherit 1.3x sideways velocity (2026-11-02 IAD AIM samples).
+p.Position,p.Velocity=Vector(100,180),Vector(0,0)
+local shoot,aligned=Combat.aim(p,enemy(300,180),0)
+assert(shoot==2 and aligned,'standing still: straight right shot')
+p.Velocity=Vector(0,4) -- walking down 4/tick: a right tear drifts 5.2/update
+shoot,aligned=Combat.aim(p,enemy(300,180),0)
+assert(shoot==2 and not aligned,'drifting tear counted as on target')
+shoot,aligned=Combat.aim(p,enemy(300,242),0) -- 12 updates x 5.2 below the row
+assert(shoot==2 and aligned,'drift toward the target not used: '..shoot..' '..tostring(aligned))
+p.Velocity=Vector(-3,0) -- walking away from a right shot takes nothing off
+local _,_,ax=Combat.aim(p,enemy(260,180),0)
+assert(ax==260,'backward motion changed the lead')
+p.Velocity=Vector(0,0)
+print('PASS 0.16 combat: charge bias only for threshold releases, forget on rebind, tear drift in aim')
 print('PASS 0.14 combat: Neptunus hint, persistent auto-fire proof, target dwell, sticky goal side, hazard pathing')

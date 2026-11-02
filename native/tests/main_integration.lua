@@ -202,13 +202,24 @@ spikeAnim,spikeKind='Idle',GridEntityType.GRID_SPIKES_ONOFF;tick();values=packet
 for _,s in ipairs(values)do assert(s==0,'disabled on/off spike treated as damaging')end
 spikeState=0;tick();values=packet()
 assert(values[3]>0,'active on/off spike not avoided')
+-- Spiked rocks hurt on touch; flying players pass over them.
+spikeKind,spikeState=GridEntityType.GRID_ROCK_SPIKED,1
+function room:GetGridCollision(i)return i==poopIndex and GridCollisionClass.COLLISION_SOLID or 0 end
+for i=1,7 do tick()end
+values=packet()
+assert(values[3]>0 and values[1]<=0,'spiked rock contact not avoided')
+p.CanFly=true;tick();values=packet()
+for _,s in ipairs(values)do assert(s==0,'flying player avoided a spiked rock')end
+p.CanFly=false
+function room:GetGridCollision()return 0 end
+spikeKind,spikeState=GridEntityType.GRID_SPIKES_ONOFF,0
 p.Position=Vector(530,500);callbacks[ModCallbacks.MC_ENTITY_TAKE_DMG](nil,p,1,128,{})
 local gridHit
 for i=#logs-3,#logs do if logs[i]:find('IAD DIAG GRID: ',1,true) then gridHit=logs[i] end end
 assert(gridHit and gridHit:find(' s=0 Idle:12@540.0,500.0',1,true),'spike hit did not record the grid cell')
 p.Position=Vector(470,500)
 room.GetGridEntity,room.GetGridCollision=poopEntity,poopCollision
-print('PASS spikes: plain spike at any State, on/off State 1 and retracted exclusions, grid hit record')
+print('PASS spikes: plain spike at any State, on/off State 1 and retracted exclusions, spiked rock and flight, grid hit record')
 -- F9 danger preview: off by default, toggles, captures and renders lines.
 local renders,loaded=0,nil
 function Sprite()return {Load=function(_,path)loaded=path end,Play=function()end,

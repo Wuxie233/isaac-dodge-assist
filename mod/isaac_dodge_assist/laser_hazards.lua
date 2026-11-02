@@ -135,8 +135,36 @@ local function appendRageCreep(npc, room, shapes)
         reach=reach,angularSpeed=0,delay=0,activeFrom=math.max(1, RAGE_FRAME-sprite:GetFrame())}
 end
 
+-- Bosses whose beam fires from a named animation, seen hitting while the
+-- sensor still showed no laser (2026-11-02): Monstro II "Taunt" frame 21
+-- (twice, along its row), Dark One "Attack2" frame 20 (straight down).
+local bossBeams
+local function appendBossBeam(npc, room, shapes)
+    if not bossBeams then
+        bossBeams = {}
+        for name, beam in pairs({
+            ENTITY_MONSTRO2 = {animation="Taunt", frame=20, angles={0, 180}},
+            ENTITY_DARK_ONE = {animation="Attack2", frame=19, angles={90}},
+        }) do
+            if EntityType[name] then bossBeams[EntityType[name]] = beam end
+        end
+    end
+    local beam = bossBeams[npc.Type]
+    if not beam then return end
+    local sprite = npc:GetSprite()
+    if sprite:GetAnimation() ~= beam.animation then return end
+    local activeFrom = math.max(1, beam.frame - sprite:GetFrame())
+    local reach = (room:GetBottomRightPos()-room:GetTopLeftPos()):Length()
+    for _, angle in ipairs(beam.angles) do
+        shapes[#shapes+1] = {origin=npc.Position,velocity=npc.Velocity,
+            ring=false,width=24,points={Vector(0,0),Vector(reach,0):Rotated(angle)},
+            reach=reach,angularSpeed=0,delay=0,activeFrom=activeFrom}
+    end
+end
+
 function M.appendWarnings(npc, room, shapes)
     appendBrimstone(npc, room, shapes)
+    appendBossBeam(npc, room, shapes)
     appendRageCreep(npc, room, shapes)
     if npc.Type ~= EntityType.ENTITY_URIEL and npc.Type ~= EntityType.ENTITY_GABRIEL then return end
     local state = npc.State
