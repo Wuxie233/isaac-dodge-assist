@@ -5,3 +5,4 @@ package/
 native/bin/
 __pycache__/
 AGENTS.local.md
+mod/isaac_dodge_assist/iad_version.lua

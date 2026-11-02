@@ -4,7 +4,7 @@
 
 An emergency dodge assist for The Binding of Isaac: Repentance+ on Windows: it takes over local keyboard movement only when your path is about to enter danger and a safer direction exists, with optional auto-aim and auto-combat modes.
 
-当前版本：Lua 传感器 0.14.0，原生输入程序 NativeHost 0.4.4。旧 SendInput 辅助已不再使用。
+当前版本：Lua 传感器 0.15.0，原生输入程序 NativeHost 0.4.4。旧 SendInput 辅助已不再使用。
 
 ## 它做什么
 
@@ -37,7 +37,9 @@ Lua 传感器（游戏内模组） -> 威胁与危险建模 -> 九方向规划�
 
 | 文件 | 作用 |
 | --- | --- |
-| `main.lua` | 模组入口，注册回调，组织每次更新的感知、规划与输出 `IAD1` 评分包 |
+| `main.lua` | 热更新加载器：只向游戏注册一次回调并转发给当前核心；`iad_version.lua` 变化时换上新核心（见下文「热更新」） |
+| `core.lua` | 传感器核心：组织每次更新的感知、规划与输出 `IAD1` 评分包 |
+| `npc_hazards.lua` | 妈妈伸手、炸弹引信、自爆怪等需要按动画/时序预测的攻击 |
 | `motion_prediction.lua` | 敌人与弹体的逐次更新运动快照 |
 | `player_motion.lua` | 玩家运动模型，并在游戏中持续校准 |
 | `input_queue.lua` | 测量联机输入排队延迟，规划时先按队列中的输入推进角色 |
@@ -70,9 +72,19 @@ Lua 传感器（游戏内模组） -> 威胁与危险建模 -> 九方向规划�
 
 1. 重启游戏，在 Mods 菜单启用 Isaac Dodge Assist。
 2. 打开桌面的“以撒原生输入躲避”（指向 NativeHost 0.4.4），保留原生辅助窗口；旧“以撒紧急躲弹”辅助应关闭。
-3. 确认 HUD 显示 `DODGE v0.14.0`。`600/612ms` 表示设置窗口/实际预测窗口（联机时会加上测得的输入延迟）；HUD 的威胁状态不等同于输入已执行。
+3. 确认 HUD 显示 `DODGE v0.15.0`（热更新部署后带 `+<构建号>`）。`600/612ms` 表示设置窗口/实际预测窗口（联机时会加上测得的输入延迟）；HUD 的威胁状态不等同于输入已执行。
 4. F6 开关，左 Shift 按一下暂停、再按一下恢复（换房间也保持；联机表情占用左 Alt），F8 切换 250 / 350 / 450 / 600ms（默认 600）。多人时按本机输入设备自动识别你的角色；判断不出来（或想纠正）时用 F7 切换，F7 之后 30 秒内不再自动改绑。当前原生执行器仅适配本机键盘设备。
 5. F9 开关危险预览，F10 切换战斗辅助：关 → 自动瞄准（AIM）→ 自动战斗（AUTO）→ 关。
+
+## 热更新
+
+Lua 部分可以在游戏运行中更新，不用退出游戏，也不会中断当前这局。
+
+- `main.lua` 是加载器，只向游戏注册一次回调并转发给当前核心。它约每秒读一次 `iad_version.lua`；构建号变了，就用 `include` 重新读入 `core.lua` 及其模块（`include` 每次调用都会重读文件，不像 `require` 会缓存），换上新核心。
+- 换核心时保留开关、Shift 暂停、预测窗口、战斗模式、F9 预览、已绑定的角色、玩家运动模型、联机输入延迟和 `IAD1` 序号；本房间的缓存和进行中的蓄力从头开始。
+- 新核心读入失败（语法错误、文件缺失）时继续用旧核心，日志写 `IAD LOADER: build ... did not load`，同一构建不再重试。新核心换上后约 10 秒内出错，就退回旧核心并写 `IAD LOADER: build ... failed, back to ...`。
+- 部署用 `python3 tools/deploy_mod.py --remote '<Windows 上的模组目录>'`（需要 windows-bridge）：只推送哈希不同的文件，推完逐个核对，最后才写 `iad_version.lua` 触发游戏内换核心。`--dry-run` 只列出差异。
+- `main.lua` 本身变化、原生 DLL 或 NativeHost 变化仍需要重启游戏或 Host；脚本会提示加载器变了。
 
 ## 安装与卸载
 

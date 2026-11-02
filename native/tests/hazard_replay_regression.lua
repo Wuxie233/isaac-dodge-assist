@@ -147,3 +147,4 @@ assert(s[1]>0 and s[1]<HARD,'dying boom fly gave no warning')
 fly.HitPoints=20;s=replay(Vector(320,280),Vector(0,0),{fly})
 for _,v in ipairs(s)do assert(v==0,'healthy boom fly warned')end
 print('PASS death burst: dying exploder warns, healthy one does not')
+for _,line in ipairs(logs)do assert(not line:find('IAD LOADER: core error',1,true),line)end

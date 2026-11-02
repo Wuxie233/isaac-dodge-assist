@@ -347,3 +347,4 @@ for frame=currentAt+1,currentAt+40 do appliedDir[frame]={X=0,Y=1} end
 for frame=1,40 do tick() end
 assert(expectBound('remote-only movement')[5]=='0','remote movement rebound the sensor')
 print('PASS co-op lobby binds by device evidence without F7')
+for _,line in ipairs(logs)do assert(not line:find('IAD LOADER: core error',1,true),line)end
