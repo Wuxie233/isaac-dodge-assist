@@ -388,3 +388,68 @@ local s=Combat.new();Combat.cycle(s);Combat.cycle(s)
 update(s,{exploderEnemy(300,180,20,true)},blast)
 assert(Vector(s.info.goalX,s.info.goalY):Distance(Vector(300,180))>=150,'chasing target engaged closer than 150')
 print('PASS 0.17 combat: no killing shot at a nearby exploder, chasing exploders kept 150 away and shot first')
+
+-- 0.18: a beam (Brimstone) arrives at once. Aim it at where the target is
+-- when the queued release lands, with no tear flight or tear drift; it is
+-- on target when the target overlaps the beam and is within its reach.
+weapons[WeaponType.WEAPON_BRIMSTONE]=true
+p.Position,p.Velocity=Vector(100,180),Vector(0,0)
+-- Crossing the row at 6/update: a tear would need ~15 updates of lead, the
+-- beam none.
+local shoot,aligned=Combat.aim(p,enemy(250,180,0,6),0,{reach=260})
+assert(shoot==2 and aligned,'beam led like a slow tear: '..shoot..' '..tostring(aligned))
+-- Walking sideways does not drift a beam.
+p.Velocity=Vector(0,4)
+shoot,aligned=Combat.aim(p,enemy(250,184),0,{reach=260})
+assert(shoot==2 and aligned,'beam drifted with the player')
+p.Velocity=Vector(0,0)
+shoot,aligned=Combat.aim(p,enemy(250,214),0,{reach=260})
+assert(shoot==2 and not aligned,'34 off the row counted as a beam hit')
+shoot,aligned=Combat.aim(p,enemy(250,180),0,{reach=120})
+assert(not aligned,'target beyond the beam reach counted as a hit')
+-- The online queue delays the release: lead by it.
+shoot,aligned=Combat.aim(p,enemy(250,180,0,10),3,{reach=260})
+assert(not aligned,'queued release must lead a moving target')
+shoot,aligned=Combat.aim(p,enemy(250,150,0,10),3,{reach=260})
+assert(shoot==2 and aligned,'queued release lead missing')
+-- A capped beam's reach belongs to that weapon: a new weapon forgets it.
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s.laserReach,s.hint,s.hintTick=110,'tears',-100
+update(s,{enemy(400,180)})
+assert(s.laserReach==nil,'old beam reach kept after a weapon change')
+-- Tech X rings fly: they are aimed like tears, not like an instant beam.
+weapons={[WeaponType.WEAPON_TECH_X]=true}
+p.Position,p.Velocity=Vector(100,180),Vector(0,0)
+s=Combat.new();Combat.cycle(s)
+update(s,{enemy(250,180,0,6)})
+assert(s.info.aimY>200,'Tech X aimed without lead: '..s.info.aimY)
+weapons={}
+print('PASS 0.18 combat: beam aim is instant, width and reach bound')
+
+-- 0.18 AUTO stats: damage our own attacks deal, and target changes while
+-- the old target is still alive (flicker, not kills).
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+p.Position,p.ControllerIndex=Vector(100,180),0
+local a,b=enemy(300,180),enemy(100,300)
+update(s,{a,b})
+local first=s.targetSeed
+Combat.dealt(s,p,{Entity=attack(EntityType.ENTITY_TEAR)},3.5)
+Combat.dealt(s,p,{Entity=attack(EntityType.ENTITY_TEAR,{SpawnerEntity={Type=EntityType.ENTITY_PLAYER,ControllerIndex=1}})},9)
+Combat.dealt(s,p,{},2)
+assert(s.stats.dealt==3.5,'dealt counts only our attacks: '..tostring(s.stats.dealt))
+-- Out of AUTO (F10 on to OFF) nothing more is counted for the room.
+s.mode=0;Combat.dealt(s,p,{Entity=attack(EntityType.ENTITY_TEAR)},5);s.mode=2
+assert(s.stats.dealt==3.5,'damage counted outside AUTO')
+-- The target dies: a switch, not a retarget.
+local alive={a,b};for i,e in ipairs(alive)do if e.InitSeed==first then table.remove(alive,i) break end end
+update(s,alive)
+assert(s.stats.switches==1 and (s.stats.retargets or 0)==0,'kill counted as a retarget')
+-- Both alive and the other becomes much closer: a retarget.
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+local far,near=enemy(300,180),enemy(500,300)
+update(s,{far,near})
+assert(s.targetSeed==far.InitSeed,'setup: nearer target first')
+near.Position=Vector(130,180)
+for _=1,40 do update(s,{far,near}) end
+assert(s.stats.retargets==1,'retarget not counted: '..tostring(s.stats.retargets))
+print('PASS 0.18 combat stats: dealt damage from our attacks only, retargets apart from kills')

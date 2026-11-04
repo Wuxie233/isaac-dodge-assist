@@ -39,19 +39,38 @@ local function detonation(bomb)
     local at = BLAST_FRAME - sprite:GetFrame()
     return at >= -1 and at or nil
 end
+-- Rolling bombs keep x0.95 of their speed per update and move by their
+-- current velocity (2026-11-04 IAD BOMB, ~10k samples of normal and troll
+-- bombs); super troll bombs keep rolling at full speed.
+local FRICTION = 0.95
+local function friction(bomb)
+    return BombVariant and bomb.Variant == BombVariant.BOMB_SUPERTROLL and 1 or FRICTION
+end
+-- Displacement after t updates.
+function M.drift(bomb, t)
+    local f = friction(bomb)
+    if f >= 1 then return bomb.Velocity*t end
+    return bomb.Velocity*((1 - f^t)/(1 - f))
+end
 function M.bombBlast(bomb)
     local at = detonation(bomb)
     if not at then return nil end
-    return {position=bomb.Position, velocity=bomb.Velocity,
+    return {position=bomb.Position + M.drift(bomb, math.max(0, at)), velocity=Vector(0,0),
         radius=BLAST_RADIUS*bomb.RadiusMultiplier, from=math.max(0, at-1), to=at+1}
 end
--- Chain knockback (wiki.gg Bomb: a troll bomb blast sends another "sliding
--- outwards a bit before exploding"). The push strength, friction and any
--- fuse change are not measured yet (IAD BOMB records them), so a pushed
--- bomb's blast covers PUSH along the push direction with SLACK updates of
--- extra timing. Blasts are taken in detonation order, so a pushed bomb's
--- swept blast pushes the next one in turn. Only CHAIN_MAX are chained.
-local CHAIN_MAX, PUSH, SLACK = 8, 80, 3
+-- Chain knockback (2026-11-04 IAD BOMB, 1358 blast/bomb pairs): a bomb
+-- inside a blast leaves at about PUSH_SPEED one update later and slows with
+-- the same friction, so n updates on it has slid PUSH_SPEED*(1-0.95^n)/0.05
+-- (median 73-90, up to 215 before walls). Its fuse runs on (no reset), so
+-- SLACK only covers frame rounding. Mostly troll bombs were pushed; a
+-- player's own bombs rarely, which stays on the safe side here. Blasts are
+-- taken in detonation order, so a pushed bomb's swept blast pushes the next
+-- one in turn. Only CHAIN_MAX are chained.
+local CHAIN_MAX, PUSH_SPEED, SLACK = 8, 14, 1
+local function slide(updates)
+    if updates <= 0 then return 0 end
+    return PUSH_SPEED*(1 - FRICTION^updates)/(1 - FRICTION)
+end
 local function closest(point, a, b)
     local d = b - a
     local length = d:LengthSquared()
@@ -71,19 +90,20 @@ function M.bombChain(bombs)
     local chained = math.min(#fused, CHAIN_MAX)
     for i = 1, chained do
         local blast = fused[i]
-        local from = blast.bomb.Position + blast.bomb.Velocity*blast.at
+        local from = blast.area.position
         local to = from + blast.sweep
         for j = i+1, chained do
             local other = fused[j]
             if other.at > blast.at then
-                local where = other.bomb.Position + other.bomb.Velocity*blast.at + other.sweep
+                local where = other.bomb.Position + M.drift(other.bomb, math.max(0, blast.at)) + other.sweep
                 local centre = closest(where, from, to)
                 local away = where - centre
-                if away:Length() <= blast.area.radius + other.bomb.Size then
+                local distance = slide(other.at - blast.at - 1)
+                if distance > 0 and away:Length() <= blast.area.radius + other.bomb.Size then
                     if away:LengthSquared() < 1 then
-                        other.area.radius = other.area.radius + PUSH
+                        other.area.radius = other.area.radius + distance
                     else
-                        other.sweep = other.sweep + away:Normalized()*PUSH
+                        other.sweep = other.sweep + away:Normalized()*distance
                     end
                     other.pushed = true
                 end
@@ -240,7 +260,9 @@ function M.deathBursts(npcs, tears, beams, player, steps, areas, lasers)
                         reach=600, angularSpeed=0, delay=0, warning=true, activeFrom=t}
                 end
             end
-        elseif npc.HitPoints <= math.max(3.5, player.Damage*2) then
+        elseif npc.HitPoints <= math.max(3.5, player.Damage*2) or M.chaser(npc) then
+            -- A chaser explodes on reaching us whatever its health
+            -- (2026-11-04: two 1-heart Leech hits), so it always warns.
             areas[#areas+1] = {position=npc.Position, velocity=npc.Velocity, radius=M.BURST_RADIUS, warning=true}
         end
     end

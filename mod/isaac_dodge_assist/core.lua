@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.17.0"
+local VERSION = "0.18.0"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
@@ -291,8 +291,8 @@ local function buildField(p,steps,bullets,contacts,bombs,areas,lasers)
             end
         end
         for _,bomb in ipairs(bombs) do
-            ThreatField.add(field,t,bomb.Position+bomb.Velocity*previous,
-                bomb.Position+bomb.Velocity*t,bombRadius(bomb),true)
+            ThreatField.add(field,t,bomb.Position+NpcHazards.drift(bomb,previous),
+                bomb.Position+NpcHazards.drift(bomb,t),bombRadius(bomb),true)
         end
         for _,area in ipairs(areas) do
             if not static(area) and (not area.from or (t>=area.from and t<=area.to)) then
@@ -600,9 +600,17 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     state = danger and "THREAT / HELPER" or "MONITOR / HELPER"
     emit(true, table.concat(scores, ","), blocked)
 end)
+-- Every entity: our player's hits are recorded, and damage our attacks deal
+-- to enemies feeds the AUTO stats.
 mod:AddCallback(ModCallbacks.MC_ENTITY_TAKE_DMG, function(_, entity, amount, flags, source)
     local player = entity:ToPlayer()
-    if not player or player.InitSeed ~= boundSeed then return end
+    if not player then
+        if combat.stats and selected >= 0 and selected < game:GetNumPlayers() and entity:IsActiveEnemy(false) then
+            Combat.dealt(combat, Isaac.GetPlayer(selected), source, amount)
+        end
+        return
+    end
+    if player.InitSeed ~= boundSeed then return end
     Diagnostics.hit(frame,player,source,amount,flags,Isaac.GetRoomEntities())
     -- Spikes, poop and sourceless hits come from the grid: record it.
     if flags & (128 | 512) ~= 0 or not source.Entity then Diagnostics.grid(game:GetRoom(),player) end
@@ -612,7 +620,7 @@ mod:AddCallback(ModCallbacks.MC_ENTITY_TAKE_DMG, function(_, entity, amount, fla
         " amount=" .. amount .. (hit and (" size=" .. hit.Size .. " multi=" .. tostring(hit.SizeMulti) ..
         " damage=" .. hit.CollisionDamage .. " dead=" .. tostring(hit:IsDead()) ..
         " owned=" .. tostring(playerOwned(hit)) .. " flying=" .. tostring(player.CanFly)) or ""))
-end, EntityType.ENTITY_PLAYER)
+end)
 -- Measurement for the burst model: where each exploder (and every boom fly
 -- variant, to settle which explode) died relative to our player, and how
 -- many updates after the predicted death ("none" = no killing shot seen).

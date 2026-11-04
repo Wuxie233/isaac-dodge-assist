@@ -93,6 +93,10 @@ end
 local function laserWeapon(player)
     return has(player, "HasWeaponType", WeaponType, {"WEAPON_BRIMSTONE", "WEAPON_LASER", "WEAPON_TECH_X"})
 end
+-- Beams that arrive at once; Tech X rings fly like tears.
+local function instantBeam(player)
+    return has(player, "HasWeaponType", WeaponType, {"WEAPON_BRIMSTONE", "WEAPON_LASER"})
+end
 local function spectral(player)
     if not (TearFlags and TearFlags.TEAR_SPECTRAL) then return false end
     local ok, result = pcall(function()
@@ -226,6 +230,7 @@ local function fireControl(state, ctx, p, aligned, safe)
             -- Evidence belongs to the weapon that produced it. Picking up
             -- Brimstone after tears must start charging immediately.
             state.autoFireAt, state.provenAuto, state.holdAttacks, state.held = nil, false, 0, 0
+            state.laserReach = nil -- a capped beam's length belongs to that weapon
         end
         state.hint, state.hintTick = hint, state.tick
         state.brimstone = has(p, "HasWeaponType", WeaponType, {"WEAPON_BRIMSTONE"})
@@ -371,12 +376,35 @@ end
 -- backwards). AUTO walks while it shoots, so ignoring this sent tears wide.
 local INHERIT = 1.3
 local AXES = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}} -- shoot 1 left, 2 right, 3 up, 4 down
+-- A beam (Brimstone, lasers) arrives at once and does not drift: aim at
+-- where the target is when the queued release lands. It hits what overlaps
+-- its width (about BEAM_HALF each side) up to its reach.
+local BEAM_HALF = 12
+local function aimBeam(player, target, delay, beam)
+    local p, t, v = player.Position, target.Position, target.Velocity
+    local pv = player.Velocity or Vector(0, 0)
+    local ox, oy = p.X + pv.X*delay, p.Y + pv.Y*delay
+    local px, py = t.X + v.X*delay, t.Y + v.Y*delay
+    local best, bestMiss
+    for shoot, axis in ipairs(AXES) do
+        local forward = (px - ox)*axis[1] + (py - oy)*axis[2]
+        if forward > 0 then
+            local miss = abs((px - ox)*axis[2] - (py - oy)*axis[1])
+            if not bestMiss or miss < bestMiss then best, bestMiss = shoot, miss end
+        end
+    end
+    if not best then return 1, false, px, py end
+    local reach = (px - ox)*AXES[best][1] + (py - oy)*AXES[best][2]
+    return best, bestMiss <= target.Size + BEAM_HALF and reach <= beam.reach + target.Size, px, py
+end
 -- For each shooting axis: lead the target by the tear's flight time plus the
 -- online input queue, from where the queued command will actually fire, and
 -- measure how far the drifting tear passes from it. Pick the closest pass.
-local function aim(player, target, queueDelay)
-    local p, t, v = player.Position, target.Position, target.Velocity
+-- beam = {reach=...} aims a beam instead.
+local function aim(player, target, queueDelay, beam)
     local delay = queueDelay or 0
+    if beam then return aimBeam(player, target, delay, beam) end
+    local p, t, v = player.Position, target.Position, target.Velocity
     local pv = player.Velocity or Vector(0, 0)
     local ox, oy = p.X + pv.X*delay, p.Y + pv.Y*delay
     local tearSpeed = max(1, (player.ShotSpeed or 1) * 10)
@@ -561,7 +589,7 @@ end
 -- Per-room AUTO summary (IAD COMBAT STATS), flushed by main.lua.
 function M.stats(state)
     if not state.stats then
-        state.stats = {ticks=0, firing=0, aligned=0, switches=0, sides=0, distance=0, tears=0}
+        state.stats = {ticks=0, firing=0, aligned=0, switches=0, retargets=0, sides=0, distance=0, tears=0, dealt=0}
     end
     return state.stats
 end
@@ -569,8 +597,14 @@ function M.flushStats(state, reason)
     local s = state.stats
     state.stats = nil
     if not s or s.ticks == 0 then return end
-    log(string.format("IAD COMBAT STATS: ticks=%d firing=%.0f%% aligned=%.0f%% switches=%d sides=%d meanDist=%.0f tears=%d reason=%s",
-        s.ticks, s.firing*100/s.ticks, s.aligned*100/s.ticks, s.switches, s.sides, s.distance/s.ticks, s.tears, reason))
+    log(string.format("IAD COMBAT STATS: ticks=%d firing=%.0f%% aligned=%.0f%% switches=%d retargets=%d sides=%d meanDist=%.0f tears=%d dealt=%.1f reason=%s",
+        s.ticks, s.firing*100/s.ticks, s.aligned*100/s.ticks, s.switches, s.retargets, s.sides, s.distance/s.ticks, s.tears, s.dealt, reason))
+end
+-- Damage taken by an enemy (core's damage callback): counted for the AUTO
+-- stats when one of our own attacks dealt it.
+function M.dealt(state, player, source, amount)
+    local s, e = state.stats, source and source.Entity
+    if s and state.mode == 2 and e and ownedBy(e, player) then s.dealt = s.dealt + amount end
 end
 
 -- ctx: player, room, frame, entities, playerOwned, gridSafeXY, directions,
@@ -597,10 +631,18 @@ function M.update(state, ctx)
     local stats = state.mode == 2 and M.stats(state) or nil
     if target.InitSeed ~= previousSeed then
         state.targetSince, state.goalSide = state.tick, nil
-        if stats and previousSeed then stats.switches = stats.switches + 1 end
+        if stats and previousSeed then
+            stats.switches = stats.switches + 1
+            -- Leaving a target that is still alive is a retarget, not a kill.
+            for _, e in ipairs(enemies) do
+                if e.InitSeed == previousSeed then stats.retargets = stats.retargets + 1 break end
+            end
+        end
     end
     state.targetSeed = target.InitSeed
-    local shoot, aligned, ax, ay = aim(p, target, ctx.queueDelay)
+    -- Beams ignore the tear range; only a capped beam (Azazel) stops short.
+    local beam = instantBeam(p) and {reach=state.laserReach or math.huge} or nil
+    local shoot, aligned, ax, ay = aim(p, target, ctx.queueDelay, beam)
     state.lastShoot = shoot
     local info = {targetX=target.Position.X, targetY=target.Position.Y, targetR=target.Size, aimX=ax, aimY=ay}
     state.info = info

@@ -122,12 +122,14 @@ creep.animation='Walk';s=replay(Vector(345.4,262.5),Vector(0,0),{creep})
 assert(s[1]<HARD,'walking rage creep predicted a beam')
 print('PASS Rage Creep: wall beam predicted before it appears; walking creep ignored')
 
--- Troll bomb rolling left at 4.2/update exploded on Pulse frame 58 at
--- (103.2,320) with the player at (102.1,370.5), cornered at the bottom-left
--- wall. On frame 40 (18 updates earlier, beyond the 14-update window) the
--- player was at (89.5,356.7); stopping there (idle) is inside the blast.
+-- Troll bomb rolling left exploded on Pulse frame 58 at (103.2,320) with
+-- the player at (102.1,370.5), cornered at the bottom-left wall. On frame 40
+-- (18 updates earlier, beyond the 14-update window) the player was at
+-- (89.5,356.7); stopping there (idle) is inside the blast. Only the
+-- detonation was logged; the frame-40 bomb state is reconstructed with the
+-- measured friction (x0.95 per update, 2026-11-04 IAD BOMB).
 local bomb=entity(EntityType.ENTITY_BOMB,BombVariant.BOMB_TROLL,'Pulse',40)
-bomb.Position,bomb.Velocity,bomb.Size=Vector(178.8,320),Vector(-4.2,0),16
+bomb.Position,bomb.Velocity,bomb.Size=Vector(178.8,320),Vector(-6.27,0),16
 bomb.ExplosionDamage,bomb.RadiusMultiplier=10,1
 function bomb:ToBomb()return self end;function bomb:IsActiveEnemy()return false end
 s,b=replay(Vector(89.5,356.7),Vector(-2.5,2.4),{bomb})
@@ -146,7 +148,15 @@ s=replay(Vector(320,280),Vector(0,0),{fly})
 assert(s[1]>0 and s[1]<HARD,'dying boom fly gave no warning')
 fly.HitPoints=20;s=replay(Vector(320,280),Vector(0,0),{fly})
 for _,v in ipairs(s)do assert(v==0,'healthy boom fly warned')end
-print('PASS death burst: dying exploder warns, healthy one does not')
+-- A chasing exploder (Kamikaze Leech) blows up when it reaches us, at any
+-- health: 2026-11-04 took two 1-heart hits that way. Keep a warning zone of
+-- the burst radius around it so the planner keeps its distance.
+local leech=entity(EntityType.ENTITY_LEECH,1,'Move',1)
+leech.Position,leech.Velocity,leech.HitPoints,leech.EntityCollisionClass,leech.CollisionDamage=Vector(250,280),Vector(3,0),20,EntityCollisionClass.ENTCOLL_NONE,0
+function leech:ToNPC()return self end
+s=replay(Vector(320,280),Vector(0,0),{leech})
+assert(s[1]>0 and s[1]<HARD,'chasing exploder gave no warning ('..s[1]..')')
+print('PASS death burst: dying exploder warns, healthy one does not, a chaser always warns')
 
 -- A killing shot in flight makes the burst a hit. 2026-10-28: a boom fly
 -- moving (-4.9,-4.9) died at (467.8,221.7) next to the player at
@@ -200,9 +210,10 @@ callbacks[ModCallbacks.MC_POST_NPC_DEATH](nil,entity(EntityType.ENTITY_GAPER,0,'
 assert(#logs==count,'non-exploder death recorded')
 print('PASS IAD BURST: exploder and boom fly deaths recorded with distance and prediction lag')
 
--- Chain knockback: a blast pushes the later bombs inside it away from it.
--- Until measured, a pushed bomb's blast covers 80 along the push and its
--- timing is widened by 3 updates; a chain follows every push in order.
+-- Chain knockback (2026-11-04 IAD BOMB, 1358 blast/bomb pairs): a pushed
+-- bomb leaves at about 14/update one update after the blast and keeps x0.95
+-- of its speed per update, so after n updates it has slid 280*(1-0.95^n)
+-- (observed up to 215); its fuse runs on. A chain follows every push.
 local NpcHazards=dofile('mod/isaac_dodge_assist/npc_hazards.lua')
 local function fused(x,y,frame,rm)
  local b=entity(EntityType.ENTITY_BOMB,BombVariant.BOMB_TROLL,'Pulse',frame)
@@ -210,16 +221,24 @@ local function fused(x,y,frame,rm)
  function b:ToBomb()return self end;function b:IsActiveEnemy()return false end
  return b
 end
-local function near(v,x,y)return math.abs(v.X-x)<0.01 and math.abs(v.Y-y)<0.01 end
+local function near(v,x,y)return math.abs(v.X-x)<0.5 and math.abs(v.Y-y)<0.5 end
 local single=NpcHazards.bombChain({fused(200,280,50)})
 assert(#single==1 and single[1].radius==78 and single[1].from==7 and single[1].to==9 and not single[1].sweep,'lone bomb blast changed')
--- A (8 updates) pushes B (28) right; B's swept blast then pushes C (48).
-local chain=NpcHazards.bombChain({fused(330,280,10),fused(240,280,30),fused(200,280,50)})
+-- Friction: a bomb rolling right at 4/update detonating in 8 updates lands
+-- 4*(1-0.95^8)/0.05 = 26.9 away, not 32.
+local rolling=fused(200,280,50);rolling.Velocity=Vector(4,0)
+assert(near(NpcHazards.bombChain({rolling})[1].position,226.9,280),'bomb friction not applied')
+-- A (8 updates) pushes B (28) right: 19 updates of slide = 174.3. B's swept
+-- blast (240..414) then pushes C (48, 50 below it) down by the same.
+local chain=NpcHazards.bombChain({fused(330,330,10),fused(240,280,30),fused(200,280,50)})
 assert(#chain==3,'chain lost a bomb')
 local a,bb,c=chain[1],chain[2],chain[3]
 assert(near(a.position,200,280) and not a.sweep,'first blast moved')
-assert(near(bb.position,240,280) and bb.sweep and near(bb.sweep,80,0) and bb.from==24 and bb.to==32,'pushed bomb not swept right')
-assert(c.sweep and near(c.sweep,80,0) and c.from==44 and c.to==52,'second link of the chain not pushed')
+assert(near(bb.position,240,280) and bb.sweep and near(bb.sweep,174.3,0) and bb.from==26 and bb.to==30,'pushed bomb not swept right: '..tostring(bb.sweep and bb.sweep.X))
+assert(c.sweep and near(c.sweep,0,174.3) and c.from==46 and c.to==50,'second link of the chain not pushed')
+-- A short gap slides less: 3 updates of slide = 40.0.
+chain=NpcHazards.bombChain({fused(200,280,50),fused(240,280,46)})
+assert(near(chain[2].sweep,40.0,0),'slide not limited by the time left: '..chain[2].sweep.X)
 -- Out of reach, or detonating together: no push.
 chain=NpcHazards.bombChain({fused(200,280,50),fused(400,280,30)})
 assert(not chain[1].sweep and not chain[2].sweep,'distant bomb pushed')
@@ -227,14 +246,14 @@ chain=NpcHazards.bombChain({fused(200,280,50),fused(240,280,50)})
 assert(not chain[1].sweep and not chain[2].sweep,'simultaneous bombs pushed')
 -- Right on top: the direction is unknown, so the blast grows instead.
 chain=NpcHazards.bombChain({fused(200,280,50),fused(200,280,30)})
-assert(chain[2].radius==78+80 and not chain[2].sweep,'stacked bomb not grown')
+assert(math.abs(chain[2].radius-(78+174.3))<0.5 and not chain[2].sweep,'stacked bomb not grown')
 -- Only the first 8 detonations are chained; later ones keep a plain blast.
 local many={}
 for i=1,10 do many[i]=fused(200+i*10,280,58-i*5) end
 chain=NpcHazards.bombChain(many)
 assert(#chain==10 and not chain[10].sweep and chain[8].sweep,'chain limit')
 -- Through the sensor: standing at (360,345) is clear of B where it lies
--- (136 away) but not where A's blast sends it.
+-- (136 away) but not where A's blast sends it (7 updates: 84.5 right).
 local function bombLines(from)
  local n=0;for i=from,#logs do if logs[i]:find('^IAD BOMB: ') then n=n+1 end end;return n
 end
