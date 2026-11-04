@@ -147,4 +147,111 @@ assert(s[1]>0 and s[1]<HARD,'dying boom fly gave no warning')
 fly.HitPoints=20;s=replay(Vector(320,280),Vector(0,0),{fly})
 for _,v in ipairs(s)do assert(v==0,'healthy boom fly warned')end
 print('PASS death burst: dying exploder warns, healthy one does not')
+
+-- A killing shot in flight makes the burst a hit. 2026-10-28: a boom fly
+-- moving (-4.9,-4.9) died at (467.8,221.7) next to the player at
+-- (452.8,166.2); 14 updates earlier (TRACE f=73) the player was at
+-- (412.4,241.9) moving (4.1,-4.1) up-right (7), MoveSpeed 1.6, toward the
+-- fly. The killing tear is placed to arrive at the recorded death.
+local function tear(x,y,vx,vy,damage)
+ local t=entity(EntityType.ENTITY_TEAR,0,'Idle',0)
+ t.Position,t.Velocity,t.Size,t.CollisionDamage=Vector(x,y),Vector(vx,vy),7,damage
+ t.SpawnerType,t.EntityCollisionClass,t.Height,t.FallingSpeed,t.FallingAcceleration=EntityType.ENTITY_PLAYER,EntityCollisionClass.ENTCOLL_ENEMIES,-24,0,0
+ function t:IsActiveEnemy()return false end
+ return t
+end
+fly.Position,fly.Velocity,fly.HitPoints=Vector(536.4,290.3),Vector(-4.9,-4.9),3
+p.MoveSpeed=1.6
+s,b=replay(Vector(412.4,241.9),Vector(4.1,-4.1),{fly,tear(467.8,361.7,0,-10,3.5)})
+check('boom fly killed by a tear',s,b,7)
+-- The same tear cannot kill a healthy fly: nothing to avoid.
+fly.HitPoints=20;s=replay(Vector(412.4,241.9),Vector(4.1,-4.1),{fly,tear(467.8,361.7,0,-10,3.5)})
+for _,v in ipairs(s)do assert(v==0,'tear that cannot kill made a burst')end
+-- A tear flying away never reaches it.
+fly.HitPoints=3;s=replay(Vector(412.4,241.9),Vector(4.1,-4.1),{fly,tear(467.8,361.7,0,10,3.5)})
+assert(s[7]<HARD,'tear flying away predicted a kill')
+p.MoveSpeed=1
+-- 2026-10-26: Azazel's beam (8.16 per update) killed a boom fly drifting
+-- into it at (219.6,298.2), 64 units from the player. Four updates earlier
+-- the fly touched the beam and the player stood 42 units away: too close to
+-- get out, so only the prediction is required.
+local beam=entity(EntityType.ENTITY_LASER,1,'LargeRedLaser',0)
+beam.Position,beam.Size,beam.CollisionDamage,beam.Timeout=Vector(230.2,251),16,8.16,8
+beam.SpawnerType,beam.EntityCollisionClass=EntityType.ENTITY_PLAYER,EntityCollisionClass.ENTCOLL_ENEMIES
+function beam:ToLaser()return self end;function beam:IsActiveEnemy()return false end
+function beam:GetEndPoint()return Vector(230.2,467.7)end;function beam:IsCircleLaser()return false end
+fly.Position,fly.Velocity,fly.HitPoints=Vector(205.6,284.6),Vector(3.5,3.4),20
+s=replay(Vector(230.2,251.0),Vector(1.0,0),{fly,beam})
+assert(s[3]>=HARD,'boom fly dying in our beam not predicted')
+print('PASS killing shot: tear in flight and beam contact turn the burst into a hit; harmless or stray tears do not')
+
+-- Every exploder death (and every boom fly variant, to check which really
+-- explode) is recorded with the distance and how late the prediction was.
+fly.HitPoints,fly.Position,fly.Velocity=3,Vector(536.4,290.3),Vector(-4.9,-4.9)
+replay(Vector(412.4,241.9),Vector(4.1,-4.1),{fly,tear(467.8,361.7,0,-10,3.5)})
+fly.Position=Vector(500.4,290.3)
+callbacks[ModCallbacks.MC_POST_NPC_DEATH](nil,fly)
+assert(logs[#logs]:match('^IAD BURST: source='..EntityType.ENTITY_BOOMFLY..'%.0%.0 pos=500%.4,290%.3 player=412%.4,241%.9 dist=100%.4 late=%-12 hp=3%.0$'),logs[#logs])
+local red=entity(EntityType.ENTITY_BOOMFLY,1,'Fly',0);red.HitPoints=0
+callbacks[ModCallbacks.MC_POST_NPC_DEATH](nil,red)
+assert(logs[#logs]:find('^IAD BURST: source='..EntityType.ENTITY_BOOMFLY..'%.1%.0 .* late=none'),'red boom fly death not recorded')
+local count=#logs
+callbacks[ModCallbacks.MC_POST_NPC_DEATH](nil,entity(EntityType.ENTITY_GAPER,0,'Walk',0))
+assert(#logs==count,'non-exploder death recorded')
+print('PASS IAD BURST: exploder and boom fly deaths recorded with distance and prediction lag')
+
+-- Chain knockback: a blast pushes the later bombs inside it away from it.
+-- Until measured, a pushed bomb's blast covers 80 along the push and its
+-- timing is widened by 3 updates; a chain follows every push in order.
+local NpcHazards=dofile('mod/isaac_dodge_assist/npc_hazards.lua')
+local function fused(x,y,frame,rm)
+ local b=entity(EntityType.ENTITY_BOMB,BombVariant.BOMB_TROLL,'Pulse',frame)
+ b.Position,b.Velocity,b.Size,b.RadiusMultiplier,b.ExplosionDamage=Vector(x,y),Vector(0,0),16,rm or 1,10
+ function b:ToBomb()return self end;function b:IsActiveEnemy()return false end
+ return b
+end
+local function near(v,x,y)return math.abs(v.X-x)<0.01 and math.abs(v.Y-y)<0.01 end
+local single=NpcHazards.bombChain({fused(200,280,50)})
+assert(#single==1 and single[1].radius==78 and single[1].from==7 and single[1].to==9 and not single[1].sweep,'lone bomb blast changed')
+-- A (8 updates) pushes B (28) right; B's swept blast then pushes C (48).
+local chain=NpcHazards.bombChain({fused(330,280,10),fused(240,280,30),fused(200,280,50)})
+assert(#chain==3,'chain lost a bomb')
+local a,bb,c=chain[1],chain[2],chain[3]
+assert(near(a.position,200,280) and not a.sweep,'first blast moved')
+assert(near(bb.position,240,280) and bb.sweep and near(bb.sweep,80,0) and bb.from==24 and bb.to==32,'pushed bomb not swept right')
+assert(c.sweep and near(c.sweep,80,0) and c.from==44 and c.to==52,'second link of the chain not pushed')
+-- Out of reach, or detonating together: no push.
+chain=NpcHazards.bombChain({fused(200,280,50),fused(400,280,30)})
+assert(not chain[1].sweep and not chain[2].sweep,'distant bomb pushed')
+chain=NpcHazards.bombChain({fused(200,280,50),fused(240,280,50)})
+assert(not chain[1].sweep and not chain[2].sweep,'simultaneous bombs pushed')
+-- Right on top: the direction is unknown, so the blast grows instead.
+chain=NpcHazards.bombChain({fused(200,280,50),fused(200,280,30)})
+assert(chain[2].radius==78+80 and not chain[2].sweep,'stacked bomb not grown')
+-- Only the first 8 detonations are chained; later ones keep a plain blast.
+local many={}
+for i=1,10 do many[i]=fused(200+i*10,280,58-i*5) end
+chain=NpcHazards.bombChain(many)
+assert(#chain==10 and not chain[10].sweep and chain[8].sweep,'chain limit')
+-- Through the sensor: standing at (360,345) is clear of B where it lies
+-- (136 away) but not where A's blast sends it.
+local function bombLines(from)
+ local n=0;for i=from,#logs do if logs[i]:find('^IAD BOMB: ') then n=n+1 end end;return n
+end
+local mark=#logs
+s,b=replay(Vector(360,345),Vector(0,0),{fused(200,280,56),fused(240,280,48)})
+check('pushed bomb',s,b,1)
+-- Every update with two or more bombs records each one for the push model.
+assert(bombLines(mark)>=2,'IAD BOMB not recorded')
+local sample;for i=mark,#logs do if logs[i]:find('^IAD BOMB: ') then sample=logs[i] end end
+assert(sample:match('^IAD BOMB: f=%d+ id=%d+ var=%d+ pos=240%.0,280%.0 vel=0%.00,0%.00 anim=Pulse:48 rm=1%.00$'),sample)
+mark=#logs
+s=replay(Vector(360,345),Vector(0,0),{fused(240,280,48)})
+assert(s[1]<HARD,'lone bomb 136 away predicted as a hit')
+assert(bombLines(mark)==0,'a lone resting bomb was recorded')
+-- A lone bomb on the move is recorded too (friction).
+local rolling=fused(240,280,48);rolling.Velocity=Vector(3,0);mark=#logs
+replay(Vector(360,345),Vector(0,0),{rolling})
+assert(bombLines(mark)>=1,'rolling bomb not recorded')
+print('PASS chain knockback: pushed blasts swept along the push, chained in order, limits and replay')
 for _,line in ipairs(logs)do assert(not line:find('IAD LOADER: core error',1,true),line)end

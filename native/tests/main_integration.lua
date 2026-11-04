@@ -43,7 +43,8 @@ function Input.GetActionValue(action,controller)
 end
 -- Mutable roster: co-op joins/leaves and lobby restarts change it mid-run.
 local roster,rosterCount={p},1
-function Game()return {GetNumPlayers=function()return rosterCount end,GetRoom=function()return room end,IsPaused=function()return paused end}end
+function Game()return {GetNumPlayers=function()return rosterCount end,GetRoom=function()return room end,IsPaused=function()return paused end,
+ GetSeeds=function()return {GetStartSeedString=function()return "ABCD 1234" end}end}end
 Isaac={GetTime=function()return os.clock()*1000 end,GetPlayer=function(i)return roster[(i or 0)+1] or p end,
  GetRoomEntities=function()return scene end,DebugString=function(s)logs[#logs+1]=s end,
  RenderText=function()end,WorldToScreen=function(v)return v end}
@@ -358,4 +359,27 @@ for frame=currentAt+1,currentAt+40 do appliedDir[frame]={X=0,Y=1} end
 for frame=1,40 do tick() end
 assert(expectBound('remote-only movement')[5]=='0','remote movement rebound the sensor')
 print('PASS co-op lobby binds by device evidence without F7')
+
+-- Run markers let the host archive one file per run: begin (new or
+-- continued), pause on a saving exit, end on death, victory or a quit.
+local function runLines(action)
+ local from=#logs+1;action()
+ local found={}
+ for i=from,#logs do if logs[i]:find('^IAD RUN ') then found[#found+1]=logs[i] end end
+ return table.concat(found,'\n')
+end
+roster,rosterCount={p},1
+local G=ModCallbacks
+assert(runLines(function()callbacks[G.MC_POST_GAME_STARTED](nil,false)end)==
+ 'IAD RUN begin continued=false player=-1 seed=ABCD1234','new run marker')
+assert(runLines(function()callbacks[G.MC_PRE_GAME_EXIT](nil,true)end)=='IAD RUN pause','saving exit is a pause')
+assert(runLines(function()callbacks[G.MC_POST_GAME_STARTED](nil,true)end)==
+ 'IAD RUN begin continued=true player=-1 seed=ABCD1234','continued run marker')
+assert(runLines(function()callbacks[G.MC_POST_GAME_END](nil,true)end)=='IAD RUN end reason=death','death ends the run')
+assert(runLines(function()callbacks[G.MC_PRE_GAME_EXIT](nil,false)end)=='','exit after death ends it twice')
+callbacks[G.MC_POST_GAME_STARTED](nil,false)
+assert(runLines(function()callbacks[G.MC_POST_GAME_END](nil,false)end)=='IAD RUN end reason=win','victory ends the run')
+callbacks[G.MC_POST_GAME_STARTED](nil,false)
+assert(runLines(function()callbacks[G.MC_PRE_GAME_EXIT](nil,false)end)=='IAD RUN end reason=quit','unsaved exit is a quit')
+print('PASS run markers: begin/continue, pause on saving exit, end on death, win and quit')
 for _,line in ipairs(logs)do assert(not line:find('IAD LOADER: core error',1,true),line)end

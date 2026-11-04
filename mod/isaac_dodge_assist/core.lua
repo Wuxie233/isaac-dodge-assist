@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.16.0"
+local VERSION = "0.17.0"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
@@ -39,6 +39,7 @@ local masks = {0, 1, 2, 4, 8, 5, 6, 9, 10}
 local frame, sequence, previousCount = 0, 0, -1
 local state = "WAITING"
 local loggedState = nil
+local runEnded = false
 -- Candidate order is part of the IAD1 protocol: idle, L, R, U, D, LU, RU, LD, RD.
 local directions = {Vector(0,0), Vector(-1,0), Vector(1,0), Vector(0,-1), Vector(0,1),
     Vector(-1,-1):Normalized(), Vector(1,-1):Normalized(), Vector(-1,1):Normalized(), Vector(1,1):Normalized()}
@@ -64,6 +65,7 @@ if saved then
     selected, boundSeed, manualUntil, previousCount = saved.selected, saved.boundSeed, saved.manualUntil, saved.previousCount
     kinematics, inputs, binding = saved.kinematics, saved.inputs, saved.binding
     frame, sequence, state = saved.frame, saved.sequence, saved.state
+    runEnded = saved.runEnded or false
     if saved.overlay ~= Overlay.enabled() then Overlay.toggle() end
     for _, key in ipairs({"mode", "bias", "hint", "weapon", "provenAuto", "autoFireAt", "aimLogs"}) do
         if saved.combat[key] ~= nil then combat[key] = saved.combat[key] end
@@ -73,7 +75,7 @@ local function snapshot()
     return {enabled=enabled, paused=paused, horizonIndex=horizonIndex,
         selected=selected, boundSeed=boundSeed, manualUntil=manualUntil, previousCount=previousCount,
         kinematics=kinematics, inputs=inputs, binding=binding,
-        frame=frame, sequence=sequence, state=state, overlay=Overlay.enabled(), combat=combat}
+        frame=frame, sequence=sequence, state=state, runEnded=runEnded, overlay=Overlay.enabled(), combat=combat}
 end
 local function reset()
     Diagnostics.reset("game-start")
@@ -234,9 +236,11 @@ local function contactThreat(entity)
 end
 -- Grid cells AUTO must not path through (active spikes, red poop).
 local hazardCells = {}
+-- Predicted death update per exploder seed, for the IAD BURST record.
+local deathAt = {}
 local function engage(p, room, entities, scores, blocked)
     combatWord = Combat.update(combat, {player=p, room=room, frame=frame, entities=entities,
-        playerOwned=playerOwned, exploder=NpcHazards.exploder, hazardCells=hazardCells,
+        playerOwned=playerOwned, exploder=NpcHazards.exploder, chaser=NpcHazards.chaser, hazardCells=hazardCells,
         gridSafeXY=gridSafeXY, directions=directions,
         stride=kinematics.k*p.MoveSpeed*PlayerMotion.TICKS, queueDelay=inputs.delay,
         scores=scores, blocked=blocked})
@@ -292,8 +296,11 @@ local function buildField(p,steps,bullets,contacts,bombs,areas,lasers)
         end
         for _,area in ipairs(areas) do
             if not static(area) and (not area.from or (t>=area.from and t<=area.to)) then
+                -- A pushed bomb may blast anywhere along its sweep.
+                local finish=area.position+area.velocity*t
+                if area.sweep then finish=finish+area.sweep end
                 ThreatField.add(field,t,area.position+area.velocity*previous,
-                    area.position+area.velocity*t,area.radius,area.warning)
+                    finish,area.radius,area.warning)
             end
         end
     end
@@ -332,14 +339,37 @@ local function logGrid(room)
     end
     Isaac.DebugString("IAD GRID: " .. table.concat(parts, " "))
 end
-mod:AddCallback(ModCallbacks.MC_POST_GAME_STARTED, reset)
+-- Run markers: the native host files every log line between "begin" and
+-- "pause"/"end" into one archive per run, continuing it across launches.
+local function runMarker(text)
+    Isaac.DebugString("IAD RUN " .. text)
+end
+mod:AddCallback(ModCallbacks.MC_POST_GAME_STARTED, function(_, continued)
+    local ok, seed = pcall(function() return game:GetSeeds():GetStartSeedString() end)
+    local player = Isaac.GetPlayer(0)
+    runEnded = false
+    runMarker("begin continued=" .. tostring(continued == true) ..
+        " player=" .. tostring(player and player:GetPlayerType() or -1) ..
+        " seed=" .. (ok and tostring(seed):gsub("%s", "") or "unknown"))
+    reset()
+end)
+mod:AddCallback(ModCallbacks.MC_POST_GAME_END, function(_, gameOver)
+    runEnded = true
+    runMarker("end reason=" .. (gameOver and "death" or "win"))
+end)
 local function flushKinematics(reason)
     if kinematics.idleN+kinematics.driveN+kinematics.kN>0 then
         Isaac.DebugString("IAD KIN: "..PlayerMotion.summary(kinematics).." "..InputQueue.summary(inputs).." reason="..reason)
     end
 end
-mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); Combat.flushStats(combat, "room"); frame = 0; motion = {}; gridLogged = false; Diagnostics.reset("room"); emit(false) end)
-mod:AddCallback(ModCallbacks.MC_PRE_GAME_EXIT, function() flushKinematics("game-exit"); Combat.flushStats(combat, "game-exit"); Diagnostics.flushPerformance("game-exit"); emit(false); selected = -1 end)
+mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); Combat.flushStats(combat, "room"); frame = 0; motion = {}; deathAt = {}; gridLogged = false; Diagnostics.reset("room"); emit(false) end)
+mod:AddCallback(ModCallbacks.MC_PRE_GAME_EXIT, function(_, shouldSave)
+    flushKinematics("game-exit"); Combat.flushStats(combat, "game-exit"); Diagnostics.flushPerformance("game-exit"); emit(false); selected = -1
+    -- A saving exit can be continued later; leaving without a save ends it
+    -- (after a death or victory the run has already ended).
+    if shouldSave then runMarker("pause")
+    elseif not runEnded then runEnded = true; runMarker("end reason=quit") end
+end)
 mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     frame = frame + 1
     local count = game:GetNumPlayers()
@@ -407,25 +437,35 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     effectiveHorizon=math.floor(steps*1000/30+0.5)
     local reach=stride*steps+p.Size
     motion = MotionPrediction.track(entities,motion)
+    -- Exploders and the player side's shots that may kill them.
+    local exploders, tears, beams, fusedBombs, liveBombs = {}, {}, {}, {}, {}
     for _, entity in ipairs(entities) do
         local npc = entity:ToNPC()
         if npc and not npc:IsDead() and not playerOwned(npc) then
             LaserHazards.appendWarnings(npc,game:GetRoom(),lasers)
             NpcHazards.momArm(npc,game:GetRoom(),areas)
-            local burst = NpcHazards.deathBurst(npc,p)
-            if burst then areas[#areas+1] = burst end
+            if NpcHazards.exploder(npc) then exploders[#exploders+1] = npc end
+        end
+        if entity.Type == EntityType.ENTITY_TEAR and not entity:IsDead() and playerOwned(entity) then
+            tears[#tears+1] = (entity.ToTear and entity:ToTear()) or entity
         end
         local bomb = entity:ToBomb()
-        if bomb and not bomb:IsDead() and bomb.ExplosionDamage > 0 and
-            bomb.Position:Distance(p.Position) < bombRadius(bomb) + reach + bomb.Velocity:Length() * steps then
-            bombs[#bombs+1] = bomb
-            local blast = NpcHazards.bombBlast(bomb)
-            if blast then areas[#areas+1] = blast end
+        if bomb and not bomb:IsDead() then
+            liveBombs[#liveBombs+1] = bomb
+            if bomb.ExplosionDamage > 0 then
+                -- A distant bomb can still push a near one: chain them all.
+                fusedBombs[#fusedBombs+1] = bomb
+                if bomb.Position:Distance(p.Position) < bombRadius(bomb) + reach + bomb.Velocity:Length() * steps then
+                    bombs[#bombs+1] = bomb
+                end
+            end
         end
         local laser = entity:ToLaser()
         local effect = entity:ToEffect()
         if laser and not playerOwned(laser) then
             lasers[#lasers+1] = LaserHazards.snapshot(laser)
+        elseif laser then
+            if not laser:IsDead() and not laser:IsCircleLaser() then beams[#beams+1] = laser end
         elseif effect then
             local envelope = effectEnvelope(effect,p)
             if envelope and not playerOwned(effect) then
@@ -458,6 +498,11 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
                 radius=npc.Size+23,warning=true}
         end
     end
+    for seed, t in pairs(NpcHazards.deathBursts(exploders,tears,beams,p,steps,areas,lasers)) do
+        deathAt[seed] = frame + t
+    end
+    for _, blast in ipairs(NpcHazards.bombChain(fusedBombs)) do areas[#areas+1] = blast end
+    Diagnostics.bombs(frame,liveBombs)
     Diagnostics.observe(frame,entities,p,playerOwned,#lasers)
     -- Grid damage exists even when the room has no enemy entities.
     local room = game:GetRoom()
@@ -510,7 +555,8 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     local nearbyAreas = {}
     for _,area in ipairs(areas) do
         if segmentDistance(area.position-p.Position,
-            area.position+area.velocity*steps-p.Position) <= reach+area.radius then
+            area.position+area.velocity*steps-p.Position) <=
+            reach+area.radius+(area.sweep and area.sweep:Length() or 0) then
             nearbyAreas[#nearbyAreas+1] = area
         end
     end
@@ -567,6 +613,18 @@ mod:AddCallback(ModCallbacks.MC_ENTITY_TAKE_DMG, function(_, entity, amount, fla
         " damage=" .. hit.CollisionDamage .. " dead=" .. tostring(hit:IsDead()) ..
         " owned=" .. tostring(playerOwned(hit)) .. " flying=" .. tostring(player.CanFly)) or ""))
 end, EntityType.ENTITY_PLAYER)
+-- Measurement for the burst model: where each exploder (and every boom fly
+-- variant, to settle which explode) died relative to our player, and how
+-- many updates after the predicted death ("none" = no killing shot seen).
+mod:AddCallback(ModCallbacks.MC_POST_NPC_DEATH, function(_, npc)
+    if not (NpcHazards.exploder(npc) or npc.Type == EntityType.ENTITY_BOOMFLY) then return end
+    if selected < 0 or selected >= game:GetNumPlayers() then return end
+    local at, player = npc.Position, Isaac.GetPlayer(selected).Position
+    local predicted = deathAt[npc.InitSeed]
+    Isaac.DebugString(string.format("IAD BURST: source=%d.%d.%d pos=%.1f,%.1f player=%.1f,%.1f dist=%.1f late=%s hp=%.1f",
+        npc.Type, npc.Variant, npc.SubType, at.X, at.Y, player.X, player.Y, at:Distance(player),
+        predicted and tostring(frame - predicted) or "none", npc.HitPoints))
+end)
 mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
     if Input.IsButtonTriggered(Keyboard.KEY_F6, 0) then enabled = not enabled; emit(false) end
     if Input.IsButtonTriggered(Keyboard.KEY_LEFT_SHIFT, 0) then paused = not paused; emit(false) end

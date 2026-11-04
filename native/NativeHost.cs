@@ -32,6 +32,9 @@ internal static class NativeHost
     // IAD2 (sensor 0.12+) precedes the IAD1 packet whose sequence it names.
     static readonly CombatPairing pairing=new CombatPairing();
     static uint lastCombat;
+    // Run archive (RunArchive.cs) runs on its own thread with its own file
+    // handle, so archive IO can never stall or break the live input path.
+    static volatile string archiveNote="日志存档：等待启动";
     static void ResetStream()
     {
         pending="";
@@ -105,6 +108,21 @@ internal static class NativeHost
         }catch(Exception e){lock(sync){note="读取线程停止："+e.Message;if(view!=null)Publish(false,null,0);}}
         finally{timeEndPeriod(1);}
     }
+    static void ArchiveLoop(object start)
+    {
+        object[] args=(object[])start;
+        RunArchive archive=null;
+        try{
+            string root=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"IsaacDodgeAssist","Logs");
+            archive=new RunArchive(root,(string)args[1],delegate{return DateTime.Now;});
+            while(running){
+                archive.Poll((string)args[0]);
+                archiveNote="日志存档："+(archive.Status??"无新内容");
+                for(int i=0;i<25 && running;i++)Thread.Sleep(10);
+            }
+        }catch(Exception e){archiveNote="日志存档停止："+e.Message;}
+        finally{if(archive!=null){archive.Poll((string)args[0]);archive.Close();}}
+    }
     static void WriteStats(string reason)
     {
         try{
@@ -151,14 +169,18 @@ internal static class NativeHost
                 }
                 if(!loaded)Inject(game,dll);
                 Application.EnableVisualStyles();
-                var form=new Form{Text="以撒原生输入躲避 0.4.4",Width=560,Height=270};
+                var form=new Form{Text="以撒原生输入躲避 0.4.5",Width=560,Height=290};
                 var toggle=new CheckBox{Text="启用原生移动接管",Checked=true,Left=20,Top=20,Width=300};
-                var label=new Label{Left=20,Top=60,Width=510,Height=160};
+                var label=new Label{Left=20,Top=60,Width=510,Height=180};
                 toggle.CheckedChanged+=delegate{enabled=toggle.Checked;if(!enabled)lock(sync)Publish(false,null,0);};
                 form.Controls.Add(toggle);form.Controls.Add(label);
                 var timer=new System.Windows.Forms.Timer{Interval=16};
                 string path=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),"My Games","Binding of Isaac Repentance+","log.txt");
                 var reader=new Thread(ReaderLoop){IsBackground=true,Priority=ThreadPriority.AboveNormal,Name="IAD log reader"};
+                var archiver=new Thread(ArchiveLoop){IsBackground=true,Priority=ThreadPriority.BelowNormal,Name="IAD run archive"};
+                // PID + start time names this game launch for the archive state.
+                string launch=game.Id.ToString(CultureInfo.InvariantCulture);
+                try{launch+="@"+game.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture);}catch(Exception){}
                 long lastStats=clock.ElapsedMilliseconds;
                 timer.Tick+=delegate{
                     try{
@@ -167,17 +189,17 @@ internal static class NativeHost
                         lock(sync){
                             status=view.ReadInt32(104);
                             string[] modes={"关","自动瞄准","自动战斗","?"};
-                            text=String.Format("{0}\nHook状态 {1} · 收到 {2} 帧 · 拒收 {3}\n{4}\n移动输入读取 {5} 次 · 返回替代输入 {6} 次 · 射击替代 {7} 次\n战斗模式（游戏内 F10）：{8}\n关闭窗口或按住左 Shift 释放接管；计数不代表角色实际位移。",
-                                note,status,packets,rejected,DelaySummary(),view.ReadInt32(108),view.ReadInt32(112),view.ReadInt32(120),modes[lastCombat&3]);
+                            text=String.Format("{0}\nHook状态 {1} · 收到 {2} 帧 · 拒收 {3}\n{4}\n移动输入读取 {5} 次 · 返回替代输入 {6} 次 · 射击替代 {7} 次\n战斗模式（游戏内 F10）：{8}\n{9}\n关闭窗口或在游戏内按左 Shift 暂停接管；计数不代表角色实际位移。",
+                                note,status,packets,rejected,DelaySummary(),view.ReadInt32(108),view.ReadInt32(112),view.ReadInt32(120),modes[lastCombat&3],archiveNote);
                         }
                         label.Text=text;
                         if(status<0){enabled=false;toggle.Checked=false;lock(sync)note="Hook校验失败："+status;}
                         if(clock.ElapsedMilliseconds-lastStats>=30000){lastStats=clock.ElapsedMilliseconds;WriteStats("interval");}
                     }catch(Exception e){lock(sync)Publish(false,null,0);timer.Stop();label.Text="已停止："+e.Message;}
                 };
-                form.FormClosing+=delegate{timer.Stop();running=false;reader.Join(500);WriteStats("exit");lock(sync)Publish(false,null,0);};
-                reader.Start(path);timer.Start();Application.Run(form);timer.Dispose();
-                running=false;reader.Join(500);
+                form.FormClosing+=delegate{timer.Stop();running=false;reader.Join(500);WriteStats("exit");lock(sync)Publish(false,null,0);archiver.Join(5000);};
+                reader.Start(path);archiver.Start(new object[]{path,launch});timer.Start();Application.Run(form);timer.Dispose();
+                running=false;reader.Join(500);archiver.Join(5000);
                 lock(sync){view.Dispose();view=null;}
             }
         }

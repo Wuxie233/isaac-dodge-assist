@@ -328,3 +328,63 @@ assert(ax==260,'backward motion changed the lead')
 p.Velocity=Vector(0,0)
 print('PASS 0.16 combat: charge bias only for threshold releases, forget on rebind, tear drift in aim')
 print('PASS 0.14 combat: Neptunus hint, persistent auto-fire proof, target dwell, sticky goal side, hazard pathing')
+
+-- 0.17: no killing shot that would blow an exploder up next to us. With
+-- 3.5-damage tears (speed 10) a 3-HP exploder 80 away dies 8 updates later
+-- at 80: too close, so AUTO holds fire. At 200, or with 20 HP left, or for
+-- an ordinary enemy, it fires.
+local function exploderEnemy(x,y,hp,chase)
+ local e=enemy(x,y);e.HitPoints,e.exploder,e.chaser=hp,true,chase;return e
+end
+local blast={exploder=function(e)return e.exploder==true end,chaser=function(e)return e.chaser==true end}
+local function fires(target)
+ local s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+ local held=false
+ for _=1,4 do local _,_,_,h=update(s,{target},blast);held=h end
+ return held
+end
+p.Position,p.Velocity,p.Damage=Vector(100,180),Vector(0,0),3.5
+assert(not fires(exploderEnemy(180,180,3)),'fired a killing shot at an exploder 80 away')
+assert(fires(exploderEnemy(300,180,3)),'held fire at a distant exploder')
+assert(fires(exploderEnemy(180,180,20)),'held fire at a healthy exploder')
+local plain=enemy(180,180);plain.HitPoints=3
+assert(fires(plain),'held fire at an ordinary dying enemy')
+-- Its motion counts: 200 away but closing at 12/update, it is next to us
+-- by the time the tear lands.
+local closing=exploderEnemy(300,180,3);closing.Velocity=Vector(-12,0)
+assert(not fires(closing),'fired at an exploder that will be next to us when it dies')
+-- Chasing exploders are kept 150 away, other exploders 130: with the target
+-- at (200,180) and an exploder just behind it, the goal moves further out
+-- for a Mulliboom than for a boom fly.
+local function goalGap(neighbour)
+ local s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+ update(s,{enemy(200,180),neighbour},blast)
+ assert(s.info.targetX==200,'target changed')
+ return Vector(s.info.goalX,s.info.goalY):Distance(neighbour.Position)-neighbour.Size
+end
+local chasing,drifting=goalGap(exploderEnemy(220,180,20,true)),goalGap(exploderEnemy(220,180,20,false))
+assert(chasing>=137 and drifting<137,'chaser standoff '..chasing..' vs '..drifting)
+-- A chasing exploder far away is shot first, before it closes in.
+local function targetX(other)
+ local s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+ update(s,{enemy(270,180),other},blast)
+ return s.info.targetX
+end
+assert(targetX(exploderEnemy(290,140,20,true))==290,'distant chaser not shot first')
+assert(targetX(exploderEnemy(290,140,20,false))==270,'drifting exploder preferred over a nearer enemy')
+-- A charge (Brimstone) keeps charging instead of releasing the killing
+-- beam while the exploder is too close, and releases once it is not.
+weapons[WeaponType.WEAPON_BRIMSTONE]=true
+local function released(target,n)
+ local s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+ for _=1,n do local _,_,_,h=update(s,{target},blast);if not h then return true end end
+ return false
+end
+assert(not released(exploderEnemy(180,180,3),30),'charge released a killing beam next to an exploder')
+assert(released(exploderEnemy(300,180,3),30),'charge never released at a distant exploder')
+weapons={}
+-- A chasing exploder as the target is also engaged from 150.
+local s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+update(s,{exploderEnemy(300,180,20,true)},blast)
+assert(Vector(s.info.goalX,s.info.goalY):Distance(Vector(300,180))>=150,'chasing target engaged closer than 150')
+print('PASS 0.17 combat: no killing shot at a nearby exploder, chasing exploders kept 150 away and shot first')

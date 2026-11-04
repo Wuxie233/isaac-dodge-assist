@@ -50,6 +50,21 @@ function M.flushPerformance(reason)
         p.frame,p.n,p.total/p.n,p.peak,p.scan/p.n,p.field/p.n,p.plan/p.n,p.calls/p.n,reason))
     performance=nil
 end
+-- Bomb kinematics for the chain-knockback model (push, friction, fuse):
+-- every bomb, every update, while two or more share the room or one moves.
+function M.bombs(frame, bombs)
+    local moving = false
+    for _, bomb in ipairs(bombs) do
+        if bomb.Velocity:LengthSquared() > 0.25 then moving = true end
+    end
+    if #bombs < 2 and not moving then return end
+    for _, bomb in ipairs(bombs) do
+        local s = bomb:GetSprite()
+        Isaac.DebugString(string.format("IAD BOMB: f=%d id=%d var=%d pos=%.1f,%.1f vel=%.2f,%.2f anim=%s:%d rm=%.2f",
+            frame, bomb.InitSeed % 100000, bomb.Variant, bomb.Position.X, bomb.Position.Y,
+            bomb.Velocity.X, bomb.Velocity.Y, s:GetAnimation(), s:GetFrame(), bomb.RadiusMultiplier or 1))
+    end
+end
 function M.reset(reason)
     M.flushPerformance(reason or "reset")
     history,decision,lastDump,warned={},"none",-1000,false

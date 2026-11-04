@@ -1,3 +1,12 @@
+## 0.4.5 按局存档游戏日志
+
+- 游戏每次启动都会重写 `log.txt`。Host 新增独立的存档线程（`RunArchive.cs`），把每一行原样存进 `%LOCALAPPDATA%\IsaacDodgeAssist\Logs\`：`runs\<开局时间>_<种子>.log.gz` 一局一个，`launches\<启动时间>.log.gz` 存局外（主菜单、加载）的行，`runs\index.tsv` 记每局的种子、开始时间、状态（open/paused/ended）和结束原因。永久保留，不自动删除。
+- 局的边界来自传感器 0.17.0 的 `IAD RUN begin|pause|end` 行。继续游戏（`continued=true`）按种子找到最近一个未结束的局接着写；新开局时仍在进行的局记为 `abandoned`。
+- 正在写的段是未压缩的 `.part`，崩溃不丢；暂停、结束、新启动或关闭 Host 时压成一个 gzip 段追加到 `.gz` 末尾，`gzip -dc` 读出整局。Host 晚于游戏打开时从 `log.txt` 开头补存；同一次游戏启动中重开 Host 按 `archive-state.txt` 续写，不重复存。
+- 存档用自己的文件句柄和偏移，与实时读取（会跳过积压、只看 IAD1/IAD2）互不影响；存档出错只在窗口显示，不影响输入接管。窗口标题改为 0.4.5，并显示存档状态。
+- Linux 侧 `python3 tools/pull_logs.py` 把新的或变大的 `.gz` 和 `index.tsv` 拉到 `/wuxie/data/isaac-dodge/logs/`，`tools/deploy_mod.py` 发布后会顺便拉一次。
+- 测试：`bash native/tests/run_archive_regression.sh`（dotnet 8 SDK 与 gzip），覆盖晚启动补存、半行、暂停/续局多段、放弃、Host 重开不重复、崩溃 `.part` 恢复、新启动、超过单次读取上限的补存和"每行恰好存一次"。
+
 ## 0.4.4 未接管时完全透传
 
 - 2026-10-29 的 Online 失步（随后游戏重建大厅时崩溃）发生在联机大厅，传感器停在 F7、没有接管；失步实体是本机角色的速度。当时 DLL 仍对每次读键返回 3ms 原始输入快照，读取时机与原版不同。

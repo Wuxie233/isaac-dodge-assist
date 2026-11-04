@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Linux harness for RunArchive.cs. LangVersion 5 keeps the shared source
+       compilable by the .NET Framework 4 csc that builds NativeHost. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>5</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <StartupObject>RunArchiveRegression</StartupObject>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../RunArchive.cs" />
+    <Compile Include="../run_archive_regression.cs" />
+  </ItemGroup>
+</Project>

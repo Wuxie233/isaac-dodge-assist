@@ -7,6 +7,8 @@ Pushes only files whose SHA256 differs, verifies every file afterwards, and
 writes iad_version.lua last: the running game's loader (main.lua) sees the
 new build within about a second and swaps the core without a restart.
 A changed main.lua (the loader itself) still needs a game restart.
+After publishing it also pulls new run archives (tools/pull_logs.py); a
+failed pull only warns.
 """
 from __future__ import annotations
 
@@ -125,6 +127,12 @@ def main() -> int:
             print('version file hash mismatch', file=sys.stderr)
             return 1
     print(f'published {build}; a running game swaps to it within ~1 s (look for "IAD LOADER: reloaded")')
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        import pull_logs
+        pull_logs.pull()
+    except Exception as error:  # the deploy already succeeded
+        print(f'warning: run archive pull failed: {error}', file=sys.stderr)
     return 0
 
 

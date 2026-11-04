@@ -205,7 +205,9 @@ end
 -- AUTO fire control. The item hint says whether a held button fires or
 -- charges; what the game actually does overrides it: an attack during an
 -- unbroken hold proves auto-fire, a long hold with nothing proves charging.
-local function fireControl(state, ctx, p, aligned)
+-- safe=false (a shot would blow an exploder up next to us) holds tears and
+-- keeps a charge from releasing.
+local function fireControl(state, ctx, p, aligned, safe)
     local delay = ctx.queueDelay or 0
     local fresh, beam, reach, lasers, newTear = scanAttacks(state, ctx.entities, p)
     if reach then state.laserReach = reach end
@@ -277,9 +279,10 @@ local function fireControl(state, ctx, p, aligned)
             state.checkAt = nil
         end
     end
-    local hold = true
+    -- Holding a charge only charges; its release is what fires.
+    local hold = safe or kind == "charge"
     if kind == "tap" then
-        hold = state.tick % 2 == 0
+        hold = safe and state.tick % 2 == 0
     elseif kind == "charge" then
         if state.releaseLeft > 0 then
             hold, state.releaseLeft = false, state.releaseLeft - 1
@@ -297,7 +300,7 @@ local function fireControl(state, ctx, p, aligned)
             if state.brimstone then hold = false end
         else
             state.held = state.held + 1
-            if state.held >= need and aligned then
+            if state.held >= need and aligned and safe then
                 -- Two updates released, so a 60Hz poll cannot miss it.
                 hold, state.releaseLeft = false, 1
                 state.releasedAt, state.checkAt, state.checkHeld, state.held = state.tick, state.tick, state.held, 0
@@ -411,20 +414,23 @@ M.aim = aim -- exposed for tests
 -- The current target is kept for DWELL updates unless another costs less
 -- than half, then only for a clear (30%+20) improvement.
 local DWELL = 30
-local function targetCost(state, player, e, g, room, ignoreRocks)
+-- A chasing exploder is best shot while it is still far away.
+local CHASER_EARLY = 150
+local function targetCost(state, player, e, g, room, ignoreRocks, chaser)
     local p, t = player.Position, e.Position
     local cost = t:Distance(p)
     local range = player.TearRange or 260
     if cost > range then cost = cost + (cost - range)*2 end
     if g and not laneClear(room, g, p.X, p.Y, t.X, t.Y, ignoreRocks) then cost = cost + 150 end
     if (e.HitPoints or 99) <= max(3.5, (player.Damage or 3.5)*2) then cost = cost - 60 end
+    if chaser and chaser(e) and t:Distance(p) >= CHASER_EARLY then cost = cost - 40 end
     return cost
 end
-local function pickTarget(state, player, enemies, g, room)
+local function pickTarget(state, player, enemies, g, room, chaser)
     local ignoreRocks = spectral(player) or laserWeapon(player)
     local best, bestCost, current, currentCost
     for _, e in ipairs(enemies) do
-        local cost = targetCost(state, player, e, g, room, ignoreRocks)
+        local cost = targetCost(state, player, e, g, room, ignoreRocks, chaser)
         if e.InitSeed == state.targetSeed then current, currentCost = e, cost end
         if not bestCost or cost < bestCost then best, bestCost = e, cost end
     end
@@ -436,12 +442,34 @@ local function pickTarget(state, player, enemies, g, room)
     return best
 end
 
+-- Our reach: Azazel's laser stops at MaxDistance.
+local function attackRange(state, p)
+    return state.laserReach and min(state.laserReach, p.TearRange or 260) or p.TearRange or 260
+end
+-- Death explosions hit 36-82 units from the exploder (logs 10-26..11-02).
+-- A shot that would kill one must not land while it is that close: compare
+-- where it and we will be when the tear arrives (a beam arrives at once).
+-- A short beam (Azazel) cannot keep 110; it keeps what its reach allows.
+local BURST_KEEP = 110
+local function blastsUs(state, ctx, p, target)
+    if not (ctx.exploder and ctx.exploder(target)) then return false end
+    if (target.HitPoints or 99) > max(3.5, (p.Damage or 3.5)*2) then return false end
+    local keep = min(BURST_KEEP, attackRange(state, p) - 10)
+    local pv, tv = p.Velocity or Vector(0, 0), target.Velocity or Vector(0, 0)
+    local time = 0
+    if not laserWeapon(p) then
+        time = min(12, target.Position:Distance(p.Position) / max(1, (p.ShotSpeed or 1)*10))
+    end
+    local dx = target.Position.X + tv.X*time - p.Position.X - pv.X*time
+    local dy = target.Position.Y + tv.Y*time - p.Position.Y - pv.Y*time
+    return dx*dx + dy*dy < keep*keep
+end
+
 -- Stand on the target's row or column at a comfortable distance with a
 -- clear lane, close to us and away from the other enemies.
 local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
     local p, room = ctx.player, ctx.room
-    -- Azazel's laser stops at MaxDistance; aim from inside it.
-    local range = state.laserReach and min(state.laserReach, p.TearRange or 260) or p.TearRange or 260
+    local range = attackRange(state, p)
     -- Closed-loop sim (8-tick queue): 0.8 of the range halved hits against
     -- 0.45 (5.8 -> 2.9 per minute) at about the same kill rate.
     -- 0.14: at least 120 away (90 put the player next to chasers).
@@ -449,7 +477,10 @@ local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
     -- Exploders (boom flies etc.) blew up 57-83 units from the player after
     -- being shot: kill them from outside the blast whenever range allows.
     local exploder = ctx.exploder or function() return false end
-    if exploder(target) then preferred = max(preferred, min(130, range-20)) end
+    -- Outside BURST_KEEP, so the killing shot is allowed from the goal; a
+    -- chaser closes in while the shot flies, so engage it from further out.
+    local chaser = ctx.chaser or function() return false end
+    if exploder(target) then preferred = max(preferred, min(chaser(target) and 150 or 130, range-5)) end
     local tx, ty = target.Position.X, target.Position.Y
     local ignoreRocks = spectral(p) or laserWeapon(p)
     local best, bestCost, bx, by, bestSide
@@ -465,7 +496,8 @@ local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
                     for _, e in ipairs(enemies) do
                         if e ~= target then
                             local gap = e.Position:Distance(Vector(x, y)) - e.Size
-                            local keep = exploder(e) and 130 or 110
+                            -- Mulliboom and leeches run at us: more room.
+                            local keep = chaser(e) and 150 or exploder(e) and 130 or 110
                             if gap < keep then cost = cost + (keep-gap)*5 end
                         end
                     end
@@ -557,7 +589,7 @@ function M.update(state, ctx)
     g.hazard = ctx.hazardCells
     state.tick = state.tick + 1
     local previousSeed = state.targetSeed
-    local target = pickTarget(state, p, enemies, g, room)
+    local target = pickTarget(state, p, enemies, g, room, ctx.chaser)
     if not target then
         clearAction(state)
         return M.word(state.mode, nil, 0, false)
@@ -574,7 +606,7 @@ function M.update(state, ctx)
     state.info = info
     if state.mode == 1 then return M.word(1, nil, shoot, false) end
 
-    local hold = fireControl(state, ctx, p, aligned)
+    local hold = fireControl(state, ctx, p, aligned, not blastsUs(state, ctx, p, target))
     stats.ticks, stats.distance = stats.ticks + 1, stats.distance + target.Position:Distance(p.Position)
     if hold then stats.firing = stats.firing + 1 end
     if aligned then stats.aligned = stats.aligned + 1 end
