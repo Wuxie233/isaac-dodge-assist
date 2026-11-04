@@ -453,3 +453,57 @@ near.Position=Vector(130,180)
 for _=1,40 do update(s,{far,near}) end
 assert(s.stats.retargets==1,'retarget not counted: '..tostring(s.stats.retargets))
 print('PASS 0.18 combat stats: dealt damage from our attacks only, retargets apart from kills')
+
+-- 0.19: a Brimstone release is worth the damage it deals to everything in
+-- the beam (each enemy capped at its health), so a charged beam goes where
+-- it hits the most and may wait a few updates for an enemy walking in.
+weapons[WeaponType.WEAPON_BRIMSTONE]=true
+p.MaxFireDelay,p.Damage,p.Velocity=19.5,3.5,Vector(0,0)
+local function hp(e,v)e.HitPoints=v;return e end
+-- Charge, then report the first release: update count and shoot axis.
+local function release(list,limit,extra)
+ local s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+ for i=1,limit do
+  local _,_,sh,h=update(s,type(list)=='function' and list(i) or list,extra)
+  if not h then return i,sh,s end
+ end
+ return nil,nil,s
+end
+p.Position=Vector(300,180)
+-- One enemy right (nearest, the target) and three in a row on the left.
+local at,sh=release({hp(enemy(380,180),20),hp(enemy(200,180),20),hp(enemy(160,178),20),hp(enemy(120,183),20)},40)
+assert(at and sh==1,'beam not sent through the row of three: '..tostring(sh))
+-- Alone, the nearest is shot.
+at,sh=release({hp(enemy(380,180),20)},40)
+assert(at and sh==2,'single target missed: '..tostring(sh))
+-- Waiting: B walks down into A's row and reaches it about 9 updates after
+-- the charge is full. The beam waits for both instead of hitting A alone.
+p.Position=Vector(100,180)
+local A=hp(enemy(300,180),20)
+local alone=release({A},60)
+local function walking(i)
+ local B=hp(enemy(220,180-25-5*(31-i),0,5),20);B.InitSeed=777
+ return {A,B}
+end
+local waited=release(walking,60)
+assert(alone and waited and waited>alone and waited<=alone+15,'no wait for the second enemy: '..tostring(alone)..' '..tostring(waited))
+-- ...but never longer than the cap when nothing better comes.
+local function leaving(i)
+ local B=hp(enemy(220,60-3*i,0,-3),20);B.InitSeed=778
+ return {A,B}
+end
+local capped=release(leaving,60)
+assert(capped and capped<=alone+1,'waited for an enemy that never comes: '..tostring(alone)..' '..tostring(capped))
+-- A beam that would kill a nearby exploder on the way is not that axis.
+p.Position=Vector(300,180)
+local fly=hp(exploderEnemy(240,180,3),3)
+at,sh=release({hp(enemy(420,180),20),fly,hp(enemy(150,180),20),hp(enemy(110,180),20)},40,blast)
+assert(at and sh~=1,'beam killed an exploder next to us')
+-- Standing: with two enemies sharing a row, the goal lines the beam up with
+-- both rather than with the lone nearest one.
+p.Position=Vector(100,180)
+local s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+update(s,{hp(enemy(220,260),20),hp(enemy(320,100),20),hp(enemy(440,100),20)})
+assert(s.info.goalY and math.abs(s.info.goalY-100)<1,'goal not on the two-enemy row: '..tostring(s.info.goalX)..','..tostring(s.info.goalY))
+weapons={}
+print('PASS 0.19 combat: Brimstone payoff picks the axis, waits for walkers (capped), spares exploders, lines up the goal')

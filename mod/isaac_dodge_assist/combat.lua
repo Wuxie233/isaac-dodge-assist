@@ -178,7 +178,14 @@ local function scanAttacks(state, entities, player)
                 if continuous and not seen[key] and not counted[key] then
                     counted[key] = true
                     fresh = fresh + 1
-                    if e.Type == T.ENTITY_LASER then lasers = lasers + 1 end
+                    if e.Type == T.ENTITY_LASER then
+                        lasers = lasers + 1
+                        -- A fresh beam shows how long it lasts and what it
+                        -- deals per update: the payoff of the next ones.
+                        local laser = e.ToLaser and e:ToLaser()
+                        if laser and (laser.Timeout or 0) > 2 then state.beamTicks = min(30, laser.Timeout) end
+                        if laser and (laser.CollisionDamage or 0) > 0 then state.beamDamage = laser.CollisionDamage end
+                    end
                     if e.Type == T.ENTITY_TEAR and not newTear then newTear = e end
                 end
                 alive[key] = true
@@ -493,8 +500,69 @@ local function blastsUs(state, ctx, p, target)
     return dx*dx + dy*dy < keep*keep
 end
 
+-- Beam payoff (Brimstone hits everything in its path for its whole
+-- duration): the damage a release along one axis from (ox,oy) deals, each
+-- enemy capped at its health, in units of one full beam on one enemy.
+-- Enemies move on at their velocity and the beam follows the player.
+-- `unsafe` = it would kill an exploder within BURST_KEEP of us.
+local BEAM_TICKS = 9
+local function beamValue(state, ctx, p, enemies, shoot, ox, oy, from, step)
+    local ticks, dmg = state.beamTicks or BEAM_TICKS, state.beamDamage or (p.Damage or 3.5)
+    local reach = state.laserReach or math.huge
+    local ax, ay = AXES[shoot][1], AXES[shoot][2]
+    local pv = p.Velocity or Vector(0, 0)
+    local exploder = ctx.exploder
+    local total, hits, unsafe = 0, 0, false
+    for _, e in ipairs(enemies) do
+        local overlap, ev = 0, e.Velocity or Vector(0, 0)
+        for k = 0, ticks-1, step or 1 do
+            local t = from + k
+            local fx = e.Position.X + ev.X*t - ox - pv.X*t
+            local fy = e.Position.Y + ev.Y*t - oy - pv.Y*t
+            local forward = fx*ax + fy*ay
+            if forward > 0 and forward <= reach + e.Size and abs(fx*ay - fy*ax) <= e.Size + BEAM_HALF then
+                overlap = overlap + (step or 1)
+            end
+        end
+        if overlap > 0 then
+            local health = e.HitPoints or dmg*ticks
+            total, hits = total + min(health, dmg*min(overlap, ticks)), hits + 1
+            if exploder and exploder(e) and dmg*overlap >= health and
+                (e.Position.X - ox)^2 + (e.Position.Y - oy)^2 < BURST_KEEP^2 then unsafe = true end
+        end
+    end
+    return total / (dmg*ticks), hits, unsafe
+end
+-- Best safe axis from (ox,oy) for a release `from` updates ahead.
+local function bestBeam(state, ctx, p, enemies, ox, oy, from, step)
+    local best, value, hits = nil, 0, 0
+    for shoot = 1, 4 do
+        local v, n, unsafe = beamValue(state, ctx, p, enemies, shoot, ox, oy, from, step)
+        if not unsafe and v > value then best, value, hits = shoot, v, n end
+    end
+    return best, value, hits
+end
+-- Release now, or hold a full charge a little for more? Waiting pays when
+-- within LOOKAHEAD updates the best axis is worth WAIT_GAIN times more (an
+-- enemy walking into the line); never past WAIT_MAX updates of full charge.
+local LOOKAHEAD, WAIT_GAIN, WAIT_MAX = 8, 1.25, 15
+local function beamPlan(state, ctx, p, enemies)
+    local delay = ctx.queueDelay or 0
+    local pv = p.Velocity or Vector(0, 0)
+    local shoot, value, hits = bestBeam(state, ctx, p, enemies, p.Position.X, p.Position.Y, delay)
+    local later = 0
+    for tau = 2, LOOKAHEAD, 2 do
+        local _, v = bestBeam(state, ctx, p, enemies, p.Position.X, p.Position.Y, delay + tau, 2)
+        later = max(later, v)
+    end
+    return {shoot=shoot, value=value, hits=hits, better=later >= value*WAIT_GAIN and later > value + 0.2}
+end
+M.beamPlan = beamPlan
+
 -- Stand on the target's row or column at a comfortable distance with a
--- clear lane, close to us and away from the other enemies.
+-- clear lane, close to us and away from the other enemies. With a beam the
+-- rows and columns of the two nearest other enemies compete too, and a spot
+-- is worth more the more enemies its beam crosses.
 local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
     local p, room = ctx.player, ctx.room
     local range = attackRange(state, p)
@@ -509,18 +577,44 @@ local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
     -- chaser closes in while the shot flies, so engage it from further out.
     local chaser = ctx.chaser or function() return false end
     if exploder(target) then preferred = max(preferred, min(chaser(target) and 150 or 130, range-5)) end
-    local tx, ty = target.Position.X, target.Position.Y
     local ignoreRocks = spectral(p) or laserWeapon(p)
+    local beam = state.beamGoals
+    if beam and (not state.spotValues or state.spotRoom ~= room) then state.spotValues, state.spotRoom = {}, room end
+    local anchors = {target}
+    if beam then
+        local others = {}
+        for _, e in ipairs(enemies) do if e ~= target then others[#others+1] = e end end
+        table.sort(others, function(a, b)
+            return a.Position:Distance(p.Position) < b.Position:Distance(p.Position) end)
+        for i = 1, min(2, #others) do anchors[#anchors+1] = others[i] end
+    end
     local best, bestCost, bx, by, bestSide
     for pass = 1, 2 do
+      for a, anchor in ipairs(anchors) do
+        local tx, ty = anchor.Position.X, anchor.Position.Y
         for _, d in ipairs({preferred, preferred*0.75, min(preferred*1.3, range-20)}) do
             for side, o in ipairs({{d,0}, {-d,0}, {0,d}, {0,-d}}) do
+                side = side + (a-1)*4
                 local x, y = tx + o[1], ty + o[2]
                 local i = cellOf(room, g, x, y)
                 local steps = i and fromPlayer[i]
                 if steps and room:IsPositionInRoom(Vector(x, y), p.Size + 4) and
                     (pass == 2 or laneClear(room, g, x, y, tx, ty, ignoreRocks)) then
                     local cost = steps*40 + abs(d - preferred)*0.5
+                    if beam then
+                        -- Another enemy's line must be clearly better to win.
+                        -- Cached per 20-unit spot for a few updates: the
+                        -- candidates move with the enemies every update.
+                        local key = floor(x/20)*1000 + floor(y/20)
+                        local cached = state.spotValues[key]
+                        if not cached or state.tick - cached[1] >= 6 then
+                            local _, v = bestBeam(state, ctx, p, enemies, x, y, 0, 3)
+                            cached = {state.tick, v}
+                            state.spotValues[key] = cached
+                        end
+                        local value = cached[2]
+                        cost = cost - 80*value + (a > 1 and 30 or 0)
+                    end
                     for _, e in ipairs(enemies) do
                         if e ~= target then
                             local gap = e.Position:Distance(Vector(x, y)) - e.Size
@@ -538,7 +632,8 @@ local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
                 end
             end
         end
-        if best then break end
+      end
+      if best then break end
     end
     return best, bx, by, bestSide
 end
@@ -643,12 +738,35 @@ function M.update(state, ctx)
     -- Beams ignore the tear range; only a capped beam (Azazel) stops short.
     local beam = instantBeam(p) and {reach=state.laserReach or math.huge} or nil
     local shoot, aligned, ax, ay = aim(p, target, ctx.queueDelay, beam)
-    state.lastShoot = shoot
     local info = {targetX=target.Position.X, targetY=target.Position.Y, targetR=target.Size, aimX=ax, aimY=ay}
     state.info = info
-    if state.mode == 1 then return M.word(1, nil, shoot, false) end
+    if state.mode == 1 then state.lastShoot = shoot; return M.word(1, nil, shoot, false) end
 
-    local hold = fireControl(state, ctx, p, aligned, not blastsUs(state, ctx, p, target))
+    -- A charged Brimstone release goes where it pays most, not just at the
+    -- target, and holds a little when an enemy is about to walk in.
+    local safe = not blastsUs(state, ctx, p, target)
+    state.beamGoals = beam ~= nil and has(p, "HasWeaponType", WeaponType, {"WEAPON_BRIMSTONE"})
+    local plan
+    local need = math.ceil(max(1, p.MaxFireDelay or 10)) + MARGIN + floor(state.bias)
+    -- Only the release needs the plan: from two updates before full charge.
+    if state.beamGoals and state.held + 3 >= need then
+        plan = beamPlan(state, ctx, p, enemies)
+        if plan.shoot then
+            local waited = state.held + 1 - need
+            shoot, safe = plan.shoot, true
+            aligned = not plan.better or waited >= WAIT_MAX
+            info.beamValue, info.beamHits = plan.value, plan.hits
+        else
+            aligned = false -- nothing worth a beam (or only an exploder next to us)
+        end
+    end
+    state.lastShoot = shoot
+    local wasHeld = state.held
+    local hold = fireControl(state, ctx, p, aligned, safe)
+    if plan and plan.shoot and state.releasedAt == state.tick then
+        log(string.format("IAD BEAM: value=%.2f hits=%d waited=%d shoot=%d", plan.value, plan.hits,
+            wasHeld + 1 - need, plan.shoot))
+    end
     stats.ticks, stats.distance = stats.ticks + 1, stats.distance + target.Position:Distance(p.Position)
     if hold then stats.firing = stats.firing + 1 end
     if aligned then stats.aligned = stats.aligned + 1 end
