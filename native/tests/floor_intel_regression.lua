@@ -87,11 +87,11 @@ local score=FloorScore.evaluate(floorMap.rooms,{},{})
 local expected=2*FloorScore.UNSEEN_ITEM
 local lootPoints=3*FloorScore.LOOT.pill+0.5*FloorScore.LOOT.coin+0.5*FloorScore.LOOT.key+FloorScore.LOOT.tinted
 assert(math.abs(score.items-expected)<1e-9 and math.abs(score.loot-lootPoints)<1e-9,'score parts: '..score.items..' '..score.loot)
-assert(score.summary:find('?x2',1,true),'unseen count: '..score.summary)
+assert(score.unseen==2,'unseen count: '..score.unseen)
 for _,r in ipairs(floorMap.rooms)do if r.type==RoomType.ROOM_TREASURE then r.visited=true end end
 score=FloorScore.evaluate(floorMap.rooms,{[1]={{id=182,quality=4,name='Sacred Heart'}}},{})
 assert(math.abs(score.items-(FloorScore.ITEM[4]+FloorScore.UNSEEN_ITEM))<1e-9,'seen item value')
-assert(score.lines[2][1]:find('Q4 Sacred Heart',1,true),'item line: '..score.lines[2][1])
+assert(score.entries[1].id==182 and score.entries[1].quality==4 and score.entries[1].roomType==RoomType.ROOM_TREASURE,'item entry')
 -- Shop items and deals are worth less than free ones.
 score=FloorScore.evaluate({{index=9,type=RoomType.ROOM_SHOP,visited=true,label='$',cells={}}},
  {[9]={{id=1,quality=2,price=15},{id=2,quality=2,devil=true}}},{})
@@ -130,8 +130,8 @@ local found=FloorIntel.update(state,game,room,function()return {pickup(100,114),
 assert(#found==2,'reward rocks: '..#found)
 assert(state.items[1] and state.items[1][1].id==114 and state.items[1][1].name=="Moms Knife",'seen item')
 assert(state.loot[1].nickel==1 and state.loot[1].soul==1 and state.loot[1].key==nil and state.loot[1].tinted==1 and state.loot[1].goldrock==1,'room loot')
-local last=state.score.lines[#state.score.lines][1]
-assert(last:find('deal 34%',1,true) and last:find('planetarium 25%',1,true) and last:find('rush 18:55',1,true),last)
+local r=state.readouts
+assert(r.deal==34 and r.planetarium==25 and r.seconds==65,'readouts')
 -- The item stays counted after it is taken; a new floor forgets it.
 FloorIntel.update(state,game,room,function()return {}end,40)
 assert(state.items[1][1].id==114,'taken item forgotten')
@@ -139,8 +139,11 @@ FloorIntel.newLevel(state)
 assert(next(state.items)==nil and state.map==nil,'new floor kept old intel')
 print('PASS floor intel: room items kept once seen, priced pickups excluded from loot, reward rocks, readouts')
 
--- Map view: every room cell is drawn, labels and score lines are printed.
+-- Map view, in both languages: every room cell is drawn, kind labels, the
+-- legend and the score panel are worded in the game's language.
 local MapView=include('map_view')
+local UI=include('ui')
+MapView.use(UI)
 local rects,texts=0,{}
 function Vector(x,y)return {X=x,Y=y}end
 function Color(r,g,b,a)return {r,g,b,a}end
@@ -150,14 +153,20 @@ Isaac.GetScreenHeight=function()return 270 end
 Isaac.RenderScaledText=function(s,x,y)assert(x==x and y==y);texts[#texts+1]=s end
 FloorIntel.update(state,game,room,function()return {pickup(100,114)}end,100)
 floorMap=state.map
-MapView.render(floorMap,FloorIntel.extras(state),state.score)
+local function panel(lang)
+ UI.setLang(lang);texts,rects={},0
+ MapView.render(floorMap,FloorIntel.extras(state),state.score,state.readouts)
+ return '|'..table.concat(texts,'|')..'|'
+end
+local en=panel('en')
 local cells=0;for _,r in ipairs(floorMap.rooms)do cells=cells+#r.cells end
 assert(rects>=cells+1,'map cells not drawn: '..rects..' for '..cells)
-local joined=table.concat(texts,'|')
-assert(joined:find('|S|',1,true) and joined:find('FLOOR ',1,true),'labels/score missing: '..joined)
-texts={};MapView.scoreLine(state.score,48,64)
-assert(#texts==1 and texts[1]:find('^FLOOR '),'score line')
-print('PASS map view: cells, labels, score panel and HUD line')
+assert(en:find('|S|',1,true) and en:find('|Score ',1,true) and en:find('|Secret|',1,true) and en:find('Devil/Angel 34%',1,true),'english panel: '..en)
+local zh=panel('zh')
+assert(zh:find('|隐|',1,true) and zh:find('|评分 ',1,true) and zh:find('|隐藏房|',1,true) and zh:find('恶魔/天使 34%',1,true) and
+ not zh:find('Score',1,true),'chinese panel: '..zh)
+UI.setLang(nil)
+print('PASS map view: cells, kind labels, legend and score panel in English and Chinese')
 -- Descriptors that never compare equal: the dimension filter gives up
 -- rather than hiding every room.
 local savedHash=GetPtrHash
@@ -190,8 +199,8 @@ assert(treasure and #treasure==1 and treasure[1].id==511 and treasure[1].kind=='
 assert(state.predicted[2]==nil,'ordinary shop slots forecast')
 assert(state.predicted[3] and state.predicted[3][1].id==12,'fixed layout item')
 local named=false
-for _,line in ipairs(state.score.lines)do if line[1]:find('T~  Q1 Item 511',1,true) then named=true end end
-assert(named and state.score.lines[#state.score.lines][1]:find('forecast exact',1,true),'forecast not in the score panel')
+for _,e in ipairs(state.score.entries)do if e.id==511 and e.predicted and e.roomType==RoomType.ROOM_TREASURE then named=true end end
+assert(named and state.readouts.forecast=='exact','forecast not in the score')
 -- An owned item leaves the pools: the forecast moves on to another item.
 owned[511]=1;FloorIntel.newRoom(state,game);FloorIntel.update(state,game,room,function()return {}end,2)
 assert(state.predicted[1][1].id~=511,'owned item still forecast')
@@ -204,7 +213,7 @@ FloorIntel.picked(state,33,0,false)
 assert(state.forecast.version==version+1,'a pick without decrease changed the pools')
 -- Chaos: off, and said so.
 owned[402]=1;FloorIntel.update(state,game,room,function()return {}end,40)
-assert(next(state.predicted)==nil and state.score.lines[#state.score.lines][1]:find('forecast off (chaos)',1,true),'chaos forecast')
+assert(next(state.predicted)==nil and state.readouts.forecast=='off' and state.readouts.forecastWhy=='chaos','chaos forecast')
 owned[402]=nil
 -- A continued run is approximate; a core loaded mid-run starts one too.
 state=FloorIntel.startRun(state,game,true)

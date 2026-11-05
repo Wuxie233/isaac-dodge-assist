@@ -76,7 +76,9 @@ tick()
 local after=lastPacket()
 assert(tonumber(after[2])>seq,'IAD1 sequence went backwards across reload')
 assert(after[6]=='600' and after[4]=='0','settings lost across reload: '..table.concat(after,'|'))
-assert(labels[#labels]:find('+B',1,true) or labels[#labels-1]:find('+B',1,true),'HUD does not show the build')
+-- The new core says so in a toast that names the build.
+local shown=false;for _,label in ipairs(labels)do if label:find('v'..'%d.*%+B') then shown=true end end
+assert(shown,'no toast for the new build')
 press(Keyboard.KEY_LEFT_SHIFT);tick()  -- resume
 press(Keyboard.KEY_F10)                 -- AIM -> AUTO: combat mode survived
 assert(logs[#logs]=='IAD COMBAT: AUTO','combat mode lost across reload: '..logs[#logs])

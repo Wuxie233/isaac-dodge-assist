@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.22.0"
+local VERSION = "0.23.0"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
@@ -22,12 +22,17 @@ local Combat = include("combat")
 local PlayerBinding = include("player_binding")
 local FloorIntel = include("floor_intel")
 local MapView = include("map_view")
+local Hud = include("hud")
+local UI = include("ui")
+Hud.use(UI); MapView.use(UI)
 local terrain
 local kinematics = PlayerMotion.new()
 local inputs = InputQueue.new()
 local combat, combatWord = Combat.new(), 0
 -- Floor map, seen items and loot, floor score (F5 shows the map).
 local intel, intelFailed = FloorIntel.new(), false
+-- On-screen status, score line and key-press toasts (hud.lua).
+local hud, hudFailed = Hud.new(), false
 -- Slot evidence for "which player does this keyboard drive" (see player_binding).
 local binding = PlayerBinding.new()
 local manualUntil = -1
@@ -700,37 +705,56 @@ mod:AddCallback(ModCallbacks.MC_POST_NPC_DEATH, function(_, npc)
         npc.Type, npc.Variant, npc.SubType, at.X, at.Y, player.X, player.Y, at:Distance(player),
         predicted and tostring(frame - predicted) or "none", npc.HitPoints))
 end)
+local function toast(key, ...)
+    local args = {...}
+    pcall(function() Hud.toast(hud, UI.t(key, table.unpack(args))) end)
+end
+local COMBAT_TOASTS = {[0] = "combatOff", "aim", "auto"}
 mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
-    if Input.IsButtonTriggered(Keyboard.KEY_F6, 0) then enabled = not enabled; emit(false) end
-    if Input.IsButtonTriggered(Keyboard.KEY_LEFT_SHIFT, 0) then paused = not paused; emit(false) end
+    if Input.IsButtonTriggered(Keyboard.KEY_F6, 0) then
+        enabled = not enabled; emit(false)
+        toast("toastDodge", UI.t(enabled and "on" or "off"))
+    end
+    if Input.IsButtonTriggered(Keyboard.KEY_LEFT_SHIFT, 0) then
+        paused = not paused; emit(false)
+        toast(paused and "toastPause" or "toastResume")
+    end
     if Input.IsButtonTriggered(Keyboard.KEY_F7, 0) then
         local count = game:GetNumPlayers()
         if count > 0 then bind((selected + 1) % count) end
         manualUntil = frame + 900 -- F7 wins over the device guess for a while
         emit(false)
+        toast("toastPlayer", selected + 1)
     end
-    if Input.IsButtonTriggered(Keyboard.KEY_F8, 0) then horizonIndex = horizonIndex % #horizons + 1 end
-    if Input.IsButtonTriggered(Keyboard.KEY_F9, 0) then Overlay.toggle() end
+    if Input.IsButtonTriggered(Keyboard.KEY_F8, 0) then
+        horizonIndex = horizonIndex % #horizons + 1
+        toast("toastWindow", horizons[horizonIndex])
+    end
+    if Input.IsButtonTriggered(Keyboard.KEY_F9, 0) then
+        toast("toastPreview", UI.t(Overlay.toggle() and "on" or "off"))
+    end
     if Input.IsButtonTriggered(Keyboard.KEY_F10, 0) then
-        Isaac.DebugString("IAD COMBAT: " .. Combat.MODES[Combat.cycle(combat)])
+        local mode = Combat.cycle(combat)
+        Isaac.DebugString("IAD COMBAT: " .. Combat.MODES[mode])
+        toast("toastCombat", UI.t(COMBAT_TOASTS[mode]))
     end
     if Input.IsButtonTriggered(Keyboard.KEY_F5, 0) then intel.showMap = not intel.showMap end
     Overlay.render(game:GetRoom())
-    pcall(function()
-        if intel.showMap then MapView.render(intel.map, FloorIntel.extras(intel), intel.score) end
-        MapView.scoreLine(intel.score, 48, 64)
-    end)
     if game:IsPaused() then emit(false) end
-    local label = "DODGE v" .. VERSION .. (build and ("+" .. build) or "") .. " " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
-        "  " .. horizons[horizonIndex] .. "/" .. effectiveHorizon .. "ms" .. (Overlay.enabled() and "  VIEW" or "") ..
-        (combat.mode > 0 and ("  " .. Combat.MODES[combat.mode]) or "")
-    Isaac.RenderText(label, 48, 54, 1, 0.9, 0.35, 0.85)
-    if selected >= 0 and selected < game:GetNumPlayers() then
-        local point = Isaac.WorldToScreen(Isaac.GetPlayer(selected).Position)
-        Isaac.RenderText("DODGE P" .. (selected + 1), point.X - 25, point.Y - 55, 1, 0.9, 0.35, 0.8)
-    end
+    -- Everything on screen is an extra: a drawing error never reaches the
+    -- dodge loop (one log line).
+    local ok, err = pcall(function()
+        local count = game:GetNumPlayers()
+        local coop = count > 1 and selected >= 0 and selected < count
+        Hud.render(hud, {state = enabled and state or "OFF", combatMode = combat.mode, preview = Overlay.enabled(),
+            player = coop and selected + 1 or nil, score = intel.score}, 48, 50)
+        if coop then Hud.playerLabel(Isaac.GetPlayer(selected).Position, selected + 1) end
+        if intel.showMap then MapView.render(intel.map, FloorIntel.extras(intel), intel.score, intel.readouts) end
+    end)
+    if not ok and not hudFailed then hudFailed = true; Isaac.DebugString("IAD HUD: error " .. tostring(err)) end
 end)
 Isaac.DebugString("IAD: sensor " .. VERSION .. (build and (" build " .. build) or "") .. (saved and " reloaded" or " loaded"))
+toast(saved and "toastReloaded" or "toastLoaded", VERSION .. (build and ("+" .. build) or ""))
 -- After a rollback the older core takes over again. IAD1 sequence numbers
 -- must keep increasing (a lower one resets the host's clock calibration).
 local function resume(newer)

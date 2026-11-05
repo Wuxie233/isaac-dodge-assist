@@ -32,14 +32,22 @@ end
 -- {loot, pedestals, shop}); items[listIndex] = seen items {id, quality,
 -- name, price, devil}; loot[listIndex] = loot counted in visited rooms;
 -- predicted[listIndex] = forecast items of unvisited rooms, like items
--- plus kind ("pedestal", "shop" or "boss"), shown with a "~".
+-- plus kind ("pedestal", "shop" or "boss").
+-- Returns plain data for the HUD and the map to word in either language:
+-- total, grade, colour, items/loot/rooms points, qualities[0-4] counts,
+-- unseen (pedestals nothing could name), entries (one per item: id,
+-- quality, roomType, predicted, price, devil), lootTotals[kind] and
+-- special (room type names worth points, in floor order).
 function M.evaluate(rooms, items, loot, predicted)
     local itemPoints, lootPoints, roomPoints = 0, 0, 0
     local qualities, unseen = {[0] = 0, 0, 0, 0, 0}, 0
-    local lines = {}
+    local entries, lootTotals, special = {}, {}, {}
     for _, room in ipairs(rooms) do
         local name = typeName(room.type)
-        roomPoints = roomPoints + (M.ROOM[name] or 0)
+        if M.ROOM[name] then
+            roomPoints = roomPoints + M.ROOM[name]
+            special[#special+1] = room.type
+        end
         local list = items[room.index]
         local forecast = not room.visited and predicted and predicted[room.index] or nil
         if not (list and #list > 0) then list = forecast end
@@ -51,9 +59,8 @@ function M.evaluate(rooms, items, loot, predicted)
             itemPoints = itemPoints + value
             qualities[q] = (qualities[q] or 0) + 1
             if item.kind then found[item.kind] = found[item.kind] + 1 end
-            local cost = item.devil and " (deal)" or (item.price or 0) > 0 and (item.predicted and " (shop)" or (" $" .. item.price)) or ""
-            lines[#lines+1] = {string.format("%-3s Q%d %s%s", (room.label or "-") .. (item.predicted and "~" or ""), q,
-                item.name or ("#" .. tostring(item.id)), cost), q >= 3 and {1, 0.85, 0.3} or nil}
+            entries[#entries+1] = {id = item.id, quality = q, name = item.name, roomType = room.type,
+                predicted = item.predicted, price = item.price or 0, devil = item.devil}
         end
         if not room.visited and not (items[room.index] and #items[room.index] > 0) then
             -- What the forecast could not name: layout pedestals and shop
@@ -69,6 +76,7 @@ function M.evaluate(rooms, items, loot, predicted)
         local counts = room.visited and loot[room.index] or room.layout and room.layout.loot
         for kind, count in pairs(counts or {}) do
             lootPoints = lootPoints + (M.LOOT[kind] or 0) * count
+            lootTotals[kind] = (lootTotals[kind] or 0) + count
         end
     end
     local total = floor(itemPoints + lootPoints + roomPoints + 0.5)
@@ -76,15 +84,14 @@ function M.evaluate(rooms, items, loot, predicted)
     for _, g in ipairs(GRADES) do
         if total >= g[1] then grade, colour = g[2], g[3] break end
     end
-    local q = {}
-    for level = 4, 0, -1 do if qualities[level] > 0 then q[#q+1] = "Q" .. level .. "x" .. qualities[level] end end
-    unseen = floor(unseen + 0.5)
-    if unseen > 0 then q[#q+1] = "?x" .. unseen end
-    local summary = string.format("FLOOR %s %d  items %d (%s)  loot %d  rooms %d", grade, total,
-        floor(itemPoints + 0.5), #q > 0 and table.concat(q, " ") or "none", floor(lootPoints + 0.5), floor(roomPoints + 0.5))
-    table.insert(lines, 1, {summary, colour})
-    return {total = total, grade = grade, colour = colour, summary = summary, lines = lines,
-        items = itemPoints, loot = lootPoints, rooms = roomPoints, unseen = unseen}
+    -- Best items first: quality, then seen before forecast.
+    table.sort(entries, function(a, b)
+        if a.quality ~= b.quality then return a.quality > b.quality end
+        if (a.predicted or false) ~= (b.predicted or false) then return not a.predicted end
+        return a.id < b.id
+    end)
+    return {total = total, grade = grade, colour = colour, items = itemPoints, loot = lootPoints, rooms = roomPoints,
+        qualities = qualities, unseen = floor(unseen + 0.5), entries = entries, lootTotals = lootTotals, special = special}
 end
 
 return M

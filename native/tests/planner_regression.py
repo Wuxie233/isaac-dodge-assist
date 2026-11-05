@@ -28,7 +28,7 @@ if __name__ == '__main__':
     if len(sys.argv) == 1:
         for name in ('laser_regression.lua', 'diagnostics_regression.lua', 'combat_regression.lua',
                      'player_binding_regression.lua', 'floor_intel_regression.lua',
-                     'item_emulator_regression.lua'):
+                     'item_emulator_regression.lua', 'ui_regression.lua'):
             run((root/'native/tests'/name).read_text())
         # Performance guardrails: real main.lua callbacks against a simulated
         # 625-cell room. Budgets must fail loudly instead of drifting.

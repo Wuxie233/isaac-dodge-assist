@@ -261,9 +261,14 @@ RoomType,PickupVariant,room.GetType=nil,nil,nil
 room.GetGridEntity,room.GetGridCollision=poopEntity,poopCollision
 print('PASS AUTO hazard cells: sacrifice spikes for flyers, item pedestals and shop items')
 -- F9 danger preview: off by default, toggles, captures and renders lines.
-local renders,loaded=0,nil
-function Sprite()return {Load=function(_,path)loaded=path end,Play=function()end,
- Render=function(self,pos)assert(self.Scale.X>0 and self.Rotation==self.Rotation);renders=renders+1 end}end
+-- The first sprite made from here on is the HUD's (its status dot draws
+-- every frame); only the preview's renders are counted.
+local renders,loaded,made=0,nil,0
+function Sprite()
+ made=made+1;local mine=made
+ return {Load=function(_,path)loaded=path end,Play=function()end,
+  Render=function(self,pos)assert(self.Scale.X>0 and self.Rotation==self.Rotation);if mine>1 then renders=renders+1 end end}
+end
 function Color(r,g,b,a)return {R=r,G=g,B=b,A=a}end
 Isaac.GetScreenWidth=function()return 480 end
 local npc2=entity(EntityType.ENTITY_NPC,0)

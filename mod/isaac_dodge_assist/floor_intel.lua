@@ -127,26 +127,23 @@ end
 local RESCAN = 15
 -- Floor readouts the game's own HUD also shows: deal and planetarium
 -- chances, and the time gates for Boss Rush (20:00) and Hush (30:00).
+-- {deal, planetarium (percent), seconds}; a field the game did not give
+-- stays nil.
 local function readouts(game, level)
-    local parts = {}
-    pcall(function() parts[#parts+1] = string.format("deal %d%%", math.floor(math.min(1, game:GetRoom():GetDevilRoomChance())*100 + 0.5)) end)
-    pcall(function() parts[#parts+1] = string.format("planetarium %d%%", math.floor(level:GetPlanetariumChance()*100 + 0.5)) end)
-    pcall(function()
-        local seconds = math.floor(game.TimeCounter / 30)
-        local function left(limit)
-            local rest = limit - seconds
-            return rest > 0 and string.format("%d:%02d", rest // 60, rest % 60) or "closed"
-        end
-        parts[#parts+1] = string.format("time %d:%02d  rush %s  hush %s", seconds // 60, seconds % 60, left(1200), left(1800))
-    end)
-    return table.concat(parts, "  ")
+    local out = {}
+    pcall(function() out.deal = math.floor(math.min(1, game:GetRoom():GetDevilRoomChance())*100 + 0.5) end)
+    pcall(function() out.planetarium = math.floor(level:GetPlanetariumChance()*100 + 0.5) end)
+    pcall(function() out.seconds = math.floor(game.TimeCounter / 30) end)
+    return out
 end
+M.RUSH, M.HUSH = 1200, 1800 -- Boss Rush and Hush time gates, seconds
 
 -- Items forecast for every unvisited room, redone when the pools or the
--- floor changed. Returns a note on how far the forecast can be trusted.
+-- floor changed. Returns how far the forecast can be trusted: "exact",
+-- "approx", or "off" and why.
 local function forecastRooms(state, game)
     local blocked = ItemForecast.blocked(game)
-    if blocked then state.predicted = {}; return "forecast off (" .. blocked .. ")" end
+    if blocked then state.predicted = {}; return "off", blocked end
     local forecast = state.forecast
     local key = forecast.version .. ":" .. #state.map.rooms
     if key ~= state.forecastKey then
@@ -173,7 +170,7 @@ local function forecastRooms(state, game)
             end
         end
     end
-    return forecast.exact and "forecast exact" or "forecast approx (run not followed from its start)"
+    return forecast.exact and "exact" or "approx"
 end
 
 -- entities: a function returning the room's entities (called only to scan).
@@ -199,17 +196,19 @@ function M.update(state, game, room, entities, frame)
         if ok then state.forecast = forecast else state.forecastError = tostring(forecast) end
     end
     if state.map.current then scanRoom(state, state.map.current, entities(), rocks) end
-    local note = "forecast off (error)"
+    local status, reason = "off", "error"
     if state.forecast and not state.forecastError then
-        local ok, result = pcall(forecastRooms, state, game)
-        if ok then note = result else state.forecastError, state.predicted = tostring(result), {} end
+        local ok, result, why = pcall(forecastRooms, state, game)
+        if ok then status, reason = result, why else state.forecastError, state.predicted = tostring(result), {} end
     end
     if state.forecastError and not state.forecastLogged then
         state.forecastLogged = true
         Isaac.DebugString("IAD INTEL: forecast error " .. state.forecastError)
     end
     state.score = FloorScore.evaluate(state.map.rooms, state.items, state.loot, state.predicted)
-    state.score.lines[#state.score.lines+1] = {readouts(game, level) .. "  " .. note, {0.75, 0.75, 0.8}}
+    state.readouts = readouts(game, level)
+    state.readouts.forecast, state.readouts.forecastWhy = status, reason
+    pcall(function() state.readouts.stage = level:GetStage() end)
     return rocks
 end
 
