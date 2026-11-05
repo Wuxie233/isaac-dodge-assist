@@ -506,11 +506,13 @@ end
 -- Enemies move on at their velocity and the beam follows the player.
 -- `unsafe` = it would kill an exploder within BURST_KEEP of us.
 local BEAM_TICKS = 9
-local function beamValue(state, ctx, p, enemies, shoot, ox, oy, from, step)
+-- still=true: the beam leaves from a spot we stand on (goal planning).
+local ZERO = {X=0, Y=0}
+local function beamValue(state, ctx, p, enemies, shoot, ox, oy, from, step, still)
     local ticks, dmg = state.beamTicks or BEAM_TICKS, state.beamDamage or (p.Damage or 3.5)
     local reach = state.laserReach or math.huge
     local ax, ay = AXES[shoot][1], AXES[shoot][2]
-    local pv = p.Velocity or Vector(0, 0)
+    local pv = still and ZERO or p.Velocity or ZERO
     local exploder = ctx.exploder
     local total, hits, unsafe = 0, 0, false
     for _, e in ipairs(enemies) do
@@ -534,10 +536,10 @@ local function beamValue(state, ctx, p, enemies, shoot, ox, oy, from, step)
     return total / (dmg*ticks), hits, unsafe
 end
 -- Best safe axis from (ox,oy) for a release `from` updates ahead.
-local function bestBeam(state, ctx, p, enemies, ox, oy, from, step)
+local function bestBeam(state, ctx, p, enemies, ox, oy, from, step, still)
     local best, value, hits = nil, 0, 0
     for shoot = 1, 4 do
-        local v, n, unsafe = beamValue(state, ctx, p, enemies, shoot, ox, oy, from, step)
+        local v, n, unsafe = beamValue(state, ctx, p, enemies, shoot, ox, oy, from, step, still)
         if not unsafe and v > value then best, value, hits = shoot, v, n end
     end
     return best, value, hits
@@ -558,11 +560,19 @@ local function beamPlan(state, ctx, p, enemies)
     return {shoot=shoot, value=value, hits=hits, better=later >= value*WAIT_GAIN and later > value + 0.2}
 end
 M.beamPlan = beamPlan
+-- Payoff of standing at (x,y) for a beam leaving `releaseIn` updates ahead.
+function M.spotValue(state, ctx, p, enemies, x, y, releaseIn)
+    local _, v = bestBeam(state, ctx, p, enemies, x, y, releaseIn, 1, true)
+    return v
+end
 
 -- Stand on the target's row or column at a comfortable distance with a
 -- clear lane, close to us and away from the other enemies. With a beam the
 -- rows and columns of the two nearest other enemies compete too, and a spot
--- is worth more the more enemies its beam crosses.
+-- is worth more the more enemies its beam crosses. That is planned during
+-- the charge for the moment it is full (state.releaseIn updates ahead):
+-- enemies are taken where they will be then, and a spot we cannot reach by
+-- then (plus the wait cap) counts half.
 local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
     local p, room = ctx.player, ctx.room
     local range = attackRange(state, p)
@@ -588,10 +598,16 @@ local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
             return a.Position:Distance(p.Position) < b.Position:Distance(p.Position) end)
         for i = 1, min(2, #others) do anchors[#anchors+1] = others[i] end
     end
+    local releaseIn = state.releaseIn or 0
     local best, bestCost, bx, by, bestSide
     for pass = 1, 2 do
       for a, anchor in ipairs(anchors) do
         local tx, ty = anchor.Position.X, anchor.Position.Y
+        if beam and a > 1 then
+            -- Line up with where it will be at release.
+            local v = anchor.Velocity or ZERO
+            tx, ty = tx + v.X*releaseIn, ty + v.Y*releaseIn
+        end
         for _, d in ipairs({preferred, preferred*0.75, min(preferred*1.3, range-20)}) do
             for side, o in ipairs({{d,0}, {-d,0}, {0,d}, {0,-d}}) do
                 side = side + (a-1)*4
@@ -605,14 +621,16 @@ local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
                         -- Another enemy's line must be clearly better to win.
                         -- Cached per 20-unit spot for a few updates: the
                         -- candidates move with the enemies every update.
-                        local key = floor(x/20)*1000 + floor(y/20)
+                        local key = (floor(releaseIn/4)*100000 + floor(x/20))*1000 + floor(y/20)
                         local cached = state.spotValues[key]
                         if not cached or state.tick - cached[1] >= 6 then
-                            local _, v = bestBeam(state, ctx, p, enemies, x, y, 0, 3)
+                            local _, v = bestBeam(state, ctx, p, enemies, x, y, releaseIn, 3, true)
                             cached = {state.tick, v}
                             state.spotValues[key] = cached
                         end
                         local value = cached[2]
+                        local arrive = sqrt((x - p.Position.X)^2 + (y - p.Position.Y)^2) / max(1, ctx.stride or 4)
+                        if arrive > releaseIn + WAIT_MAX then value = value*0.5 end
                         cost = cost - 80*value + (a > 1 and 30 or 0)
                     end
                     for _, e in ipairs(enemies) do
@@ -763,6 +781,9 @@ function M.update(state, ctx)
     state.lastShoot = shoot
     local wasHeld = state.held
     local hold = fireControl(state, ctx, p, aligned, safe)
+    -- Updates until the next beam can leave: the rest of the charge (a full
+    -- one while a beam is out or just released), plus the online queue.
+    state.releaseIn = max(0, need - state.held) + (ctx.queueDelay or 0)
     if plan and plan.shoot and state.releasedAt == state.tick then
         log(string.format("IAD BEAM: value=%.2f hits=%d waited=%d shoot=%d", plan.value, plan.hits,
             wasHeld + 1 - need, plan.shoot))

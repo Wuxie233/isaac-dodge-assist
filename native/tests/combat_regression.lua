@@ -506,4 +506,22 @@ local s=Combat.new();Combat.cycle(s);Combat.cycle(s)
 update(s,{hp(enemy(220,260),20),hp(enemy(320,100),20),hp(enemy(440,100),20)})
 assert(s.info.goalY and math.abs(s.info.goalY-100)<1,'goal not on the two-enemy row: '..tostring(s.info.goalX)..','..tostring(s.info.goalY))
 weapons={}
-print('PASS 0.19 combat: Brimstone payoff picks the axis, waits for walkers (capped), spares exploders, lines up the goal')
+-- Plan while charging: spots are judged by where the enemies will be when
+-- the charge is full. E2 walks up into E1's row (y=100) and gets there as
+-- the charge (22 updates) completes; right now each enemy stands alone, so
+-- E4 shares the nearest target E3's row now but walks off it. Judged now,
+-- E3's row holds two; judged at release, E1's row does.
+weapons[WeaponType.WEAPON_BRIMSTONE]=true
+p.Position=Vector(100,180)
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+local E1,E2,E3,E4=hp(enemy(300,100),20),hp(enemy(420,100+3*22,0,-3),20),hp(enemy(200,260),20),hp(enemy(120,260,0,3),20)
+update(s,{E3,E1,E2,E4})
+assert(s.info.goalY and math.abs(s.info.goalY-100)<10,'goal off the release-time row: '..tostring(s.info.goalX)..','..tostring(s.info.goalY))
+-- The spot left of E1 is worth one enemy now and two at release.
+local ctx0={player=p,exploder=function()return false end}
+local now,atRelease=Combat.spotValue(s,ctx0,p,{E1,E2,E3,E4},92,100,0),Combat.spotValue(s,ctx0,p,{E1,E2,E3,E4},92,100,22)
+assert(atRelease>now*1.8,'release-time payoff not used: '..now..' vs '..atRelease)
+-- A spot we cannot reach before the beam is ready (plus the wait cap) is
+-- worth less than one we can.
+weapons={}
+print('PASS 0.19 combat: Brimstone payoff picks the axis, waits for walkers (capped), spares exploders, lines up the goal at release time')
