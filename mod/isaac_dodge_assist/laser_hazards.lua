@@ -138,6 +138,9 @@ end
 -- Bosses whose beam fires from a named animation, seen hitting while the
 -- sensor still showed no laser (2026-11-02): Monstro II "Taunt" frame 21
 -- (twice, along its row), Dark One "Attack2" frame 20 (straight down).
+-- The Haunt without its skin (2026-11-05): "LaserNoSkin" frame 17, straight
+-- down, the beam appearing in the update it hit; the boss keeps drifting
+-- sideways while it fires, which the shape's velocity carries.
 local bossBeams
 local function appendBossBeam(npc, room, shapes)
     if not bossBeams then
@@ -145,6 +148,7 @@ local function appendBossBeam(npc, room, shapes)
         for name, beam in pairs({
             ENTITY_MONSTRO2 = {animation="Taunt", frame=20, angles={0, 180}},
             ENTITY_DARK_ONE = {animation="Attack2", frame=19, angles={90}},
+            ENTITY_THE_HAUNT = {animation="LaserNoSkin", frame=16, angles={90}},
         }) do
             if EntityType[name] then bossBeams[EntityType[name]] = beam end
         end

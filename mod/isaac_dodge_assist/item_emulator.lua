@@ -24,6 +24,9 @@ validated offline on 130 logged pedestals (see native/research/item-emulation.md
       Emu.layoutPickSeed(desc.SpawnSeed, i)       -- = X35(InitSeed), InitSeed = X35(X11^(i+1)(SpawnSeed))
     boss clear reward (first pedestal):  Emu.bossPickSeed(desc.AwardSeed)  -- = X35(AwardSeed)
       pool: Emu.bossRewardPool(desc.Data.Subtype)  (nil = Horsemen fixed drop)
+    co-op boss room, the next item (one per extra player, spawned once the first is taken):
+      Emu.extraBossPickSeed(firstInitSeed)  -- = X30(InitSeed of the first boss pedestal), boss pool
+      firstInitSeed = Emu.bossItemInitSeed(desc.AwardSeed, desc.Data.Subtype)  -- X35^3, Mom X35^2
   Pools: Emu.poolForRoom(roomType, { subtype=, devilTreasure=, greed= })
 ]]
 
@@ -38,6 +41,7 @@ local SHIFT = {
   [11] = {2, 7, 7},    -- room layout spawn RNG
   [12] = {2, 7, 9},    -- room seed derivation (AwardSeed = X12(SpawnSeed))
   [27] = {3, 23, 25},  -- start seed RNG (stage seeds ...)
+  [30] = {4, 3, 17},   -- co-op extra boss item, from the first boss pedestal's InitSeed
   [35] = {5, 9, 7},    -- default RNG (entity InitSeed RNG)
 }
 
@@ -164,6 +168,21 @@ function M.layoutPickSeed(spawnSeed, i) return X(M.layoutInitSeed(spawnSeed, i),
 
 --- Seed of the first boss-room clear reward (AwardSeed = X12(SpawnSeed)).
 function M.bossPickSeed(awardSeed) return X(awardSeed & M32, 35) end
+
+--- InitSeed of that first reward pedestal: X35^3(AwardSeed), in Mom's room (boss 6) X35^2
+--- (2026-11-05 Online log: six boss rooms and one Mom room).
+local MOM = 6
+function M.bossItemInitSeed(awardSeed, bossSubtype)
+  local s = awardSeed & M32
+  for _ = 1, bossSubtype == MOM and 2 or 3 do s = X(s, 35) end
+  return s
+end
+
+--- With more than one player a boss room drops one more item per extra player, from the boss
+--- pool, each spawned once the previous one is taken. The first of them picks with
+--- X30(InitSeed of the first boss pedestal) (seven of seven logged rooms); later ones are not
+--- modelled.
+function M.extraBossPickSeed(firstInitSeed) return X(firstInitSeed & M32, 30) end
 
 --- Pool of the first boss reward from the boss room's Data.Subtype (= boss id).
 --- The Fallen (23) rewards from the devil pool [C-log]; the Horsemen (Famine 9, Pestilence 10,

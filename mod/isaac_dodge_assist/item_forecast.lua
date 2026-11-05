@@ -89,10 +89,23 @@ local function options(state, game)
     end}
 end
 
+-- How many people play: one per controller (Esau and other second bodies
+-- share their player's). A boss room drops one item per person.
+function M.players(game)
+    local seen, n = {}, 0
+    for i = 0, game:GetNumPlayers() - 1 do
+        local controller = Isaac.GetPlayer(i).ControllerIndex or i
+        if not seen[controller] then seen[controller], n = true, n + 1 end
+    end
+    return n
+end
+
 -- Forecast for one unvisited room (FloorMap room with spawnSeed, awardSeed,
 -- flags, subtype, type and layout.slots): a list of {id, kind} with kind
 -- "pedestal", "shop" or "boss". Shop slots only in devil rooms and black
 -- markets (an ordinary shop mixes slot types the copy does not model).
+-- A boss room's reward follows its layout; with two or more people the
+-- second person's boss-pool item follows it (later ones are not modelled).
 function M.room(state, game, room)
     local slots = room.layout and room.layout.slots or {}
     local pool = Emu.poolForRoom(room.type, {subtype = room.subtype,
@@ -108,19 +121,43 @@ function M.room(state, game, room)
             kinds[#picks] = slot.variant == 150 and "shop" or "pedestal"
         end
     end
+    -- A boss drops its reward on the kill (the Horsemen a fixed item).
+    local rewardPool = room.type == 5 and Emu.bossRewardPool(room.subtype)
+    local function add(pick, kind) picks[#picks+1] = pick; kinds[#picks] = kind end
+    if rewardPool then
+        add({rewardPool, Emu.bossPickSeed(room.awardSeed)}, "boss")
+        if M.players(game) > 1 then
+            local first = Emu.bossItemInitSeed(room.awardSeed, room.subtype)
+            add({Emu.POOL.BOSS, Emu.extraBossPickSeed(first)}, "boss")
+        end
+    end
     if #picks > 0 then
         local items = state.emu:predictRoom(picks, opts)
         for i = 1, #picks do
             if items[i] then out[#out+1] = {id = items[i], kind = kinds[i]} end
         end
     end
-    if room.type == 5 then
-        -- A boss drops its reward on the kill (the Horsemen a fixed item).
-        local rewardPool = Emu.bossRewardPool(room.subtype)
-        local id = rewardPool and state.emu:predict(rewardPool, Emu.bossPickSeed(room.awardSeed), opts)
-        if id then out[#out+1] = {id = id, kind = "boss"} end
-    end
     return out
+end
+
+-- In a cleared boss room with two or more people: the first reward
+-- pedestal (found by its InitSeed) and the item the next pedestal will hold
+-- once it is taken. pedestals = {seed (InitSeed), ...}; nil when there is
+-- none to tell.
+function M.bossNext(state, game, room, pedestals)
+    if not state or room.type ~= 5 or M.players(game) < 2 then return nil end
+    local s, first = room.awardSeed & 0xFFFFFFFF, {}
+    for n = 1, 3 do
+        s = Emu.next(s, 35)
+        if n >= 2 then first[s] = true end
+    end
+    for _, pedestal in ipairs(pedestals) do
+        if pedestal.seed and first[pedestal.seed] then
+            local id = state.emu:predict(Emu.POOL.BOSS, Emu.extraBossPickSeed(pedestal.seed), options(state, game))
+            if id then return pedestal, id end
+        end
+    end
+    return nil
 end
 
 function M.quality(id)

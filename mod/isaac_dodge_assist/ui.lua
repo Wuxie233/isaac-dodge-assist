@@ -56,7 +56,7 @@ local STRINGS = {
         fl_ipecac = "Ipecac", fl_ludovico = "Ludovico", fl_techx = "Tech X", fl_lung = "Lung shots",
         fl_haemolacria = "Haemolacria", fl_trisagion = "Trisagion", fl_sword = "Sword", fl_fetus = "Fetus shots",
         fl_charged = "charged attack", fl_oneEye = "one eye only", fl_random = "random stats", fl_character = "varies by character",
-        horse = " (horse)",
+        horse = " (horse)", nextItem = "Then: %s",
     },
     zh = {
         dodge = "躲避", dodgeOff = "躲避已关闭（F6）", paused = "已暂停（Shift）", standby = "躲避",
@@ -97,7 +97,7 @@ local STRINGS = {
         fl_ipecac = "吐根", fl_ludovico = "卢多维科", fl_techx = "科技X", fl_lung = "怪物肺",
         fl_haemolacria = "血泪", fl_trisagion = "三圣颂", fl_sword = "圣剑", fl_fetus = "胎儿",
         fl_charged = "需蓄力", fl_oneEye = "只对单眼", fl_random = "随机属性", fl_character = "因角色而异",
-        horse = "（大）",
+        horse = "（大）", nextItem = "拿走后出：%s",
     },
 }
 M.STRINGS = STRINGS

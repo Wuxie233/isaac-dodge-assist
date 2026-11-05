@@ -27,7 +27,8 @@ Notation: `Xn(s)` is one xorshift `RNG:Next()` with shift index `n` (api-map-ite
 | Pedestal | Pick seed P | Status |
 |---|---|---|
 | Layout spawn i (0-based index in `Data.Spawns`) of a room, entity 5.100.0 or 5.150.x | `InitSeed = X35(X11^(i+1)(SpawnSeed))`; `P = X35(InitSeed)` | [C] `Entity_Pickup::Init` @0x6e02f0 builds `RNG(InitSeed, 35)`. For variant 100 with subtype 0 it calls `GetSeededCollectible(rng:Next())`; variant 150 calls `Room::GetShopItem(…, rng:Next())`. [C-log] 100/102 layout pedestals; `k = i+1` holds for 267 first-visit pickups checked against the extracted STB layouts. |
-| First boss-room clear reward | `P = X35(AwardSeed)`, `AwardSeed = X12(SpawnSeed)` | [C-log] 24/24 (ESF `generator_dz_exp_long.cpp` uses the same seed). The pedestal's InitSeed is `X35^3(AwardSeed)`, which explains the "k=3" in api-map-items.md §3.2. |
+| First boss-room clear reward | `P = X35(AwardSeed)`, `AwardSeed = X12(SpawnSeed)` | [C-log] 24/24 (ESF `generator_dz_exp_long.cpp` uses the same seed). The pedestal's InitSeed is `X35^3(AwardSeed)`, which explains the "k=3" in api-map-items.md §3.2. In Mom's room (boss 6) it was `X35^2(AwardSeed)` (one logged room). |
+| Co-op boss room, the second person's item (spawned once the first is taken), boss pool | `P = X30(InitSeed of the first boss pedestal)` | [C-log] 7/7 rooms of the 2026-11-05 Online run TTA8C7DH, Mom's room included. With the game's start seed and the save's locked items, `Emu:predictRoom` gives Squeezy then Supper for the Haunt's room 5.5011, as logged. The third and fourth person's items are not traced. |
 
 This corrects api-map-items.md §3.3, which assumed the pick seed is `InitSeed`. With `InitSeed` as the seed, 0 of 36 treasure rooms matched.
 
@@ -208,7 +209,7 @@ python3 gen_fuzz.py && lua5.3 test_fuzz.lua         # 300 random stress cases in
 - **Boss rooms**:
   - Fixed boss drops: the Horsemen, and probably other boss-specific items.
   - Thematic pools other than The Fallen, which come from the boss config field +0x30.
-  - Co-op extra rewards.
+  - Co-op rewards after the second person's (three or four players).
 - **Layout spawns with several weighted entries** where one is a collectible: the entry choice is not modelled. Only single-entry 5.100.0 / 5.150.x spawns are predicted.
 - **Changes after spawn**:
   - Rerolls.
@@ -222,16 +223,15 @@ python3 gen_fuzz.py && lua5.3 test_fuzz.lua         # 300 random stress cases in
 - **Unlocks mid-run**: an item unlocked during the run is `IsAvailable` but its pool flag `isUnlocked` stays false until the next run. `Emu:predict` accepts an optional `isUnlocked` for this case; by default there is no outer retry.
 - **Character pools**: there are no character-specific item lists in this version. Keeper, Lost, Tainted Lost, Sacred Orb and NO! effects all go through `IsAvailable()` and `banActives`. Only Keeper occurred in the test data.
 
-## 5. Open checks for the deployed MAPCAL logger
+## 5. MAPCAL logger results (2026-11-05 Online session, sensor 0.24.0)
 
-Deployed 2026-11-05 12:45 (`core.lua`), no logs yet. On the next session check:
+Of 37 item picks (`IAD MAPCAL GETCOL`) in rooms entered for the first time, every one has a known seed:
 
-- `GETCOL seed` equals `X35(InitSeed)` of the pedestal;
-- the `MC_PRE_ROOM_ENTITY_SPAWN` seed is `X11^(i+1)(SpawnSeed)` or the InitSeed;
-- the `Data.Spawns:Get(i)` order equals the STB order (k = i+1);
-- `AwardSeed == X12(SpawnSeed)`.
+- layout pedestals: 20/20 equal `layoutPickSeed(SpawnSeed, i)` for a spawn index i of the room;
+- boss rewards: 6/6 equal `X35(AwardSeed)`; the second person's items: 7/7 equal `X30(first pedestal InitSeed)`;
+- the rest are chests (golden 8, red 9 pools) and Boss Rush wave rewards, which the forecast does not try.
 
-Then run the Lua module live in `MC_PRE_ROOM_ENTITY_SPAWN` against the actual pick.
+The per-spawn log (`IAD MAPCAL SPAWN`) was dropped in 0.25. 0.25 logs, on entering a room, what the forecast held for it (`IAD FORECAST: room=<list index> exact=… items=<id>:<kind>,…`), to compare with the pedestals that follow.
 
 ## 6. Evidence and files
 

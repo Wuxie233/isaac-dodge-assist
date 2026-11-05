@@ -66,6 +66,8 @@ end
 -- and special (room type names worth points, in floor order). access (see
 -- M.access) discounts what we cannot get into or pay for yet.
 function M.evaluate(rooms, items, loot, predicted, access)
+    -- A boss drops one item per person.
+    local bossItems = math.max(1, access and access.players or 1)
     local itemPoints, lootPoints, roomPoints = 0, 0, 0
     local qualities, unseen = {[0] = 0, 0, 0, 0, 0}, 0
     local entries, lootTotals, special = {}, {}, {}
@@ -103,7 +105,7 @@ function M.evaluate(rooms, items, loot, predicted, access)
             -- layout), at the unseen estimate.
             local layout = room.layout or {pedestals = 0, shop = 0}
             local pedestals = math.max(0, layout.pedestals - found.pedestal) +
-                ((name == "ROOM_BOSS" and found.boss == 0) and 1 or 0)
+                (name == "ROOM_BOSS" and math.max(0, bossItems - found.boss) or 0)
             local shop = math.max(0, layout.shop - found.shop)
             itemPoints = itemPoints + (pedestals*M.UNSEEN_ITEM + shop*M.UNSEEN_ITEM*M.SHOP)*reach
             unseen = unseen + pedestals + shop

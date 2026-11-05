@@ -84,7 +84,7 @@ beams={};L.appendWarnings(creep(555,180,'Walk',5),room,beams);assert(#beams==0,'
 print('PASS Rage Creep wind-up: beam from each wall into the room, timing, walk exclusion')
 -- Boss beams from named animations: Monstro II "Taunt" along its row from
 -- frame 20, Dark One "Attack2" straight down from frame 19.
-EntityType.ENTITY_MONSTRO2,EntityType.ENTITY_DARK_ONE=43,267
+EntityType.ENTITY_MONSTRO2,EntityType.ENTITY_DARK_ONE,EntityType.ENTITY_THE_HAUNT=43,267,260
 local Fresh=dofile('mod/isaac_dodge_assist/laser_hazards.lua')
 local function boss(kind,animation,frame)local b=windUp(kind,0,animation,frame);b.Position=Vector(300,180);return b end
 beams={};Fresh.appendWarnings(boss(43,'Taunt',10),room,beams)
@@ -95,7 +95,13 @@ beams={};Fresh.appendWarnings(boss(267,'Attack2',15),room,beams)
 assert(#beams==1 and Fresh.clearanceXY(beams[1],300,300,300,300,4,10)<0,'Dark One beam not downward')
 assert(Fresh.clearanceXY(beams[1],300,60,300,60,4,10)>0,'Dark One beam covers above it')
 beams={};Fresh.appendWarnings(boss(43,'Walk',10),room,beams);assert(#beams==0,'walking Monstro II fired')
-print('PASS boss beams: Monstro II Taunt row, Dark One Attack2 down, timing, walk exclusion')
+-- The Haunt's skinless beam (2026-11-05 hit: LaserNoSkin frame 17, player
+-- 165 below it): straight down from frame 16, nothing from its idle.
+beams={};Fresh.appendWarnings(boss(260,'LaserNoSkin',8),room,beams)
+assert(#beams==1 and beams[1].activeFrom==8,'Haunt beam missing')
+assert(Fresh.clearanceXY(beams[1],300,345,300,345,8,10)<0 and Fresh.clearanceXY(beams[1],300,345,300,345,7,10)==math.huge,'Haunt beam timing')
+beams={};Fresh.appendWarnings(boss(260,'IdleNoSkin',8),room,beams);assert(#beams==0,'idle Haunt fired')
+print('PASS boss beams: Monstro II Taunt row, Dark One Attack2 down, The Haunt LaserNoSkin down, timing, idle exclusion')
 -- Swept rotating beams are approximated by a few rotated slices plus an arc
 -- margin, and distant queries are rejected by a radial/cone lower bound. Both
 -- must stay on the safe side of a dense sweep: never report more clearance

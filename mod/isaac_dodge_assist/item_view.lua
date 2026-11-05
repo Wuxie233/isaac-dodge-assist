@@ -169,7 +169,9 @@ function M.renderPage(score)
 end
 
 -- Tooltip over the collectible pedestal nearest the player (within reach):
--- name, quality and stat changes. pedestal = {x, y, id, price}.
+-- name, quality and stat changes, and in a co-op boss room the item the
+-- next pedestal will hold once this one is taken. pedestal = {x, y, id,
+-- price, next}.
 local REACH = 70
 function M.renderTooltip(pedestals, player)
     local best, bestD
@@ -182,15 +184,22 @@ function M.renderTooltip(pedestals, player)
     local quality = UI.quality(best.id)
     local title = UI.itemName(best.id) .. "  Q" .. tostring(quality or "?")
     local words = M.words(M.stats(best.id))
-    local w = UI.width(title)
+    local after, afterQuality
+    if best.next then
+        afterQuality = UI.quality(best.next)
+        after = UI.t("nextItem", UI.itemName(best.next)) .. "  Q" .. tostring(afterQuality or "?")
+    end
+    local w = math.max(UI.width(title), after and UI.width(after) or 0)
     local statsW = 0
     for _, word in ipairs(words) do statsW = statsW + UI.width(word[1]) + UI.width(" ")*2 end
     w = math.max(w, statsW)
+    local lines = 1 + (#words > 0 and 1 or 0) + (after and 1 or 0)
     local point = Isaac.WorldToScreen(Vector(best.x, best.y))
-    local x, y = point.X - w/2, point.Y - 46 - (#words > 0 and lh or 0)
-    UI.rect(x - 4, y - 2, w + 8, lh*(#words > 0 and 2 or 1) + 4, {0, 0, 0}, 0.6)
+    local x, y = point.X - w/2, point.Y - 46 - (lines - 1)*lh
+    UI.rect(x - 4, y - 2, w + 8, lh*lines + 4, {0, 0, 0}, 0.6)
     UI.text(title, x, y, UI.QUALITY[quality or 1] or UI.TEXT, 1)
     if #words > 0 then line(words, x, y + lh, x + w + 1, 1) end
+    if after then UI.text(after, x, y + (lines - 1)*lh, UI.QUALITY[afterQuality or 1] or UI.TEXT, 1) end
 end
 
 -- Effect over every pill on the floor. pill = {x, y, effect} (effect id or

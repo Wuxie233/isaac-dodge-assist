@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.24.0"
+local VERSION = "0.25.0"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
@@ -394,13 +394,11 @@ end
 mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); Combat.flushStats(combat, "room"); frame = 0; motion = {}; deathAt = {}; gridLogged = false; Diagnostics.reset("room"); pcall(FloorIntel.newRoom, intel, game); calibrationRoom(); emit(false) end)
 mod:AddCallback(ModCallbacks.MC_POST_NEW_LEVEL, function() FloorIntel.newLevel(intel) end)
 -- Calibration for predicting unvisited rooms' items (see
--- native/research/api-map-items.md 3.6): the seeds the game itself uses
--- for layout spawns and item picks. Observation only: every handler
--- returns nothing, so the game's choice is untouched.
-mod:AddCallback(ModCallbacks.MC_PRE_ROOM_ENTITY_SPAWN, function(_, kind, variant, subtype, gridIndex, seed)
-    Isaac.DebugString("IAD MAPCAL SPAWN t=" .. tostring(kind) .. " v=" .. tostring(variant) .. " s=" .. tostring(subtype) ..
-        " g=" .. tostring(gridIndex) .. " seed=" .. u32(seed))
-end)
+-- native/research/api-map-items.md 3.6): the room seeds (calibrationRoom)
+-- and the seed of every item pick, checked against the forecast's seed
+-- formulas offline. The per-spawn log (MAPCAL SPAWN) ended in 0.25 once
+-- the layout formula held for every logged pedestal. Observation only:
+-- every handler returns nothing, so the game's choice is untouched.
 -- Every item the game picks keeps the forecast's copy of the pools in step.
 if ModCallbacks.MC_POST_GET_COLLECTIBLE then
     mod:AddCallback(ModCallbacks.MC_POST_GET_COLLECTIBLE, function(_, selected, pool, decrease)

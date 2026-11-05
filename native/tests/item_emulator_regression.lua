@@ -109,6 +109,20 @@ do
   -- print(("multi-pedestal rooms predicted before entry: %d/%d fully right"):format(roomOk, rooms))
 end
 
+-- 1b. co-op boss rooms (2026-11-05 Online run TTA8C7DH): the first reward
+-- pedestal's InitSeed from the AwardSeed, and the second player's item seed
+-- X30(that InitSeed). {AwardSeed, boss subtype, first InitSeed, second seed};
+-- the subtype only matters for Mom (6), so the others carry 0.
+for _, c in ipairs({
+  {1150171659, 0, 0x3b1bcc7b, 4260989856}, {2522777397, 0, 0xcf42d670, 3724627119},
+  {4088030492, 0, 0x6b0a0979, 7333545}, {2270505770, 0, 0x7237d00f, 3719408559},
+  {969566351, 0, 0x4ba38a55, 936656538}, {3572268324, 6, 0xf4075797, 561915169},
+}) do
+  local first = Emu.bossItemInitSeed(c[1], c[2])
+  check(first == c[3], ("boss pedestal InitSeed as=%d"):format(c[1]))
+  check(Emu.extraBossPickSeed(first) == c[4], ("co-op boss item seed as=%d"):format(c[1]))
+end
+
 -- 4. purity: predict must not change state -------------------------------------
 do
   local emu = Emu.new(data, Emu.seedFromString("NZ613W0S"))
@@ -119,4 +133,4 @@ do
 end
 
 assert(fails == 0, "item emulator: " .. fails .. " failures")
-print("PASS item emulator: seed helpers, 130 logged pedestals (Lua == Python reference), whole rooms, purity")
+print("PASS item emulator: seed helpers, co-op boss item seeds, 130 logged pedestals (Lua == Python reference), whole rooms, purity")

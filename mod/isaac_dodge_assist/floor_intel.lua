@@ -35,7 +35,19 @@ function M.newLevel(state)
 end
 function M.newRoom(state, game)
     state.scanAt = -100
-    state.pedestals, state.pills = {}, {}
+    state.pedestals, state.pills, state.bossNext = {}, {}, nil
+    -- What the forecast promised for the room just entered, to be checked
+    -- against the pedestals the log shows next (and the boss reward later).
+    pcall(function()
+        local index = game:GetLevel():GetCurrentRoomDesc().ListIndex
+        local list = state.predicted and state.predicted[index]
+        if list and #list > 0 then
+            local words = {}
+            for _, item in ipairs(list) do words[#words+1] = item.id .. ":" .. tostring(item.kind) end
+            Isaac.DebugString("IAD FORECAST: room=" .. index .. " exact=" .. tostring(state.forecast and state.forecast.exact) ..
+                " items=" .. table.concat(words, ","))
+        end
+    end)
     if state.forecast and not state.forecastError then
         local ok, err = pcall(ItemForecast.newRoom, state.forecast, game)
         if not ok then state.forecastError = tostring(err) end
@@ -108,7 +120,8 @@ local function scanRoom(state, game, index, entities, rocks, player)
             if PickupVariant and pickup.Variant == PickupVariant.PICKUP_COLLECTIBLE then
                 if pickup.SubType > 0 then
                     ItemForecast.seen(forecast, pickup.SubType)
-                    pedestals[#pedestals+1] = {x = pickup.Position.X, y = pickup.Position.Y, id = pickup.SubType, price = pickup.Price or 0}
+                    pedestals[#pedestals+1] = {x = pickup.Position.X, y = pickup.Position.Y, id = pickup.SubType,
+                        price = pickup.Price or 0, seed = pickup.InitSeed and pickup.InitSeed & 0xFFFFFFFF}
                 end
                 if pickup.SubType > 0 and not seen[pickup.SubType] then
                     local info = itemInfo(pickup.SubType)
@@ -157,7 +170,8 @@ M.RUSH, M.HUSH = 1200, 1800 -- Boss Rush and Hush time gates, seconds
 local RED_KEY, BOMB_ITEMS = 580, {52, 168}
 local RED_CARDS = {78, 83, 74}
 local function accessOf(game, level)
-    local a = {keys = 0, bombs = 0, coins = 0, stage = 1, redHeld = false, redUnlocked = false}
+    local a = {keys = 0, bombs = 0, coins = 0, stage = 1, redHeld = false, redUnlocked = false,
+        players = ItemForecast.players(game)}
     pcall(function() a.stage = level:GetStage() end)
     for i = 0, game:GetNumPlayers() - 1 do
         local p = Isaac.GetPlayer(i)
@@ -247,12 +261,41 @@ function M.update(state, game, room, entities, frame, player)
         local ok, result, why = pcall(forecastRooms, state, game)
         if ok then status, reason = result, why else state.forecastError, state.predicted = tostring(result), {} end
     end
+    -- Co-op, cleared boss room: the next person's item, on the first
+    -- pedestal's tooltip and in the score until it is on the floor itself.
+    state.bossNext = nil
+    if status ~= "off" then
+        for _, room in ipairs(state.map.rooms) do
+            if room.index == state.map.current then
+                local ok, pedestal, id = pcall(ItemForecast.bossNext, state.forecast, game, room, state.pedestals or {})
+                if ok and pedestal then
+                    pedestal.next = id
+                    local info = itemInfo(id)
+                    info.kind, info.predicted = "boss", true
+                    state.bossNext = {index = room.index, info = info}
+                end
+            end
+        end
+    end
     if state.forecastError and not state.forecastLogged then
         state.forecastLogged = true
         Isaac.DebugString("IAD INTEL: forecast error " .. state.forecastError)
     end
     local okAccess, access = pcall(accessOf, game, level)
-    state.score = FloorScore.evaluate(state.map.rooms, state.items, state.loot, state.predicted, okAccess and access or nil)
+    local items = state.items
+    local extra = state.bossNext
+    if extra then
+        local list, present = {}, false
+        for _, item in ipairs(items[extra.index] or {}) do
+            list[#list+1] = item
+            if item.id == extra.info.id then present = true end
+        end
+        if not present then
+            list[#list+1] = extra.info
+            items = setmetatable({[extra.index] = list}, {__index = state.items})
+        end
+    end
+    state.score = FloorScore.evaluate(state.map.rooms, items, state.loot, state.predicted, okAccess and access or nil)
     state.readouts = readouts(game, level)
     state.readouts.forecast, state.readouts.forecastWhy = status, reason
     pcall(function() state.readouts.stage = level:GetStage() end)

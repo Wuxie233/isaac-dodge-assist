@@ -254,3 +254,49 @@ state=FloorIntel.new();FloorIntel.update(state,game,room,function()return {}end,
 assert(state.forecast and not state.forecast.exact,'mid-run start')
 for _,line in ipairs(logs)do assert(not line:find('forecast',1,true),line)end
 print('PASS item forecast: logged treasure room named before entry, fixed items, owned and picked items, Chaos off, approximate continues')
+
+-- 0.25 co-op boss rooms. Online run TTA8C7DH (2026-11-05), the Haunt's room
+-- 5.5011 (AwardSeed 1150171659): two people, two boss items, Squeezy (196)
+-- and, once it was taken, Supper (707). Not entered yet, both are forecast
+-- (alone, only the first); cleared, the first pedestal (InitSeed X35^3 of
+-- the AwardSeed) names the second exactly, on its tooltip and in the score.
+local Emu=include('item_emulator')
+local people={setmetatable({ControllerIndex=1},{__index=player}),setmetatable({ControllerIndex=2},{__index=player})}
+local onePlayer=Isaac.GetPlayer
+Isaac.GetPlayer=function(i)return people[i+1] end
+local coop=setmetatable({GetSeeds=function()return {GetStartSeed=function()return startSeed('TTA8C7DH')end}end,
+ GetNumPlayers=function()return 2 end},{__index=game})
+for _,id in ipairs({36,152,147,343})do owned[id]=1 end
+rooms={desc(0,6*13+6,1,RoomType.ROOM_DEFAULT,true),desc(1,6*13+7,1,RoomType.ROOM_BOSS,false)}
+rooms[2].AwardSeed=1150171659
+byIndex={};for _,d in ipairs(rooms)do byIndex[d.SafeGridIndex]=d end
+current=rooms[1]
+state=FloorIntel.startRun(FloorIntel.new(),coop,false)
+FloorIntel.update(state,coop,room,function()return {}end,1)
+local boss=state.predicted[1]
+assert(boss and #boss==2 and boss[1].id==196 and boss[2].id==707 and boss[2].kind=='boss','co-op boss forecast: '..
+ tostring(boss and boss[1] and boss[1].id)..' '..tostring(boss and boss[2] and boss[2].id))
+local solo=setmetatable({GetNumPlayers=function()return 1 end},{__index=coop})
+local alone=FloorIntel.startRun(FloorIntel.new(),solo,false)
+FloorIntel.update(alone,solo,room,function()return {}end,1)
+assert(#alone.predicted[1]==1 and alone.predicted[1][1].id==196,'solo boss forecast')
+-- Entering logs what was promised for the room.
+current=rooms[2];rooms[2].VisitedCount=1
+logs={}
+FloorIntel.newRoom(state,coop)
+assert(logs[1]=='IAD FORECAST: room=1 exact=true items=196:boss,707:boss','forecast log: '..tostring(logs[1]))
+-- The kill: the game picks Squeezy for the first pedestal.
+FloorIntel.picked(state,196,2,true)
+local first=pickup(100,196);first.InitSeed=Emu.bossItemInitSeed(1150171659,0)
+FloorIntel.update(state,coop,room,function()return {first}end,2)
+assert(state.pedestals[1].next==707,'next boss item on the pedestal: '..tostring(state.pedestals[1].next))
+local promised=false
+for _,e in ipairs(state.score.entries)do if e.id==707 and e.predicted then promised=true end end
+assert(promised,'next boss item not in the score')
+-- Taken: Supper is on the floor, seen, and nothing more is promised.
+local second=pickup(100,707);second.InitSeed=12345
+state.scanAt=-100;FloorIntel.update(state,coop,room,function()return {pickup(100,0),second}end,3)
+assert(state.bossNext==nil and #state.items[1]==2 and not state.items[1][2].predicted,'second boss item seen')
+Isaac.GetPlayer=onePlayer
+for _,id in ipairs({36,152,147,343})do owned[id]=nil end
+print('PASS co-op boss items: logged Haunt room forecast for two (one alone), entry log, next item on the first pedestal and in the score')
