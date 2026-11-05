@@ -162,9 +162,14 @@ local function drawSide(score, readouts, x, top, width, bottom)
         local tag = (item.predicted and "~" or " ") .. (kind and kind[3] or "?")
         local cost = item.devil and (" " .. UI.t("deal")) or (item.price > 0 and (item.predicted and (" " .. UI.t("shop")) or (" $" .. item.price))) or ""
         local colour = UI.QUALITY[item.quality] or UI.TEXT
-        UI.text(tag, x, y, item.predicted and {0.35, 0.9, 1} or UI.DIM, 1)
-        UI.text(UI.fit(UI.itemName(item.id, item.name) .. cost, nameWidth), x + 40, y, colour, 1)
-        UI.text("Q" .. item.quality, x + width - UI.width("Q4"), y, colour, 1)
+        -- What stands between us and it, after the name; out of reach is grey.
+        local need = item.need and ("  " .. UI.t("need_" .. item.need)) or ""
+        local alpha = (item.factor or 1) > 0 and 1 or 0.45
+        UI.text(tag, x, y, item.predicted and {0.35, 0.9, 1} or UI.DIM, alpha)
+        local name = UI.fit(UI.itemName(item.id, item.name) .. cost, nameWidth - UI.width(need))
+        UI.text(name, x + 40, y, colour, alpha)
+        if need ~= "" then UI.text(need, x + 40 + UI.width(name), y, UI.WARN, alpha) end
+        UI.text("Q" .. item.quality, x + width - UI.width("Q4"), y, colour, alpha)
         y = y + lh
     end
     if shown < #entries then UI.text("  " .. UI.t("more", #entries - shown), x, y, UI.DIM, 1); y = y + lh end

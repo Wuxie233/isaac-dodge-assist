@@ -6,7 +6,7 @@
 <font dir> holds font/cjk/lanapixel.fnt+png and font/luaminioutlined.fnt+png
 as extracted from the game (afterbirthp.a, see native/research/text-and-fonts.md).
 Writes <lang>_<scene>.png (480x270 game pixels, upscaled x3) for zh/en x
-hud/panel. The harness runs the real hud.lua/map_view.lua; this only draws
+hud/panel/page (F5 second page)/room (pedestal tooltip and pill labels). The harness runs the real hud.lua/map_view.lua; this only draws
 what they asked for. A layout check, not a screenshot of the game.
 """
 import os, struct, subprocess, sys, tempfile
@@ -82,7 +82,7 @@ def main(font_dir, out_dir):
         font = load_font(font_dir, rel)
         with tempfile.NamedTemporaryFile('w', suffix='.lua', delete=False) as adv:
             adv.write('return {' + ','.join(f'[{k}]={v[6]}' for k, v in font['chars'].items()) + '}')
-        for scene in ('hud', 'panel'):
+        for scene in ('hud', 'panel', 'page', 'room'):
             calls = subprocess.run(['lua5.3', 'native/tests/ui_preview/harness.lua', lang, adv.name, scene],
                                    cwd=ROOT, capture_output=True, text=True, check=True).stdout.splitlines()
             img = background()

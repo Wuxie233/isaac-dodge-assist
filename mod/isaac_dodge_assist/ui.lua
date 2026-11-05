@@ -42,6 +42,21 @@ local STRINGS = {
         forecastOff = "Item forecast: off (%s)", forecastError = "Item forecast: off (error)",
         greed = "Greed mode", challenge = "challenge", chaos = "Chaos", tmtrainer = "TMTRAINER",
         hint = "F5 close",
+        need_key = "needs key", need_bomb = "needs bomb", need_red = "needs red key", need_redLocked = "out of reach",
+        need_coins = "can't afford",
+        st_dmg = "DMG", st_dmgMult = "DMG ", st_tears = "Tears", st_tearsMult = "Tears ", st_range = "Range",
+        st_shotSpeed = "Shot spd", st_speed = "Speed", st_luck = "Luck", st_hearts = "HP", st_soul = "Soul",
+        st_black = "Black", st_conditional = "(conditional)",
+        pageTitle = "Floor items and stat changes", pageHint = "F5 close", allTitle = "Take all reachable:",
+        noStats = "no stat changes", noStatChange = "no stat change",
+        st_fireRate = "Fire rate", st_rangeMult = "Range ", st_shotSpeedMult = "Shot spd ", st_speedMin = "Speed at least ",
+        st_bone = "Bone", st_eternal = "Eternal", st_rotten = "Rotten", st_broken = "Broken",
+        fl_flight = "Flight", fl_spectral = "Spectral", fl_piercing = "Piercing", fl_homing = "Homing",
+        fl_brimstone = "Brimstone", fl_laser = "Laser", fl_knife = "Knife", fl_bombs = "Bomb shots", fl_rockets = "Rockets",
+        fl_ipecac = "Ipecac", fl_ludovico = "Ludovico", fl_techx = "Tech X", fl_lung = "Lung shots",
+        fl_haemolacria = "Haemolacria", fl_trisagion = "Trisagion", fl_sword = "Sword", fl_fetus = "Fetus shots",
+        fl_charged = "charged attack", fl_oneEye = "one eye only", fl_random = "random stats", fl_character = "varies by character",
+        horse = " (horse)",
     },
     zh = {
         dodge = "躲避", dodgeOff = "躲避已关闭（F6）", paused = "已暂停（Shift）", standby = "躲避",
@@ -68,6 +83,21 @@ local STRINGS = {
         forecastOff = "道具预测：关闭（%s）", forecastError = "道具预测：关闭（出错）",
         greed = "贪婪模式", challenge = "挑战", chaos = "混沌", tmtrainer = "TMTRAINER",
         hint = "F5 关闭",
+        need_key = "需钥匙", need_bomb = "需炸弹", need_red = "需红钥匙", need_redLocked = "进不去",
+        need_coins = "钱不够",
+        st_dmg = "伤害", st_dmgMult = "伤害", st_tears = "射速", st_tearsMult = "射速", st_range = "射程",
+        st_shotSpeed = "弹速", st_speed = "移速", st_luck = "幸运", st_hearts = "心之容器", st_soul = "魂心",
+        st_black = "黑心", st_conditional = "（条件触发）",
+        pageTitle = "本层道具与面板收益", pageHint = "F5 关闭", allTitle = "能拿的全拿：",
+        noStats = "没有面板变化", noStatChange = "不改面板",
+        st_fireRate = "额外射速", st_rangeMult = "射程", st_shotSpeedMult = "弹速", st_speedMin = "移速至少",
+        st_bone = "骨心", st_eternal = "永恒之心", st_rotten = "腐心", st_broken = "碎心",
+        fl_flight = "飞行", fl_spectral = "穿墙", fl_piercing = "穿透", fl_homing = "追踪",
+        fl_brimstone = "硫磺火", fl_laser = "激光", fl_knife = "妈刀", fl_bombs = "炸弹泪", fl_rockets = "导弹",
+        fl_ipecac = "吐根", fl_ludovico = "卢多维科", fl_techx = "科技X", fl_lung = "怪物肺",
+        fl_haemolacria = "血泪", fl_trisagion = "三圣颂", fl_sword = "圣剑", fl_fetus = "胎儿",
+        fl_charged = "需蓄力", fl_oneEye = "只对单眼", fl_random = "随机属性", fl_character = "因角色而异",
+        horse = "（大）",
     },
 }
 M.STRINGS = STRINGS
@@ -118,6 +148,12 @@ function M.lang()
 end
 function M.setLang(value) forced = value end -- tests
 
+function M.has(key) return STRINGS[M.lang()][key] ~= nil end
+-- Quality 0-4 of a collectible, or nil.
+function M.quality(id)
+    local ok, q = pcall(function() return Isaac.GetItemConfig():GetCollectible(id).Quality end)
+    return ok and q or nil
+end
 function M.t(key, ...)
     local text = STRINGS[M.lang()][key] or STRINGS.en[key] or key
     if select("#", ...) > 0 then return string.format(text, ...) end
@@ -231,5 +267,6 @@ end
 -- Item quality colours (0-4) shared by the HUD and the map.
 M.QUALITY = {[0] = {0.6, 0.6, 0.62}, {0.9, 0.9, 0.9}, {0.55, 0.8, 1}, {0.85, 0.6, 1}, {1, 0.8, 0.25}}
 M.DIM, M.TEXT, M.GOOD, M.WARN, M.MUTED = {0.6, 0.6, 0.65}, {0.92, 0.92, 0.92}, {0.45, 0.95, 0.5}, {1, 0.65, 0.25}, {0.45, 0.45, 0.5}
+M.BAD = {1, 0.4, 0.4}
 
 return M

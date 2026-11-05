@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.23.1"
+local VERSION = "0.24.0"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
@@ -24,7 +24,8 @@ local FloorIntel = include("floor_intel")
 local MapView = include("map_view")
 local Hud = include("hud")
 local UI = include("ui")
-Hud.use(UI); MapView.use(UI)
+local ItemView = include("item_view")
+Hud.use(UI); MapView.use(UI); ItemView.use(UI)
 local terrain
 local kinematics = PlayerMotion.new()
 local inputs = InputQueue.new()
@@ -422,7 +423,8 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     frame = frame + 1
     -- Floor intel and reward rocks run whatever the dodge state. They are
     -- extras: an error there is logged once and never stops the dodging.
-    local ok, rocks = pcall(FloorIntel.update, intel, game, game:GetRoom(), Isaac.GetRoomEntities, frame)
+    local bound = selected >= 0 and selected < game:GetNumPlayers() and Isaac.GetPlayer(selected) or Isaac.GetPlayer(0)
+    local ok, rocks = pcall(FloorIntel.update, intel, game, game:GetRoom(), Isaac.GetRoomEntities, frame, bound)
     if ok then Overlay.rewards(rocks)
     elseif not intelFailed then intelFailed = true; Isaac.DebugString("IAD INTEL: error " .. tostring(rocks)) end
     local count = game:GetNumPlayers()
@@ -738,7 +740,8 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
         Isaac.DebugString("IAD COMBAT: " .. Combat.MODES[mode])
         toast("toastCombat", UI.t(COMBAT_TOASTS[mode]))
     end
-    if Input.IsButtonTriggered(Keyboard.KEY_F5, 0) then intel.showMap = not intel.showMap end
+    -- F5: map page, then the items-and-stats page, then closed.
+    if Input.IsButtonTriggered(Keyboard.KEY_F5, 0) then intel.page = ((intel.page or 0) + 1) % 3 end
     Overlay.render(game:GetRoom())
     if game:IsPaused() then emit(false) end
     -- Everything on screen is an extra: a drawing error never reaches the
@@ -747,10 +750,17 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
         local count = game:GetNumPlayers()
         local coop = count > 1 and selected >= 0 and selected < count
         -- The open floor panel covers the HUD block; toasts still show.
+        local page = intel.page or 0
+        if page == 0 then
+            -- In the room: the effect over each pill, the nearest pedestal's stats.
+            ItemView.renderPills(intel.pills or {})
+            if selected >= 0 and selected < count then ItemView.renderTooltip(intel.pedestals or {}, Isaac.GetPlayer(selected).Position) end
+        end
         Hud.render(hud, {state = enabled and state or "OFF", combatMode = combat.mode, preview = Overlay.enabled(),
-            player = coop and selected + 1 or nil, score = intel.score, hidden = intel.showMap}, 48, 50)
+            player = coop and selected + 1 or nil, score = intel.score, hidden = page > 0}, 48, 50)
         if coop then Hud.playerLabel(Isaac.GetPlayer(selected).Position, selected + 1) end
-        if intel.showMap then MapView.render(intel.map, FloorIntel.extras(intel), intel.score, intel.readouts) end
+        if page == 1 then MapView.render(intel.map, FloorIntel.extras(intel), intel.score, intel.readouts)
+        elseif page == 2 and intel.score then ItemView.renderPage(intel.score) end
     end)
     if not ok and not hudFailed then hudFailed = true; Isaac.DebugString("IAD HUD: error " .. tostring(err)) end
 end)

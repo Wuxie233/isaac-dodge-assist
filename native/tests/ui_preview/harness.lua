@@ -44,6 +44,8 @@ Isaac = {GetScreenWidth = function() return 480 end, GetScreenHeight = function(
 local UI = include('ui')
 local Hud = include('hud'); Hud.use(UI)
 local MapView = include('map_view'); MapView.use(UI)
+local ItemView = include('item_view'); ItemView.use(UI)
+Isaac.GetItemConfig = function() return {GetCollectible = function(_, id) return {Quality = id == 118 and 4 or 3} end} end
 local FloorMap = include('floor_map')
 local FloorScore = include('floor_score')
 
@@ -77,7 +79,13 @@ local readouts = {deal = 34, planetarium = 25, seconds = 7*60 + 41, forecast = "
 local floorMap = {rooms = rooms, current = 0}
 local extras = {[2] = {items = 1}, [4] = {items = 3}, [1] = {rocks = 1}}
 for index in pairs(predicted) do extras[index] = {forecast = 1} end
-if scene == "panel" then
+if scene == "page" then
+    ItemView.renderPage(score)
+elseif scene == "room" then
+    Hud.render(Hud.new(), {state = "MONITOR / HELPER", combatMode = 2, score = score}, 48, 50)
+    ItemView.renderTooltip({{x = 240, y = 150, id = 118, price = 0}}, Vector(240, 175))
+    ItemView.renderPills({{x = 150, y = 200, effect = 1}, {x = 330, y = 200, effect = 8, horse = true}})
+elseif scene == "panel" then
     Hud.render(Hud.new(), {state = "MONITOR / HELPER", combatMode = 2, score = score, hidden = true}, 48, 50)
     MapView.render(floorMap, extras, score, readouts)
 else

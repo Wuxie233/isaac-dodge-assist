@@ -99,6 +99,27 @@ assert(math.abs(score.items-FloorScore.ITEM[2]*(FloorScore.SHOP+FloorScore.DEVIL
 assert(FloorIntel.readableName('#THE_SAD_ONION_NAME')=='The Sad Onion' and FloorIntel.readableName('Modded')=='Modded','names')
 print('PASS floor score: unseen pedestals, layout loot, seen qualities, shop and deal prices, item names')
 
+-- 0.24 access: what it takes to get into a room not entered yet.
+local A=FloorScore.access
+local none={keys=0,bombs=0,coins=0,stage=2,redHeld=false,redUnlocked=false}
+local need,f=A('ROOM_ULTRASECRET',false,none);assert(need=='redLocked' and f==0,'locked red tools: '..tostring(need))
+need,f=A('ROOM_ULTRASECRET',false,{keys=0,bombs=0,coins=0,stage=2,redUnlocked=true});assert(need=='red' and f>0 and f<1,'red unlocked, not held')
+need,f=A('ROOM_ULTRASECRET',false,{keys=0,bombs=0,coins=0,stage=2,redHeld=true,redUnlocked=true});assert(need==nil and f==1,'red key held')
+need,f=A('ROOM_SECRET',false,none);assert(need=='bomb' and f<1,'secret without bombs')
+need,f=A('ROOM_TREASURE',false,{keys=0,bombs=0,coins=0,stage=1});assert(need==nil and f==1,'basement 1 treasure is open')
+need,f=A('ROOM_TREASURE',false,none);assert(need=='key' and f<1,'locked treasure without keys')
+need,f=A('ROOM_TREASURE',false,{keys=1,bombs=0,coins=0,stage=3});assert(need==nil and f==1,'key in hand')
+need,f=A('ROOM_ULTRASECRET',true,none);assert(need==nil and f==1,'a visited room needs nothing')
+-- Through evaluate: an unreachable ultra secret item counts nothing and
+-- sorts last; a shop item we cannot pay for counts less.
+local us={index=1,type=RoomType.ROOM_ULTRASECRET,visited=false,layout={pedestals=1,shop=0,loot={}},cells={}}
+local shop={index=2,type=RoomType.ROOM_SHOP,visited=true,cells={}}
+local poor={keys=0,bombs=0,coins=5,stage=2,redHeld=false,redUnlocked=false}
+local scored=FloorScore.evaluate({us,shop},{[2]={{id=3,quality=3,price=15}}},{},{[1]={{id=182,quality=4,kind='pedestal',predicted=true}}},poor)
+assert(scored.entries[1].id==3 and scored.entries[1].need=='coins' and scored.entries[2].need=='redLocked' and scored.entries[2].factor==0,'access entries')
+assert(math.abs(scored.items-FloorScore.ITEM[3]*FloorScore.SHOP_SHORT)<1e-9,'unreachable item counted: '..scored.items)
+print('PASS floor score access: red-door tools, bombs, keys from floor 2, coins, unreachable items last')
+
 -- Through FloorIntel.update: the current room's items and loot are kept,
 -- reward rocks are listed while unbroken.
 local grids={[16]={t=4,state=1},[17]={t=27,state=1},[18]={t=2,state=1},[19]={t=4,state=2}}
@@ -107,7 +128,7 @@ local room={GetGridSize=function()return 135 end,
   return {Position={X=i*40,Y=100},State=g.state,GetType=function()return g.t end}end,
  GetGridCollision=function(_,i)return grids[i] and 1 or 0 end}
 local function pickup(variant,subtype,price)
- local e={Type=5,Variant=variant,SubType=subtype,Price=price or 0}
+ local e={Type=5,Variant=variant,SubType=subtype,Price=price or 0,Position={X=200,Y=200}}
  function e:ToPickup()return self end
  return e
 end
@@ -115,8 +136,11 @@ end
 local cases=dofile('native/tests/data/item_emulator_cases.lua')
 local locked={};for _,id in ipairs(cases[1].unavailable)do locked[id]=true end
 local owned,trinkets,logs={},{},{}
+local held={keys=0,bombs=0,coins=0,cards={0,0}}
 local player={GetCollectibleNum=function(_,id)return owned[id] or 0 end,HasCollectible=function(_,id)return (owned[id] or 0)>0 end,
- HasTrinket=function(_,id)return trinkets[id]==true end}
+ HasTrinket=function(_,id)return trinkets[id]==true end,GetNumKeys=function()return held.keys end,GetNumBombs=function()return held.bombs end,
+ GetNumCoins=function()return held.coins end,HasGoldenKey=function()return false end,HasGoldenBomb=function()return false end,
+ GetCard=function(_,slot)return held.cards[slot+1] end}
 Isaac={GetItemConfig=function()return {GetCollectible=function(_,id)
   return {Quality=id==114 and 3 or 1,Name=id==114 and '#MOMS_KNIFE_NAME' or '#ITEM_'..id,IsAvailable=function()return not locked[id] end}end}end,
  GetPlayer=function()return player end,GetChallenge=function()return 0 end,DebugString=function(s)logs[#logs+1]=s end}
@@ -201,6 +225,14 @@ assert(state.predicted[3] and state.predicted[3][1].id==12,'fixed layout item')
 local named=false
 for _,e in ipairs(state.score.entries)do if e.id==511 and e.predicted and e.roomType==RoomType.ROOM_TREASURE then named=true end end
 assert(named and state.readouts.forecast=='exact','forecast not in the score')
+-- Floor 2 with no key: the forecast treasure item needs one; with a key it does not.
+level.GetStage=function()return 2 end
+state.scanAt=-100;FloorIntel.update(state,game,room,function()return {}end,3)
+local function entryOf(id)for _,e in ipairs(state.score.entries)do if e.id==id then return e end end end
+assert(entryOf(511).need=='key','treasure needs a key on floor 2')
+held.keys=1;state.scanAt=-100;FloorIntel.update(state,game,room,function()return {}end,4)
+assert(entryOf(511).need==nil,'key held, still marked')
+held.keys=0;level.GetStage=nil
 -- An owned item leaves the pools: the forecast moves on to another item.
 owned[511]=1;FloorIntel.newRoom(state,game);FloorIntel.update(state,game,room,function()return {}end,2)
 assert(state.predicted[1][1].id~=511,'owned item still forecast')

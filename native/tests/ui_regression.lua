@@ -36,6 +36,9 @@ local function renderable(s,where)
 end
 for key,text in pairs(UI.STRINGS.zh)do renderable(text,key)end
 for name,room in pairs(UI.ROOMS.zh)do for i=1,3 do renderable(room[i],name)end end
+local okPills,pillNames=pcall(include,'pill_effects')
+assert(okPills and pillNames[1].zh,'pill effects missing')
+for id,pill in pairs(pillNames)do renderable(pill.zh,'pill '..id)end
 local ok,names=pcall(include,'item_names')
 if ok and type(names)=='table' and names.zh then
  for id,name in pairs(names.zh)do renderable(name,'item '..id)end
@@ -78,3 +81,46 @@ for _=1,120 do texts={};Hud.render(state,{state='OFF',combatMode=0},48,50);if ta
 assert(seen>=60 and seen<=95,'toast frames: '..seen)
 UI.setLang(nil)
 print('PASS hud: every sensor state worded in both languages, combat/co-op/score, toast fades')
+
+-- Item stats and pills (0.24): the words for an item's stat changes, the
+-- sum over items, the pill read (pure, skipped while a mod hooks it), the
+-- tooltip over the nearest pedestal and the labels over pills.
+local ItemView=include('item_view');ItemView.use(UI)
+UI.setLang('zh')
+local function joined(words)local t={};for _,w in ipairs(words)do t[#t+1]=w[1] end;return table.concat(t,' ')end
+local reflection=joined(ItemView.words(ItemView.stats(5)))
+assert(reflection:find('伤害+1.5',1,true) and reflection:find('射程x2',1,true) and reflection:find('幸运-1',1,true),'My Reflection: '..reflection)
+local words=ItemView.words(ItemView.stats(5))
+for _,w in ipairs(words)do if w[1]:find('幸运',1,true) then assert(w[2]==UI.BAD,'luck down not red') end end
+local sum=ItemView.total({{id=1},{id=1},{id=4}})
+assert(math.abs(sum.tears-1.4)<1e-9 and sum.dmgMult==1.5 and sum.dmg==0.5,'stat total')
+assert(joined(ItemView.words(ItemView.stats(118))):find('硫磺火',1,true),'weapon flag')
+UI.setLang('en')
+assert(joined(ItemView.words(ItemView.stats(1)))=='Tears+0.7','english words: '..joined(ItemView.words(ItemView.stats(1))))
+-- Pills: GetPillEffect with the bound player; horse flag; a hooked read is skipped.
+local PillInfo=include('pill_info')
+ModCallbacks={MC_GET_PILL_EFFECT=65}
+local hooks={}
+Isaac.GetCallbacks=function()return hooks end
+local asked
+local game={GetItemPool=function()return {GetPillEffect=function(_,color,player)asked=player;return (color & 0x7ff)+10 end}end}
+local me={}
+local e,horse=PillInfo.effect(game,3,me);assert(e==13 and not horse and asked==me,'pill read')
+e,horse=PillInfo.effect(game,3|0x800,me);assert(e==13 and horse,'horse pill')
+hooks={{}};assert(PillInfo.effect(game,3,me)==nil,'read while another mod hooks it')
+hooks={}
+-- Drawing: tooltip only near a pedestal; a label per pill, bad ones red.
+Isaac.GetItemConfig=function()return {GetCollectible=function()return {Quality=4}end}end
+texts={};ItemView.renderTooltip({{x=0,y=0,id=118}},Vector(200,0))
+assert(#texts==0,'tooltip far away')
+texts={};ItemView.renderTooltip({{x=0,y=0,id=118}},Vector(30,0))
+assert(table.concat(texts,'|'):find('Brimstone',1,true),'tooltip: '..table.concat(texts,'|'))
+texts={};ItemView.renderPills({{x=0,y=0,effect=1},{x=50,y=0,effect=0,horse=true}})
+local labels=table.concat(texts,'|')
+assert(labels:find('Bad Trip',1,true) and labels:find('Bad Gas (horse)',1,true),'pill labels: '..labels)
+-- The F5 second page lists every item with its stats and the reachable total.
+texts={};ItemView.renderPage({entries={{id=1,quality=1,roomType=4,factor=1},{id=5,quality=3,roomType=4,factor=0,need='redLocked'}}})
+local page=table.concat(texts,'|')
+assert(page:find('Take all reachable',1,true) and page:find('Tears+0.7',1,true) and page:find('out of reach',1,true),'page: '..page)
+UI.setLang(nil)
+print('PASS item view: stat words and colours, totals, pill read (pure, hook-aware), tooltip, pill labels, F5 stats page')

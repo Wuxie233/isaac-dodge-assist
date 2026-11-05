@@ -5,17 +5,18 @@ local FloorMap = include("floor_map")
 local FloorScore = include("floor_score")
 local RoomRewards = include("room_rewards")
 local ItemForecast = include("item_forecast")
+local PillInfo = include("pill_info")
 local M = {}
 
 function M.new()
-    return {map = nil, items = {}, loot = {}, layout = {}, score = nil, showMap = false,
+    return {map = nil, items = {}, loot = {}, layout = {}, score = nil, page = 0,
         scanAt = -100, rewards = RoomRewards.new(), rocks = {}, forecast = nil, predicted = {}, forecastKey = nil}
 end
 -- A new run: fresh floor knowledge and a fresh copy of the item pools.
 -- A continued run missed its earlier picks, so its forecast is approximate.
 function M.startRun(state, game, continued)
     local fresh = M.new()
-    fresh.showMap = state.showMap
+    fresh.page = state.page
     local ok, forecast = pcall(ItemForecast.start, game, not continued)
     if ok then fresh.forecast = forecast else fresh.forecastError = tostring(forecast) end
     return fresh
@@ -34,6 +35,7 @@ function M.newLevel(state)
 end
 function M.newRoom(state, game)
     state.scanAt = -100
+    state.pedestals, state.pills = {}, {}
     if state.forecast and not state.forecastError then
         local ok, err = pcall(ItemForecast.newRoom, state.forecast, game)
         if not ok then state.forecastError = tostring(err) end
@@ -92,8 +94,10 @@ end
 
 -- The current room's items (kept once seen, also after being taken) and
 -- what loot lies there now.
-local function scanRoom(state, index, entities, rocks)
+local function scanRoom(state, game, index, entities, rocks, player)
     local forecast = state.forecast
+    -- Where the room's pedestals and pills are, for the tooltips.
+    local pedestals, pills = {}, {}
     local items = state.items[index] or {}
     local seen = {}
     for _, item in ipairs(items) do seen[item.id] = true end
@@ -102,7 +106,10 @@ local function scanRoom(state, index, entities, rocks)
         local pickup = e.Type == EntityType.ENTITY_PICKUP and e.ToPickup and e:ToPickup()
         if pickup then
             if PickupVariant and pickup.Variant == PickupVariant.PICKUP_COLLECTIBLE then
-                if pickup.SubType > 0 then ItemForecast.seen(forecast, pickup.SubType) end
+                if pickup.SubType > 0 then
+                    ItemForecast.seen(forecast, pickup.SubType)
+                    pedestals[#pedestals+1] = {x = pickup.Position.X, y = pickup.Position.Y, id = pickup.SubType, price = pickup.Price or 0}
+                end
                 if pickup.SubType > 0 and not seen[pickup.SubType] then
                     local info = itemInfo(pickup.SubType)
                     info.price = pickup.Price or 0
@@ -110,6 +117,10 @@ local function scanRoom(state, index, entities, rocks)
                     items[#items+1], seen[pickup.SubType] = info, true
                 end
             elseif (pickup.Price or 0) == 0 then
+                if PickupVariant and pickup.Variant == PickupVariant.PICKUP_PILL and pickup.SubType > 0 then
+                    local ok, effect, horse = pcall(PillInfo.effect, game, pickup.SubType, player)
+                    pills[#pills+1] = {x = pickup.Position.X, y = pickup.Position.Y, effect = ok and effect or nil, horse = ok and horse}
+                end
                 local kind = M.lootKind(pickup.Variant, pickup.SubType)
                 if kind then loot[kind] = (loot[kind] or 0) + 1 end
             end
@@ -120,6 +131,7 @@ local function scanRoom(state, index, entities, rocks)
         loot[kind] = (loot[kind] or 0) + 1
     end
     state.items[index], state.loot[index], state.rocks[index] = items, loot, #rocks
+    state.pedestals, state.pills = pedestals, pills
 end
 
 -- Every update: reward rocks for the overlay; room and floor rescans every
@@ -137,6 +149,39 @@ local function readouts(game, level)
     return out
 end
 M.RUSH, M.HUSH = 1200, 1800 -- Boss Rush and Hush time gates, seconds
+
+-- What the players can open and pay for (FloorScore.access): the most
+-- keys/bombs/coins any player holds (golden ones count as plenty), bomb
+-- tears (Dr. Fetus, Epic Fetus), and the red-door tools: Red Key, Cracked
+-- Key, Soul of Cain, The Moon? (held, or merely unlocked in this save).
+local RED_KEY, BOMB_ITEMS = 580, {52, 168}
+local RED_CARDS = {78, 83, 74}
+local function accessOf(game, level)
+    local a = {keys = 0, bombs = 0, coins = 0, stage = 1, redHeld = false, redUnlocked = false}
+    pcall(function() a.stage = level:GetStage() end)
+    for i = 0, game:GetNumPlayers() - 1 do
+        local p = Isaac.GetPlayer(i)
+        a.keys = math.max(a.keys, p:GetNumKeys() + (p:HasGoldenKey() and 99 or 0))
+        a.bombs = math.max(a.bombs, p:GetNumBombs() + (p:HasGoldenBomb() and 99 or 0))
+        a.coins = math.max(a.coins, p:GetNumCoins())
+        for _, id in ipairs(BOMB_ITEMS) do if p:HasCollectible(id) then a.bombs = 99 end end
+        if p:HasCollectible(RED_KEY) then a.redHeld = true end
+        for slot = 0, 1 do
+            local card = p:GetCard(slot)
+            for _, id in ipairs(RED_CARDS) do if card == id then a.redHeld = true end end
+        end
+    end
+    pcall(function()
+        local config = Isaac.GetItemConfig()
+        local key = config:GetCollectible(RED_KEY)
+        a.redUnlocked = a.redHeld or (key ~= nil and key:IsAvailable())
+        for _, id in ipairs(RED_CARDS) do
+            local card = config:GetCard(id)
+            if card and card:IsAvailable() then a.redUnlocked = true end
+        end
+    end)
+    return a
+end
 
 -- Items forecast for every unvisited room, redone when the pools or the
 -- floor changed. Returns how far the forecast can be trusted: "exact",
@@ -174,7 +219,8 @@ local function forecastRooms(state, game)
 end
 
 -- entities: a function returning the room's entities (called only to scan).
-function M.update(state, game, room, entities, frame)
+-- player: the bound player (pills read as that player would take them).
+function M.update(state, game, room, entities, frame, player)
     local rocks = RoomRewards.update(state.rewards, room, frame)
     if frame - state.scanAt < RESCAN and frame >= state.scanAt then return rocks end
     state.scanAt = frame
@@ -195,7 +241,7 @@ function M.update(state, game, room, entities, frame)
         local ok, forecast = pcall(ItemForecast.start, game, false)
         if ok then state.forecast = forecast else state.forecastError = tostring(forecast) end
     end
-    if state.map.current then scanRoom(state, state.map.current, entities(), rocks) end
+    if state.map.current then scanRoom(state, game, state.map.current, entities(), rocks, player) end
     local status, reason = "off", "error"
     if state.forecast and not state.forecastError then
         local ok, result, why = pcall(forecastRooms, state, game)
@@ -205,7 +251,8 @@ function M.update(state, game, room, entities, frame)
         state.forecastLogged = true
         Isaac.DebugString("IAD INTEL: forecast error " .. state.forecastError)
     end
-    state.score = FloorScore.evaluate(state.map.rooms, state.items, state.loot, state.predicted)
+    local okAccess, access = pcall(accessOf, game, level)
+    state.score = FloorScore.evaluate(state.map.rooms, state.items, state.loot, state.predicted, okAccess and access or nil)
     state.readouts = readouts(game, level)
     state.readouts.forecast, state.readouts.forecastWhy = status, reason
     pcall(function() state.readouts.stage = level:GetStage() end)
