@@ -22,8 +22,10 @@ function M.start(game, exact)
     M.removeOwned(state, game)
     return state
 end
--- After a reload the copy keeps its tables; methods come from this module.
+-- After a reload the copy keeps its tables; methods and the pool data come
+-- from this module (a reloaded core never ran M.start).
 function M.adopt(state)
+    data = data or include("item_pool_data")
     if state and state.emu then setmetatable(state.emu, Emu.Emu) end
     return state
 end

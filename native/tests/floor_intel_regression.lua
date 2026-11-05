@@ -297,6 +297,18 @@ assert(promised,'next boss item not in the score')
 local second=pickup(100,707);second.InitSeed=12345
 state.scanAt=-100;FloorIntel.update(state,coop,room,function()return {pickup(100,0),second}end,3)
 assert(state.bossNext==nil and #state.items[1]==2 and not state.items[1][2].predicted,'second boss item seen')
+print('PASS co-op boss items: logged Haunt room forecast for two (one alone), entry log, next item on the first pedestal and in the score')
+-- Hot reload (0.25.0 in game): the new core's own copy of item_forecast had
+-- no pool data, so the next room failed ("upvalue 'data'") and the forecast
+-- stayed off for the run. Adopted, it goes on; an error left by the old
+-- core's code is tried again.
+local Reloaded=include('floor_intel')
+state.forecastError='old core'
+state=Reloaded.adopt(state)
+rooms[2].VisitedCount=0;current=rooms[1]
+Reloaded.newRoom(state,coop)
+state.scanAt=-100;Reloaded.update(state,coop,room,function()return {}end,4)
+assert(not state.forecastError and state.readouts.forecast=='exact','forecast after reload: '..tostring(state.forecastError))
 Isaac.GetPlayer=onePlayer
 for _,id in ipairs({36,152,147,343})do owned[id]=nil end
-print('PASS co-op boss items: logged Haunt room forecast for two (one alone), entry log, next item on the first pedestal and in the score')
+print('PASS forecast across a hot reload: pool data in the new core, an old error retried')

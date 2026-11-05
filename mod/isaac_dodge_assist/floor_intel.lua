@@ -21,10 +21,11 @@ function M.startRun(state, game, continued)
     if ok then fresh.forecast = forecast else fresh.forecastError = tostring(forecast) end
     return fresh
 end
--- After a reload: the forecast keeps its pools under this core's code.
+-- After a reload: the forecast keeps its pools under this core's code, and
+-- an error the previous core's code ran into is tried again.
 function M.adopt(state)
     ItemForecast.adopt(state.forecast)
-    state.forecastKey = nil
+    state.forecastKey, state.forecastError, state.forecastLogged = nil, nil, nil
     return state
 end
 -- A new floor: forget everything about the last one (the pools go on).
