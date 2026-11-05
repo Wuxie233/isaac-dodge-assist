@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.23.0"
+local VERSION = "0.23.1"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
@@ -746,8 +746,9 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
     local ok, err = pcall(function()
         local count = game:GetNumPlayers()
         local coop = count > 1 and selected >= 0 and selected < count
+        -- The open floor panel covers the HUD block; toasts still show.
         Hud.render(hud, {state = enabled and state or "OFF", combatMode = combat.mode, preview = Overlay.enabled(),
-            player = coop and selected + 1 or nil, score = intel.score}, 48, 50)
+            player = coop and selected + 1 or nil, score = intel.score, hidden = intel.showMap}, 48, 50)
         if coop then Hud.playerLabel(Isaac.GetPlayer(selected).Position, selected + 1) end
         if intel.showMap then MapView.render(intel.map, FloorIntel.extras(intel), intel.score, intel.readouts) end
     end)

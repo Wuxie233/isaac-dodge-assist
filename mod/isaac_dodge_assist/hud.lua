@@ -29,9 +29,11 @@ local STATES = {
 M.STATES = STATES
 
 -- view: {state, combatMode (0 off, 1 aim, 2 auto), preview (F9),
--- player (1-based, nil when alone), score (FloorScore result or nil)}.
+-- player (1-based, nil when alone), score (FloorScore result or nil),
+-- hidden (the F5 panel covers the HUD: only toasts)}.
 -- (x,y): top-left of the HUD block.
 function M.render(state, view, x, y)
+    if view.hidden then return M.renderToast(state) end
     local known = STATES[view.state]
     local key, dot = known and known[1] or "standby", known and known[2] or UI.DIM
     local line = UI.lineHeight()
@@ -52,6 +54,10 @@ function M.render(state, view, x, y)
         if score.unseen > 0 then parts[#parts+1] = UI.t("unseenItems", score.unseen) end
         UI.text(table.concat(parts, "  "), x + 8, y + line, score.colour, 0.85)
     end
+    M.renderToast(state)
+end
+function M.renderToast(state)
+    local line = UI.lineHeight()
     if state.toastLeft > 0 then
         state.toastLeft = state.toastLeft - 1
         local width = Isaac.GetScreenWidth and Isaac.GetScreenWidth() or 480

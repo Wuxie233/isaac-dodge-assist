@@ -10,7 +10,7 @@ local M = {}
 function M.use(ui) UI = ui end
 local floor, max, min = math.floor, math.max, math.min
 
-local PANEL, UNSEEN, SEEN, WHITE, DARK = {0.02, 0.02, 0.04}, {0.32, 0.32, 0.36}, {0.62, 0.62, 0.66}, {1, 1, 1}, {0.05, 0.05, 0.05}
+local PANEL, UNSEEN, SEEN, WHITE = {0.02, 0.02, 0.04}, {0.32, 0.32, 0.36}, {0.62, 0.62, 0.66}, {1, 1, 1}
 local SIDE = {zh = 200, en = 190}
 local function clock(seconds)
     return string.format("%d:%02d", seconds // 60, seconds % 60)
@@ -35,15 +35,16 @@ local function lootWords(totals)
 end
 
 -- Words laid out left to right, wrapping at width; returns the next y.
+-- colour nil only measures.
 local function flow(words, x, y, width, colour)
-    local line, lh, cx = UI.lineHeight(), UI.lineHeight(), x
+    local lh, cx = UI.lineHeight(), x
     for _, word in ipairs(words) do
         local w = UI.width(word)
         if cx > x and cx + w > x + width then cx, y = x, y + lh end
-        UI.text(word, cx, y, colour, 1)
+        if colour then UI.text(word, cx, y, colour, 1) end
         cx = cx + w + UI.width("  ")
     end
-    return y + line
+    return y + lh
 end
 
 local function drawMap(floorMap, extras, left, top, width, height)
@@ -61,18 +62,24 @@ local function drawMap(floorMap, extras, left, top, width, height)
         local kind = UI.room(room.type)
         local base = room.visited and SEEN or UNSEEN
         local fill = room.colour or base
-        local alpha = room.colour and (room.visited and 0.95 or 0.75) or 0.85
+        local alpha = room.colour and (room.visited and 0.95 or 0.6) or 0.85
+        -- A big room is one block: a gap only where the next cell is
+        -- another room.
+        local own = {}
+        for _, c in ipairs(room.cells) do own[c[1] .. ":" .. c[2]] = true end
+        local function gap(cx, cy) return own[cx .. ":" .. cy] and 0 or 1 end
         for _, c in ipairs(room.cells) do
             local x, y = left + (c[1] - x0)*cw, top + (c[2] - y0)*ch
-            UI.rect(x + 1, y + 1, cw - 2, ch - 2, fill, alpha)
-            if room.colour and not room.visited then UI.frame(x + 1, y + 1, cw - 2, ch - 2, base, 0.9, 1) end
+            local l, r, t, b = gap(c[1]-1, c[2]), gap(c[1]+1, c[2]), gap(c[1], c[2]-1), gap(c[1], c[2]+1)
+            UI.rect(x + l, y + t, cw - l - r, ch - t - b, fill, alpha)
             if room.index == floorMap.current then UI.frame(x, y, cw, ch, WHITE, 1, 2) end
         end
         local first = room.cells[1]
         local x, y = left + (first[1] - x0)*cw, top + (first[2] - y0)*ch
         if kind and cw >= 12 then
+            -- White with the font's own shadow/outline reads on any fill.
             local label = kind[1]
-            UI.text(label, x + (cw - UI.width(label))/2, y + (ch - UI.lineHeight())/2, DARK, 1)
+            UI.text(label, x + (cw - UI.width(label))/2, y + (ch - UI.lineHeight())/2 + 1, WHITE, 1)
         end
         local extra = extras and extras[room.index]
         if extra and (extra.rocks or 0) > 0 then UI.rect(x + cw - 5, y + 2, 3, 3, {1, 0.85, 0.25}, 1) end
@@ -137,10 +144,14 @@ local function drawSide(score, readouts, x, top, width, bottom)
     elseif readouts.forecast == "approx" then forecast = UI.t("forecastApprox")
     elseif readouts.forecastWhy == "error" or not readouts.forecastWhy then forecast = UI.t("forecastError")
     else forecast = UI.t("forecastOff", UI.t(readouts.forecastWhy)) end
-    -- Lines the tail needs: loot (1-2), rooms, chances, clocks, forecast, mark.
-    local tailLines = 7 + (#loot > 4 and 1 or 0)
+    -- The tail (loot, rooms, chances, clocks, forecast, mark) is measured
+    -- first; the item list gets what is left above it.
+    local tail = flow(#loot > 0 and loot or {"-"}, x + 40, 0, width - 40)
+    tail = flow(#special > 0 and special or {UI.t("noRooms")}, x + 40, tail, width - 40)
+    tail = flow(chances, x, tail, width)
+    tail = flow(clocks, x, tail, width) + 2*lh
     UI.text(UI.t("items"), x, y, UI.TEXT, 1); y = y + lh
-    local room = max(1, floor((bottom - y) / lh) - tailLines)
+    local room = max(1, floor((bottom - tail - 4 - y) / lh))
     local entries = score.entries
     if #entries == 0 then UI.text("  " .. UI.t("noItems"), x, y, UI.DIM, 1); y = y + lh end
     local shown = #entries <= room and #entries or room - 1
@@ -157,7 +168,7 @@ local function drawSide(score, readouts, x, top, width, bottom)
         y = y + lh
     end
     if shown < #entries then UI.text("  " .. UI.t("more", #entries - shown), x, y, UI.DIM, 1); y = y + lh end
-    y = max(y, bottom - tailLines*lh)
+    y = max(y + 4, bottom - tail)
     UI.text(UI.t("loot"), x, y, UI.TEXT, 1)
     y = flow(#loot > 0 and loot or {"-"}, x + 40, y, width - 40, UI.DIM)
     UI.text(UI.t("rooms"), x, y, UI.TEXT, 1)
