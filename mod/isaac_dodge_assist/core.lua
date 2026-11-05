@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.25.1"
+local VERSION = "0.25.2"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
@@ -194,6 +194,16 @@ local groundEffects = {
     [EffectVariant.CREEP_YELLOW]=true,
     [EffectVariant.CREEP_STATIC]=true, [EffectVariant.CREEP_LIQUID_POOP]=true
 }
+-- Effects that never hurt the player: player creep (it hurts enemies) and
+-- puffs, splats and particles. A familiar's creep trail can be dozens.
+local harmlessEffects = {}
+for _, name in ipairs({"PLAYER_CREEP_LEMON_MISHAP", "PLAYER_CREEP_HOLYWATER", "PLAYER_CREEP_WHITE",
+    "PLAYER_CREEP_BLACK", "PLAYER_CREEP_RED", "PLAYER_CREEP_GREEN", "PLAYER_CREEP_HOLYWATER_TRAIL",
+    "PLAYER_CREEP_LEMON_PARTY", "PLAYER_CREEP_PUDDLE_MILK", "PLAYER_CREEP_BLACKPOWDER", "PLAYER_CREEP_YELLOW",
+    "BLOOD_PARTICLE", "BLOOD_SPLAT", "BLOOD_DROP", "BULLET_POOF", "TEAR_POOF_A", "TEAR_POOF_B",
+    "TEAR_POOF_SMALL", "TEAR_POOF_VERYSMALL", "POOF01", "POOF02", "POOF04", "ROCK_POOF"}) do
+    if EffectVariant[name] then harmlessEffects[EffectVariant[name]] = true end
+end
 -- Native effect update separates these movement modifiers from player damage.
 local slowingEffects = {
     [EffectVariant.CREEP_WHITE]=true, [EffectVariant.CREEP_BLACK]=true,
@@ -493,62 +503,73 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     -- Exploders and the player side's shots that may kill them.
     local exploders, tears, beams, fusedBombs, liveBombs = {}, {}, {}, {}, {}
     for _, entity in ipairs(entities) do
-        local npc = entity:ToNPC()
-        if npc and not npc:IsDead() and not playerOwned(npc) then
-            LaserHazards.appendWarnings(npc,game:GetRoom(),lasers)
-            NpcHazards.momArm(npc,game:GetRoom(),areas)
-            if NpcHazards.exploder(npc) then exploders[#exploders+1] = npc end
-        end
-        if entity.Type == EntityType.ENTITY_TEAR and not entity:IsDead() and playerOwned(entity) then
-            tears[#tears+1] = (entity.ToTear and entity:ToTear()) or entity
-        end
-        local bomb = entity:ToBomb()
-        if bomb and not bomb:IsDead() then
-            liveBombs[#liveBombs+1] = bomb
-            if bomb.ExplosionDamage > 0 then
-                -- A distant bomb can still push a near one: chain them all.
-                fusedBombs[#fusedBombs+1] = bomb
-                if bomb.Position:Distance(p.Position) < bombRadius(bomb) + reach + bomb.Velocity:Length() * steps then
-                    bombs[#bombs+1] = bomb
+        if entity.Type == EntityType.ENTITY_EFFECT then
+            -- Effects are most of a busy room (a familiar's creep trail is
+            -- dozens) and nothing below applies to them; player creep and
+            -- puffs never hurt us, so they are not even looked at.
+            local effect = not harmlessEffects[entity.Variant] and entity:ToEffect()
+            if effect then
+                local envelope = effectEnvelope(effect,p)
+                local swirl = effect.Variant == EffectVariant.ENEMY_BRIMSTONE_SWIRL
+                if (envelope or swirl) and not playerOwned(effect) then
+                    if envelope then
+                        areas[#areas+1] = {position=effect.Position,velocity=effect.Velocity,radius=envelope}
+                    end
+                    if swirl then LaserHazards.appendEffectWarnings(effect,game:GetRoom(),lasers) end
                 end
             end
-        end
-        local laser = entity:ToLaser()
-        local effect = entity:ToEffect()
-        if laser and not playerOwned(laser) then
-            lasers[#lasers+1] = LaserHazards.snapshot(laser)
-        elseif laser then
-            if not laser:IsDead() and not laser:IsCircleLaser() then beams[#beams+1] = laser end
-        elseif effect then
-            local envelope = effectEnvelope(effect,p)
-            if envelope and not playerOwned(effect) then
-                areas[#areas+1] = {position=effect.Position,velocity=effect.Velocity,radius=envelope}
+        else
+            local npc = entity:ToNPC()
+            if npc and not npc:IsDead() and not playerOwned(npc) then
+                LaserHazards.appendWarnings(npc,game:GetRoom(),lasers,p.Position)
+                NpcHazards.momArm(npc,game:GetRoom(),areas)
+                if NpcHazards.exploder(npc) then exploders[#exploders+1] = npc end
             end
-        elseif entity.Type == EntityType.ENTITY_KNIFE and not playerOwned(entity) and not entity:IsDead() then
-            areas[#areas+1] = {position=entity.Position,velocity=entity.Velocity,radius=math.max(24,entity.Size)}
-        end
-        local projectile = entity:ToProjectile()
-        -- EXPLODE can damage outside the projectile body, including on ground
-        -- impact while direct player collision is disabled. Use a conservative
-        -- warning envelope (not an assertion about exact blast radius/timing).
-        if projectile and not projectile:IsDead() and
-            projectile:HasProjectileFlags(ProjectileFlags.EXPLODE) and not playerOwned(projectile) then
-            areas[#areas+1]={position=projectile.Position,velocity=projectile.Velocity,
-                radius=100,warning=true}
-        end
-        if projectile and not projectile:IsDead() and
-            projectile.EntityCollisionClass ~= EntityCollisionClass.ENTCOLL_NONE and
-            projectile.EntityCollisionClass ~= EntityCollisionClass.ENTCOLL_ENEMIES and
-            not projectile:HasProjectileFlags(ProjectileFlags.CANT_HIT_PLAYER) and
-            projectile.Position:Distance(p.Position) < reach+projectile.Size+16+MotionPrediction.reach(motion,projectile,steps) then
-            bullets[#bullets+1] = projectile
-        elseif entity:ToNPC() and not entity:IsDead() and contactThreat(entity) and not playerOwned(entity) and
-            entity.Position:Distance(p.Position) < reach+entity.Size+32+MotionPrediction.reach(motion,entity,steps) then
-            contacts[#contacts+1] = entity
-        elseif npc and not npc:IsDead() and not playerOwned(npc) and landingThreat(npc) and
-            npc.Position:Distance(p.Position) < reach+npc.Size+32+MotionPrediction.reach(motion,npc,steps) then
-            areas[#areas+1] = {position=npc.Position,velocity=npc.Velocity,
-                radius=npc.Size+23,warning=true}
+            if entity.Type == EntityType.ENTITY_TEAR and not entity:IsDead() and playerOwned(entity) then
+                tears[#tears+1] = (entity.ToTear and entity:ToTear()) or entity
+            end
+            local bomb = entity:ToBomb()
+            if bomb and not bomb:IsDead() then
+                liveBombs[#liveBombs+1] = bomb
+                if bomb.ExplosionDamage > 0 then
+                    -- A distant bomb can still push a near one: chain them all.
+                    fusedBombs[#fusedBombs+1] = bomb
+                    if bomb.Position:Distance(p.Position) < bombRadius(bomb) + reach + bomb.Velocity:Length() * steps then
+                        bombs[#bombs+1] = bomb
+                    end
+                end
+            end
+            local laser = entity:ToLaser()
+            if laser and not playerOwned(laser) then
+                lasers[#lasers+1] = LaserHazards.snapshot(laser)
+            elseif laser then
+                if not laser:IsDead() and not laser:IsCircleLaser() then beams[#beams+1] = laser end
+            elseif entity.Type == EntityType.ENTITY_KNIFE and not playerOwned(entity) and not entity:IsDead() then
+                areas[#areas+1] = {position=entity.Position,velocity=entity.Velocity,radius=math.max(24,entity.Size)}
+            end
+            local projectile = entity:ToProjectile()
+            -- EXPLODE can damage outside the projectile body, including on ground
+            -- impact while direct player collision is disabled. Use a conservative
+            -- warning envelope (not an assertion about exact blast radius/timing).
+            if projectile and not projectile:IsDead() and
+                projectile:HasProjectileFlags(ProjectileFlags.EXPLODE) and not playerOwned(projectile) then
+                areas[#areas+1]={position=projectile.Position,velocity=projectile.Velocity,
+                    radius=100,warning=true}
+            end
+            if projectile and not projectile:IsDead() and
+                projectile.EntityCollisionClass ~= EntityCollisionClass.ENTCOLL_NONE and
+                projectile.EntityCollisionClass ~= EntityCollisionClass.ENTCOLL_ENEMIES and
+                not projectile:HasProjectileFlags(ProjectileFlags.CANT_HIT_PLAYER) and
+                projectile.Position:Distance(p.Position) < reach+projectile.Size+16+MotionPrediction.reach(motion,projectile,steps) then
+                bullets[#bullets+1] = projectile
+            elseif entity:ToNPC() and not entity:IsDead() and contactThreat(entity) and not playerOwned(entity) and
+                entity.Position:Distance(p.Position) < reach+entity.Size+32+MotionPrediction.reach(motion,entity,steps) then
+                contacts[#contacts+1] = entity
+            elseif npc and not npc:IsDead() and not playerOwned(npc) and landingThreat(npc) and
+                npc.Position:Distance(p.Position) < reach+npc.Size+32+MotionPrediction.reach(motion,npc,steps) then
+                areas[#areas+1] = {position=npc.Position,velocity=npc.Velocity,
+                    radius=npc.Size+23,warning=true}
+            end
         end
     end
     for seed, t in pairs(NpcHazards.deathBursts(exploders,tears,beams,p,steps,areas,lasers)) do

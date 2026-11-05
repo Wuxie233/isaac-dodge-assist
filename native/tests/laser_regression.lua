@@ -68,7 +68,12 @@ beams={};L.appendWarnings(windUp(39,0,'Attack01Down',30),room,beams)
 assert(#beams==1 and beams[1].activeFrom==1 and L.clearanceXY(beams[1],300,300,300,300,1,10)<0,'vis down beam missed')
 beams={};L.appendWarnings(windUp(39,2,'Attack01Down',10),room,beams);assert(#beams==0,'chubber is not a brimstone shooter')
 beams={};L.appendWarnings(windUp(49,0,'Walk',10),room,beams);assert(#beams==0,'walking gluttony predicted a beam')
-print('PASS brimstone wind-up: Gluttony horizontal pair, Vis down, timing, Chubber/walk exclusions')
+-- Double Vis (2026-11-04: beams on Attack02Horiz frame 32, hit on 34): its
+-- pair both ways from frame 31; a plain Vis's Attack02 is not a beam.
+beams={};L.appendWarnings(windUp(39,1,'Attack02Horiz',21),room,beams)
+assert(#beams==2 and beams[1].activeFrom==10 and L.clearanceXY(beams[2],100,182,100,182,10,10)<0,'double vis pair missed')
+beams={};L.appendWarnings(windUp(39,0,'Attack02Horiz',21),room,beams);assert(#beams==0,'plain vis Attack02 fired')
+print('PASS brimstone wind-up: Gluttony horizontal pair, Vis down, Double Vis pair, timing, Chubber/walk exclusions')
 -- Rage Creep fires from its wall into the room (room 40..560 x 40..320).
 EntityType.ENTITY_RAGE_CREEP=241
 local function creep(x,y,animation,frame)
@@ -101,7 +106,38 @@ beams={};Fresh.appendWarnings(boss(260,'LaserNoSkin',8),room,beams)
 assert(#beams==1 and beams[1].activeFrom==8,'Haunt beam missing')
 assert(Fresh.clearanceXY(beams[1],300,345,300,345,8,10)<0 and Fresh.clearanceXY(beams[1],300,345,300,345,7,10)==math.huge,'Haunt beam timing')
 beams={};Fresh.appendWarnings(boss(260,'IdleNoSkin',8),room,beams);assert(#beams==0,'idle Haunt fired')
-print('PASS boss beams: Monstro II Taunt row, Dark One Attack2 down, The Haunt LaserNoSkin down, timing, idle exclusion')
+-- 2026-11-04/05 hits, each on the hit frame's update: Satan's mouth beam
+-- (Attack02 21, player 141 below), Mega Satan (Shoot1 5, 344 below),
+-- Krampus (Attack2Alt 30, player 231 to its left, same row), an Eye (Shoot
+-- 11, aimed at the player).
+EntityType.ENTITY_SATAN,EntityType.ENTITY_MEGA_SATAN,EntityType.ENTITY_FALLEN,EntityType.ENTITY_EYE=84,274,81,60
+Fresh=dofile('mod/isaac_dodge_assist/laser_hazards.lua')
+local function variant(kind,v,animation,frame)local b=boss(kind,animation,frame);b.Variant=v;return b end
+beams={};Fresh.appendWarnings(variant(84,0,'Attack02',16),room,beams)
+assert(#beams==1 and beams[1].activeFrom==4 and Fresh.clearanceXY(beams[1],310,320,310,320,4,10)<0,'Satan mouth beam')
+beams={};Fresh.appendWarnings(variant(274,0,'Shoot1',2),room,beams)
+assert(#beams==1 and beams[1].activeFrom==2 and Fresh.clearanceXY(beams[1],303,315,303,315,2,10)<0,'Mega Satan beam')
+beams={};Fresh.appendWarnings(variant(81,1,'Attack2Alt',25),room,beams)
+assert(#beams==4 and beams[1].activeFrom==4,'Krampus cross')
+local crossed=0
+for _,b in ipairs(beams)do if Fresh.clearanceXY(b,70,183,70,183,4,10)<0 then crossed=crossed+1 end end
+assert(crossed==1,'Krampus beam toward the left: '..crossed)
+beams={};Fresh.appendWarnings(variant(81,0,'Attack2Alt',25),room,beams);assert(#beams==0,'The Fallen took the Krampus beam')
+beams={};Fresh.appendWarnings(variant(60,0,'Shoot',5),room,beams,Vector(460,260))
+assert(#beams==1 and beams[1].activeFrom==5 and Fresh.clearanceXY(beams[1],460,260,460,260,5,10)<0,'Eye beam not at the target')
+assert(Fresh.clearanceXY(beams[1],300,300,300,300,5,10)>0,'Eye beam covers off its line')
+beams={};Fresh.appendWarnings(variant(60,0,'Shoot',5),room,beams);assert(#beams==0,'Eye beam without a target')
+beams={};Fresh.appendWarnings(variant(60,2,'Shoot',5),room,beams,Vector(460,260));assert(#beams==0,'Holy Eye fires light, not a beam')
+-- The enemy brimstone swirl (2026-11-04: cross on IdleQuick frame 25).
+EffectVariant={ENEMY_BRIMSTONE_SWIRL=110}
+beams={};Fresh.appendEffectWarnings({Variant=110,Position=Vector(300,180),Velocity=Vector(0,0),
+ GetSprite=function()return {GetAnimation=function()return 'IdleQuick' end,GetFrame=function()return 20 end}end},room,beams)
+assert(#beams==4 and beams[1].activeFrom==4,'swirl cross')
+beams={};Fresh.appendEffectWarnings({Variant=12,Position=Vector(300,180),Velocity=Vector(0,0),
+ GetSprite=function()return {GetAnimation=function()return 'IdleQuick' end,GetFrame=function()return 20 end}end},room,beams)
+assert(#beams==0,'another effect fired')
+EffectVariant=nil
+print('PASS boss beams: Monstro II, Dark One, The Haunt, Satan, Mega Satan, Krampus, Eye (aimed), brimstone swirl; timing, variants, idle exclusion')
 -- Swept rotating beams are approximated by a few rotated slices plus an arc
 -- margin, and distant queries are rejected by a radial/cone lower bound. Both
 -- must stay on the safe side of a dense sweep: never report more clearance

@@ -4,7 +4,7 @@
 
 An emergency dodge assist for The Binding of Isaac: Repentance+ on Windows: it takes over local keyboard movement only when your path is about to enter danger and a safer direction exists, with optional auto-aim and auto-combat modes.
 
-当前版本：Lua 传感器 0.25.1，原生输入程序 NativeHost 0.4.5。旧 SendInput 辅助已不再使用。
+当前版本：Lua 传感器 0.25.2，原生输入程序 NativeHost 0.4.5。旧 SendInput 辅助已不再使用。
 
 ## 它做什么
 
@@ -104,7 +104,7 @@ Lua 传感器（游戏内模组） -> 威胁与危险建模 -> 九方向规划�
 
 1. 重启游戏，在 Mods 菜单启用 Isaac Dodge Assist。
 2. 打开桌面的“以撒原生输入躲避”（指向 NativeHost 0.4.5），保留原生辅助窗口；旧“以撒紧急躲弹”辅助应关闭。
-3. 进游戏时屏幕上方会提示“躲避助手 v0.25.1 已加载”（热更新后提示“已更新到 v…+<构建号>”）。
+3. 进游戏时屏幕上方会提示“躲避助手 v0.25.2 已加载”（热更新后提示“已更新到 v…+<构建号>”）。
    - 左上角 HUD 有两行。第一行是状态：色点绿色表示正常监视，橙色表示正在判断危险，灰色表示暂停或关闭；后面跟战斗辅助模式，联机时还会显示你绑定的是 P 几。第二行是本层评分。
    - HUD 的危险状态不等于输入已经被接管。
    - 界面语言跟随游戏语言，游戏设为中文就显示中文（用游戏自带的中文字体），其他语言显示英文。
@@ -194,7 +194,7 @@ API 依据：[激光路径与圆环](https://wofsauge.github.io/IsaacDocs/rep/En
 | --- | --- |
 | 敌方弹幕 | 逐帧位置与速度外推；弯曲、追踪、分裂和突然加速仍是近似预测 |
 | 怪物身体、冲撞、跳跃 | 当前可碰撞并造成伤害的敌对 NPC 进入接触预测；跳落单列预警，未读取每种攻击的精确落地帧 |
-| 激光 | 敌方直线、采样曲线与圆环；使用采样路径、半径及旋转参数预测，宽度保守估计；乌列/加百列、Vis/暴食、Rage Creep、Monstro II、Dark One、The Haunt（无皮阶段）另有发射前预警，其他未生成光束仍有缺口 |
+| 激光 | 敌方直线、采样曲线与圆环；使用采样路径、半径及旋转参数预测，宽度保守估计；乌列/加百列、Vis/Double Vis/暴食、Rage Creep、Monstro II、Dark One、The Haunt（无皮阶段）、Satan、Mega Satan、Krampus、Eye（瞄准你）和硫磺漩涡另有发射前预警，其他未生成光束仍有缺口 |
 | 地面及范围攻击 | 敌方血池/毒池类、火焰、冲击波、落点目标、脚踩/手抓/火箭等常见特效族，以及公开接触伤害的其他特效；按危险圈估计，可能提前或额外避让；飞行忽略已识别的地面池 |
 | 爆炸 | 有爆炸伤害的炸弹从出现就避让，包含自己放的炸弹；引信读 `Pulse` 动画，爆炸前后一帧按必中；滚动的炸弹按实测摩擦（每帧速度 ×0.95，Super Troll 不减速）外推落点；先爆的炸弹会把范围内后爆的炸弹以约 14 的初速推开，被推的炸弹沿推开方向覆盖它在剩余引信内能滑到的距离，按爆炸先后连锁计算（最多 8 颗）；爆炸余烟不再加入危险圈；TNT 和爆炸岩石单独预警 |
 | 自爆怪 | 普通/溺水/污染 Boom Fly、Mulliboom、Kamikaze/Holy Leech、Black Maw、Ticking Spider、Poison Mind、Black Bony、Fly Bomb：预测到玩家方眼泪或激光会打死它时，从死亡前后几帧起把它周围（中心距约 85）当必中；只是血量很低时为预警。AUTO 不在它死时离自己不到 110 的情况下开致命一发，会追人的自爆怪保持 150 以上、周围始终有预警圈，并优先在远处打掉 |

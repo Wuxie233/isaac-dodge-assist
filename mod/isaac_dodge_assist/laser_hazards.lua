@@ -97,17 +97,23 @@ end
 -- Game logs (0.9.2, 0.10.0) recorded the hit on animation frame 28, the
 -- first update the beam existed, so a beam-only detector cannot react.
 -- The beam is committed once the wind-up starts: predict it as a hit.
+-- Double Vis fires its pair from "Attack02<dir>": the beams appeared on
+-- frame 32 and hit on 34 (2026-11-04).
 local brimstoneAngles = {Horiz={0,180}, Left={180}, Right={0}, Down={90}, Up={270}}
-local BRIMSTONE_FRAME = 27
+local BRIMSTONE_FRAME, DOUBLE_VIS_FRAME = 27, 31
 local function appendBrimstone(npc, room, shapes)
     if npc.Type == EntityType.ENTITY_VIS then
         if npc.Variant == 2 then return end
     elseif npc.Type ~= EntityType.ENTITY_GLUTTONY then return end
     local sprite = npc:GetSprite()
-    local side = sprite:GetAnimation():match("^Attack01(%a+)$")
+    local animation = sprite:GetAnimation()
+    local side, frame = animation:match("^Attack01(%a+)$"), BRIMSTONE_FRAME
+    if not side and npc.Type == EntityType.ENTITY_VIS and npc.Variant == 1 then
+        side, frame = animation:match("^Attack02(%a+)$"), DOUBLE_VIS_FRAME
+    end
     local angles = side and brimstoneAngles[side]
     if not angles then return end
-    local activeFrom = math.max(1, BRIMSTONE_FRAME - sprite:GetFrame())
+    local activeFrom = math.max(1, frame - sprite:GetFrame())
     local reach = (room:GetBottomRightPos()-room:GetTopLeftPos()):Length()
     for _,angle in ipairs(angles) do
         shapes[#shapes+1] = {origin=npc.Position,velocity=npc.Velocity,
@@ -135,40 +141,77 @@ local function appendRageCreep(npc, room, shapes)
         reach=reach,angularSpeed=0,delay=0,activeFrom=math.max(1, RAGE_FRAME-sprite:GetFrame())}
 end
 
--- Bosses whose beam fires from a named animation, seen hitting while the
--- sensor still showed no laser (2026-11-02): Monstro II "Taunt" frame 21
--- (twice, along its row), Dark One "Attack2" frame 20 (straight down).
--- The Haunt without its skin (2026-11-05): "LaserNoSkin" frame 17, straight
--- down, the beam appearing in the update it hit; the boss keeps drifting
--- sideways while it fires, which the shape's velocity carries.
+-- Enemies whose beam fires from a named animation, each seen hitting in
+-- the update the beam appeared (frame = the hit frame less one tick):
+-- 2026-11-02 Monstro II "Taunt" frame 21 (both ways along its row), Dark
+-- One "Attack2" 20 (down); 2026-11-04 Satan "Attack02" 21 (the mouth beam,
+-- down; his hand beams curve and leave the middle open), Mega Satan
+-- "Shoot1" 5 (down); 2026-11-05 The Haunt without its skin "LaserNoSkin" 17
+-- (down, drifting sideways as it fires, which the shape's velocity
+-- carries), Krampus "Attack2Alt" 30 (the cardinal cross, which may turn a
+-- quarter later), an Eye "Shoot" 11 (a thin laser at the player; a
+-- Bloodshot Eye fires brimstone the same way). aim = toward the target.
 local bossBeams
-local function appendBossBeam(npc, room, shapes)
+local function appendBossBeam(npc, room, shapes, target)
     if not bossBeams then
         bossBeams = {}
-        for name, beam in pairs({
-            ENTITY_MONSTRO2 = {animation="Taunt", frame=20, angles={0, 180}},
-            ENTITY_DARK_ONE = {animation="Attack2", frame=19, angles={90}},
-            ENTITY_THE_HAUNT = {animation="LaserNoSkin", frame=16, angles={90}},
+        for name, beams in pairs({
+            ENTITY_MONSTRO2 = {{animation="Taunt", frame=20, angles={0, 180}}},
+            ENTITY_DARK_ONE = {{animation="Attack2", frame=19, angles={90}}},
+            ENTITY_THE_HAUNT = {{animation="LaserNoSkin", frame=16, angles={90}}},
+            ENTITY_SATAN = {{variant=0, animation="Attack02", frame=20, angles={90}}},
+            ENTITY_MEGA_SATAN = {{variant=0, animation="Shoot1", frame=4, angles={90}, width=36}},
+            ENTITY_FALLEN = {{variant=1, animation="Attack2Alt", frame=29, angles={0, 90, 180, 270}}},
+            ENTITY_EYE = {{variant=0, animation="Shoot", frame=10, aim=true, width=12},
+                {variant=1, animation="Shoot", frame=10, aim=true}},
         }) do
-            if EntityType[name] then bossBeams[EntityType[name]] = beam end
+            if EntityType[name] then bossBeams[EntityType[name]] = beams end
         end
     end
-    local beam = bossBeams[npc.Type]
-    if not beam then return end
+    local beams = bossBeams[npc.Type]
+    if not beams then return end
     local sprite = npc:GetSprite()
-    if sprite:GetAnimation() ~= beam.animation then return end
-    local activeFrom = math.max(1, beam.frame - sprite:GetFrame())
+    local animation = sprite:GetAnimation()
+    for _, beam in ipairs(beams) do
+        if animation == beam.animation and (not beam.variant or beam.variant == npc.Variant) then
+            local angles = beam.angles
+            if beam.aim then
+                if not target then return end
+                local to = target - npc.Position
+                angles = {math.deg(math.atan(to.Y, to.X))}
+            end
+            local activeFrom = math.max(1, beam.frame - sprite:GetFrame())
+            local reach = (room:GetBottomRightPos()-room:GetTopLeftPos()):Length()
+            for _, angle in ipairs(angles) do
+                shapes[#shapes+1] = {origin=npc.Position,velocity=npc.Velocity,
+                    ring=false,width=beam.width or 24,points={Vector(0,0),Vector(reach,0):Rotated(angle)},
+                    reach=reach,angularSpeed=0,delay=0,activeFrom=activeFrom}
+            end
+            return
+        end
+    end
+end
+
+-- The enemy brimstone swirl (effect 1000.110) fires the cardinal cross from
+-- "IdleQuick": the beams appeared and hit on frame 25 (2026-11-04).
+local SWIRL_FRAME = 24
+function M.appendEffectWarnings(effect, room, shapes)
+    if not EffectVariant or effect.Variant ~= EffectVariant.ENEMY_BRIMSTONE_SWIRL then return end
+    local sprite = effect:GetSprite()
+    if sprite:GetAnimation() ~= "IdleQuick" then return end
+    local activeFrom = math.max(1, SWIRL_FRAME - sprite:GetFrame())
     local reach = (room:GetBottomRightPos()-room:GetTopLeftPos()):Length()
-    for _, angle in ipairs(beam.angles) do
-        shapes[#shapes+1] = {origin=npc.Position,velocity=npc.Velocity,
+    for _, angle in ipairs({0, 90, 180, 270}) do
+        shapes[#shapes+1] = {origin=effect.Position,velocity=effect.Velocity,
             ring=false,width=24,points={Vector(0,0),Vector(reach,0):Rotated(angle)},
             reach=reach,angularSpeed=0,delay=0,activeFrom=activeFrom}
     end
 end
 
-function M.appendWarnings(npc, room, shapes)
+-- target: the position aimed beams point at (our player).
+function M.appendWarnings(npc, room, shapes, target)
     appendBrimstone(npc, room, shapes)
-    appendBossBeam(npc, room, shapes)
+    appendBossBeam(npc, room, shapes, target)
     appendRageCreep(npc, room, shapes)
     if npc.Type ~= EntityType.ENTITY_URIEL and npc.Type ~= EntityType.ENTITY_GABRIEL then return end
     local state = npc.State

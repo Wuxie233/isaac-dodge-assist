@@ -117,13 +117,24 @@ npc.Position=Vector(550,480);npc.Velocity=Vector(-10,0);npc.Size=6
 scene={npc};tick();values=packet()
 assert(values[1]>0,'main integration missed fast contact enemy')
 scene={};tick();values=packet();for _,s in ipairs(values)do assert(s==0,'stale hazard survived empty room')end
+-- 0.25.2: a familiar's red creep trail (dozens of effects in the 2026-11-05
+-- It Lives room) is passed over before any effect lookup, and is no hazard.
+local trail={}
+for i=1,40 do
+ local e=entity(EntityType.ENTITY_EFFECT,EffectVariant.PLAYER_CREEP_RED)
+ e.InitSeed=9000+i;e.Position=Vector(470+i,480)
+ function e:ToEffect()error('harmless effect looked up') end
+ trail[i]=e
+end
+scene=trail;tick();values=packet();for _,s in ipairs(values)do assert(s==0,'player creep treated as a hazard')end
+scene={};tick()
 paused=true;tick();assert(logs[#logs]:find('|0|0|450|0,0,0,0,0,0,0,0,0|0',1,true),'pause did not release')
 callbacks[ModCallbacks.MC_POST_RENDER]()
 callbacks[ModCallbacks.MC_PRE_GAME_EXIT]()
 summaries=perfLogs()
 assert(#summaries==2 and summaries[2]:find('n=2 ',1,true) and summaries[2]:find('reason=game-exit',1,true),
  'game exit discarded a short encounter')
-print('PASS full main integration: creep, projectile, fast enemy, IAD1 numeric contract, diagnostics, empty room and pause')
+print('PASS full main integration: creep, projectile, fast enemy, player creep skipped, IAD1 numeric contract, diagnostics, empty room and pause')
 -- An explosive projectile can hurt from outside its small body hitbox and
 -- when its current height/collision class prevents direct body collision.
 paused=false;scene={}
