@@ -39,10 +39,13 @@ function M.newRoom(state, game)
     state.pedestals, state.pills, state.bossNext = {}, {}, nil
     -- What the forecast promised for the room just entered, to be checked
     -- against the pedestals the log shows next (and the boss reward later).
+    -- On a new floor this runs before newLevel, while the old floor's
+    -- forecast is still here: the room's seed tells them apart.
     pcall(function()
-        local index = game:GetLevel():GetCurrentRoomDesc().ListIndex
-        local list = state.predicted and state.predicted[index]
-        if list and #list > 0 then
+        local desc = game:GetLevel():GetCurrentRoomDesc()
+        local list = state.predicted and state.predicted[desc.ListIndex]
+        if list and #list > 0 and list.spawnSeed == desc.SpawnSeed then
+            local index = desc.ListIndex
             local words = {}
             for _, item in ipairs(list) do words[#words+1] = item.id .. ":" .. tostring(item.kind) end
             Isaac.DebugString("IAD FORECAST: room=" .. index .. " exact=" .. tostring(state.forecast and state.forecast.exact) ..
@@ -225,6 +228,7 @@ local function forecastRooms(state, game)
                         info.price = item.kind == "shop" and 1 or 0
                         list[_] = info
                     end
+                    list.spawnSeed = room.spawnSeed
                     state.predicted[room.index] = list
                 end
             end

@@ -24,6 +24,10 @@ POOL_NAMES = ["treasure", "shop", "boss", "devil", "angel", "secret", "library",
               "rottenBeggar"]
 
 
+def uncomment(text):
+    return re.sub(r'<!--.*?-->', '', text, flags=re.S)
+
+
 def main(src, out):
     pools, cur = {}, None
     for line in open(src + '/itempools.xml', encoding='utf-8-sig'):
@@ -37,12 +41,16 @@ def main(src, out):
     assert sorted(pools) == sorted(POOL_NAMES), sorted(pools)
 
     items = {}
-    text = open(src + '/items.xml', encoding='utf-8-sig').read()
+    # items.xml keeps retired collectibles commented out (43 Pills Here!, 61
+    # Tarot Card). The game has no config for them; listing them made the
+    # mod ask a player for item 43, which crashed the game in the Deathmatch
+    # room (2026-11-05).
+    text = uncomment(open(src + '/items.xml', encoding='utf-8-sig').read())
     for m in re.finditer(r'<(passive|active|familiar)\b([^>]*)/?>', text):
         a = dict(re.findall(r'(\w+)="([^"]*)"', m.group(2)))
         items[int(a['id'])] = {'type': {'passive': 1, 'active': 3, 'familiar': 4}[m.group(1)],
                                'ach': int(a.get('achievement') or -1), 'hidden': a.get('hidden') == 'true'}
-    meta = open(src + '/items_metadata.xml', encoding='utf-8-sig').read()
+    meta = uncomment(open(src + '/items_metadata.xml', encoding='utf-8-sig').read())
     for m in re.finditer(r'<item\b([^>]*)/?>', meta):
         a = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
         i = int(a['id'])

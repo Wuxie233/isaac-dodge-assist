@@ -285,6 +285,12 @@ current=rooms[2];rooms[2].VisitedCount=1
 logs={}
 FloorIntel.newRoom(state,coop)
 assert(logs[1]=='IAD FORECAST: room=1 exact=true items=196:boss,707:boss','forecast log: '..tostring(logs[1]))
+-- A new floor enters its first room before newLevel: a room of the new
+-- floor at the same list index is not the one the old forecast was for.
+logs={}
+local otherFloor=desc(1,6*13+7,1,RoomType.ROOM_DEFAULT,true);otherFloor.SpawnSeed=4242
+current=otherFloor;FloorIntel.newRoom(state,coop);current=rooms[2]
+assert(#logs==0,'old floor forecast logged on a new floor: '..tostring(logs[1]))
 -- The kill: the game picks Squeezy for the first pedestal.
 FloorIntel.picked(state,196,2,true)
 local first=pickup(100,196);first.InitSeed=Emu.bossItemInitSeed(1150171659,0)
@@ -312,3 +318,34 @@ assert(not state.forecastError and state.readouts.forecast=='exact','forecast af
 Isaac.GetPlayer=onePlayer
 for _,id in ipairs({36,152,147,343})do owned[id]=nil end
 print('PASS forecast across a hot reload: pool data in the new core, an old error retried')
+
+-- 0.25.3: the game crashed (2026-11-05 23:25, entering the Deathmatch room)
+-- inside GetCollectibleNum(43): item 43 is commented out of items.xml, has
+-- no config, and the pool data listed it. Neither the data nor the owned
+-- item scan may name an id the game has no config for.
+local data=include('item_pool_data')
+assert(data.items[43]==nil and data.items[61]==nil,'retired items 43/61 in the pool data')
+local configured=Isaac.GetItemConfig
+local retired={[43]=true,[61]=true,[9999]=true}
+data.items[9999]={t=1,a=-1,q=1}
+Isaac.GetItemConfig=function()
+ local base=configured()
+ return setmetatable({GetCollectible=function(self,id)if retired[id] then return nil end return base.GetCollectible(self,id)end},{__index=base})
+end
+local asked={}
+local strict=setmetatable({GetCollectibleNum=function(_,id)
+ if retired[id] then error('GetCollectibleNum('..id..') on an id without config') end
+ asked[#asked+1]=id;return 0 end},{__index=player})
+local unchecked=Isaac.GetPlayer
+Isaac.GetPlayer=function()return strict end
+local FreshIntel=include('floor_intel')
+local _include=include
+include=function(name)if name=='item_pool_data' then return data end return _include(name)end
+local guarded=FreshIntel.startRun(FreshIntel.new(),game,false)
+include=_include
+assert(guarded.forecast and not guarded.forecastError and #asked>700,'owned scan: '..tostring(guarded.forecastError)..' '..#asked)
+FreshIntel.newRoom(guarded,game)
+assert(not guarded.forecastError,'owned scan on a new room: '..tostring(guarded.forecastError))
+data.items[9999]=nil
+Isaac.GetPlayer,Isaac.GetItemConfig=unchecked,configured
+print('PASS owned items: no retired id in the pool data, ids without a config never asked about')

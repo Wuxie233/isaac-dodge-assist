@@ -44,10 +44,26 @@ function M.seen(state, item)
         state.version = state.version + 1
     end
 end
+-- Collectibles the game has a config for. GetCollectibleNum on an id
+-- without one reads through a null config in some player states and takes
+-- the game down (2026-11-05, entering the Deathmatch room, id 43): never
+-- ask about one.
+local ownable
+local function ownableIds()
+    if not ownable then
+        local config, list = Isaac.GetItemConfig(), {}
+        for id in pairs(data.items) do
+            if config:GetCollectible(id) then list[#list+1] = id end
+        end
+        ownable = list
+    end
+    return ownable
+end
 function M.removeOwned(state, game)
+    local ids = ownableIds()
     for i = 0, game:GetNumPlayers() - 1 do
         local player = Isaac.GetPlayer(i)
-        for id in pairs(data.items) do
+        for _, id in ipairs(ids) do
             if player:GetCollectibleNum(id) > 0 then M.seen(state, id) end
         end
     end
