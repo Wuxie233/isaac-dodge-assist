@@ -73,7 +73,8 @@ function M.render(floorMap, extras, score)
         end
         local extra = extras and extras[room.index]
         if extra and (extra.rocks or 0) > 0 then rect(s, x + cw - 5, y + 2, 3, 3, {1, 0.85, 0.25}, 1) end
-        if extra and (extra.items or 0) > 0 then rect(s, x + 2, y + 2, 3, 3, {0.3, 1, 0.4}, 1) end
+        if extra and (extra.items or 0) > 0 then rect(s, x + 2, y + 2, 3, 3, {0.3, 1, 0.4}, 1)
+        elseif extra and (extra.forecast or 0) > 0 then rect(s, x + 2, y + 2, 3, 3, {0.35, 0.9, 1}, 1) end
     end
     text("F5 map  T treasure $ shop B boss S/SS/U secret C curse X sacrifice", left, top + mapH + 4, 0.5, {0.85, 0.85, 0.85}, 0.9)
     if score then

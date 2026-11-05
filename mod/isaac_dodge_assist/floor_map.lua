@@ -77,9 +77,11 @@ local LAYOUT_ROCKS = {[1003] = "tinted", [1011] = "goldrock", [1002] = "alt"}
 local PICKUP = 5
 -- What an unvisited room's layout places, as loot counts weighted by how
 -- likely each spawn's entry is, plus item pedestals (5.100) and shop
--- slots (5.150). lootKind(variant, subtype) names a pickup kind.
+-- slots (5.150). slots lists the spawns that are surely a pedestal or a
+-- shop slot (a single entry) with their 0-based spawn index, which seeds
+-- the item (ItemForecast). lootKind(variant, subtype) names a pickup kind.
 function M.layout(desc, lootKind)
-    local loot, pedestals, shop = {}, 0, 0
+    local loot, pedestals, shop, slots = {}, 0, 0, {}
     local spawns = desc.Data.Spawns
     for i = 0, spawns.Size - 1 do
         local spawn = spawns:Get(i)
@@ -93,6 +95,9 @@ function M.layout(desc, lootKind)
                 local share = entry.Weight / total
                 acc = acc + share
                 local kind
+                if entry.Type == PICKUP and (entry.Variant == 100 or entry.Variant == 150) and spawn.EntryCount == 1 then
+                    slots[#slots+1] = {index = i, variant = entry.Variant, subtype = entry.Subtype}
+                end
                 if entry.Type == PICKUP then
                     if entry.Variant == 100 then pedestals = pedestals + share
                     elseif entry.Variant == 150 then shop = shop + share
@@ -104,7 +109,7 @@ function M.layout(desc, lootKind)
             end
         end
     end
-    return {loot = loot, pedestals = pedestals, shop = shop}
+    return {loot = loot, pedestals = pedestals, shop = shop, slots = slots}
 end
 
 -- One snapshot of the floor in the current dimension: {rooms={...},
@@ -134,7 +139,8 @@ function M.scan(level, layoutOf)
             local kind = kindOf(data.Type)
             local visited = (desc.VisitedCount or 0) > 0
             floor.rooms[#floor.rooms+1] = {index = desc.ListIndex, safe = desc.SafeGridIndex, shape = data.Shape,
-                type = data.Type, variant = data.Variant, subtype = data.Subtype,
+                type = data.Type, variant = data.Variant, subtype = data.Subtype, flags = desc.Flags,
+                spawnSeed = desc.SpawnSeed, awardSeed = desc.AwardSeed,
                 cells = M.cells(desc.SafeGridIndex, data.Shape), visited = visited,
                 clear = desc.Clear, label = kind and kind[1], colour = kind and kind[2],
                 layout = not visited and layoutOf and layoutOf(desc.ListIndex, desc) or nil}

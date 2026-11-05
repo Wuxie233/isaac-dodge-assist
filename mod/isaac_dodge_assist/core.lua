@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.21.0"
+local VERSION = "0.22.0"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
@@ -70,7 +70,7 @@ if saved then
     kinematics, inputs, binding = saved.kinematics, saved.inputs, saved.binding
     frame, sequence, state = saved.frame, saved.sequence, saved.state
     runEnded = saved.runEnded or false
-    if saved.intel then intel = saved.intel; intel.scanAt = -100 end
+    if saved.intel then intel = FloorIntel.adopt(saved.intel); intel.scanAt = -100 end
     if saved.overlay ~= Overlay.enabled() then Overlay.toggle() end
     for _, key in ipairs({"mode", "bias", "hint", "weapon", "provenAuto", "autoFireAt", "aimLogs"}) do
         if saved.combat[key] ~= nil then combat[key] = saved.combat[key] end
@@ -355,7 +355,8 @@ mod:AddCallback(ModCallbacks.MC_POST_GAME_STARTED, function(_, continued)
     local ok, seed = pcall(function() return game:GetSeeds():GetStartSeedString() end)
     local player = Isaac.GetPlayer(0)
     runEnded = false
-    if not continued then intel = FloorIntel.new() end
+    local okIntel, fresh = pcall(FloorIntel.startRun, intel, game, continued)
+    intel = okIntel and fresh or FloorIntel.new()
     runMarker("begin continued=" .. tostring(continued == true) ..
         " player=" .. tostring(player and player:GetPlayerType() or -1) ..
         " seed=" .. (ok and tostring(seed):gsub("%s", "") or "unknown"))
@@ -384,7 +385,7 @@ local function flushKinematics(reason)
         Isaac.DebugString("IAD KIN: "..PlayerMotion.summary(kinematics).." "..InputQueue.summary(inputs).." reason="..reason)
     end
 end
-mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); Combat.flushStats(combat, "room"); frame = 0; motion = {}; deathAt = {}; gridLogged = false; Diagnostics.reset("room"); FloorIntel.newRoom(intel); calibrationRoom(); emit(false) end)
+mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); Combat.flushStats(combat, "room"); frame = 0; motion = {}; deathAt = {}; gridLogged = false; Diagnostics.reset("room"); pcall(FloorIntel.newRoom, intel, game); calibrationRoom(); emit(false) end)
 mod:AddCallback(ModCallbacks.MC_POST_NEW_LEVEL, function() FloorIntel.newLevel(intel) end)
 -- Calibration for predicting unvisited rooms' items (see
 -- native/research/api-map-items.md 3.6): the seeds the game itself uses
@@ -394,6 +395,12 @@ mod:AddCallback(ModCallbacks.MC_PRE_ROOM_ENTITY_SPAWN, function(_, kind, variant
     Isaac.DebugString("IAD MAPCAL SPAWN t=" .. tostring(kind) .. " v=" .. tostring(variant) .. " s=" .. tostring(subtype) ..
         " g=" .. tostring(gridIndex) .. " seed=" .. u32(seed))
 end)
+-- Every item the game picks keeps the forecast's copy of the pools in step.
+if ModCallbacks.MC_POST_GET_COLLECTIBLE then
+    mod:AddCallback(ModCallbacks.MC_POST_GET_COLLECTIBLE, function(_, selected, pool, decrease)
+        pcall(FloorIntel.picked, intel, selected, pool, decrease)
+    end)
+end
 if ModCallbacks.MC_PRE_GET_COLLECTIBLE then
     mod:AddCallback(ModCallbacks.MC_PRE_GET_COLLECTIBLE, function(_, pool, decrease, seed)
         Isaac.DebugString("IAD MAPCAL GETCOL pool=" .. tostring(pool) .. " dec=" .. tostring(decrease) .. " seed=" .. u32(seed))

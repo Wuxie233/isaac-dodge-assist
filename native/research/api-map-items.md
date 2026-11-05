@@ -190,6 +190,8 @@ Vanilla Lua cannot read the saved grid state of other rooms (`SavedGridEntities`
 
 ## 3. Item prediction
 
+> **Superseded in part by [item-emulation.md](item-emulation.md)** (decompiled from the game): the pick seed is `X35(InitSeed)`, not `InitSeed`; `k` = `Data.Spawns` index + 1; and the item can be predicted with a pure-Lua copy of the pools, without calling `ItemPool:GetCollectible`. The mod does that since 0.22.0.
+
 ### 3.1 What the log lines are
 
 - `Room T.V(Name)` is printed on every room load and equals `Data.Type.Variant` (`Name`). **[C-log]**

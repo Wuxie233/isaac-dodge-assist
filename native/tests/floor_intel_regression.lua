@@ -47,6 +47,7 @@ end
 local function spawns(list)return {Size=#list,Get=function(_,i)return list[i+1] end}end
 local function desc(index,safe,shape,kind,visited,list)
  return {ListIndex=index,SafeGridIndex=safe,GridIndex=safe,VisitedCount=visited and 1 or 0,Clear=visited,
+  SpawnSeed=1000+index,AwardSeed=2000+index,Flags=0,
   Data={Type=kind,Variant=index,Subtype=0,Shape=shape,Spawns=spawns(list or {})}}
 end
 local rooms={
@@ -110,8 +111,19 @@ local function pickup(variant,subtype,price)
  function e:ToPickup()return self end
  return e
 end
-Isaac={GetItemConfig=function()return {GetCollectible=function(_,id)return {Quality=3,Name='#MOMS_KNIFE_NAME'}end}end}
-local game={GetLevel=function()return level end,GetRoom=function()return {GetDevilRoomChance=function()return 0.34 end}end,TimeCounter=30*65}
+-- Run 4RRYH7RK (2026-11-04): its 223 locked items, owned items per player.
+local cases=dofile('native/tests/data/item_emulator_cases.lua')
+local locked={};for _,id in ipairs(cases[1].unavailable)do locked[id]=true end
+local owned,trinkets,logs={},{},{}
+local player={GetCollectibleNum=function(_,id)return owned[id] or 0 end,HasCollectible=function(_,id)return (owned[id] or 0)>0 end,
+ HasTrinket=function(_,id)return trinkets[id]==true end}
+Isaac={GetItemConfig=function()return {GetCollectible=function(_,id)
+  return {Quality=id==114 and 3 or 1,Name=id==114 and '#MOMS_KNIFE_NAME' or '#ITEM_'..id,IsAvailable=function()return not locked[id] end}end}end,
+ GetPlayer=function()return player end,GetChallenge=function()return 0 end,DebugString=function(s)logs[#logs+1]=s end}
+local function startSeed(str)return dofile('mod/isaac_dodge_assist/item_emulator.lua').seedFromString(str)end
+local game={GetLevel=function()return level end,GetRoom=function()return {GetDevilRoomChance=function()return 0.34 end}end,TimeCounter=30*65,
+ GetSeeds=function()return {GetStartSeed=function()return startSeed('4RRYH7RK')end}end,IsGreedMode=function()return false end,
+ GetNumPlayers=function()return 1 end}
 local state=FloorIntel.new()
 current=rooms[2]; rooms[2].VisitedCount=1
 local found=FloorIntel.update(state,game,room,function()return {pickup(100,114),pickup(20,2),pickup(10,3),pickup(30,1,5)}end,1)
@@ -153,3 +165,51 @@ GetPtrHash=function(x)return math.random() end
 assert(#FloorMap.scan(level).rooms==6,'map emptied when no descriptor matched')
 GetPtrHash=savedHash
 print('PASS floor map: dimension filter falls back to every room')
+
+-- Item forecast: the logged treasure room 4.13 of run 4RRYH7RK (SpawnSeed
+-- 206474361, its pedestal at layout spawn 6) held Angry Fly (511); unvisited,
+-- the floor score names it. A fixed layout item is taken as is; an ordinary
+-- shop's slots are not forecast; Chaos turns the forecast off.
+local function slotSpawns(n,variant,subtype)
+ local list={}
+ for i=1,n do list[i]=spawn({{1000,0,0,1}}) end
+ list[n+1]=spawn({{5,variant,subtype,1}})
+ return list
+end
+rooms={desc(0,6*13+6,1,RoomType.ROOM_DEFAULT,true),desc(1,6*13+7,1,RoomType.ROOM_TREASURE,false,slotSpawns(6,100,0)),
+ desc(2,5*13+6,1,RoomType.ROOM_SHOP,false,slotSpawns(1,150,0)),desc(3,7*13+6,1,RoomType.ROOM_SECRET,false,slotSpawns(2,100,12))}
+rooms[2].SpawnSeed,rooms[2].AwardSeed,rooms[2].Flags=206474361,1,0
+rooms[3].SpawnSeed,rooms[4].SpawnSeed=5,7
+byIndex={};for _,d in ipairs(rooms)do byIndex[d.SafeGridIndex]=d end
+current=rooms[1]
+state=FloorIntel.startRun(FloorIntel.new(),game,false)
+assert(state.forecast and state.forecast.exact,'fresh run forecast not exact')
+FloorIntel.update(state,game,room,function()return {}end,1)
+local treasure=state.predicted[1]
+assert(treasure and #treasure==1 and treasure[1].id==511 and treasure[1].kind=='pedestal','treasure forecast: '..tostring(treasure and treasure[1] and treasure[1].id))
+assert(state.predicted[2]==nil,'ordinary shop slots forecast')
+assert(state.predicted[3] and state.predicted[3][1].id==12,'fixed layout item')
+local named=false
+for _,line in ipairs(state.score.lines)do if line[1]:find('T~  Q1 Item 511',1,true) then named=true end end
+assert(named and state.score.lines[#state.score.lines][1]:find('forecast exact',1,true),'forecast not in the score panel')
+-- An owned item leaves the pools: the forecast moves on to another item.
+owned[511]=1;FloorIntel.newRoom(state,game);FloorIntel.update(state,game,room,function()return {}end,2)
+assert(state.predicted[1][1].id~=511,'owned item still forecast')
+owned[511]=nil
+-- The game's own picks keep the copy in step (and redo the forecast).
+local version=state.forecast.version
+FloorIntel.picked(state,state.predicted[1][1].id,0,true)
+assert(state.forecast.version==version+1,'pick not recorded')
+FloorIntel.picked(state,33,0,false)
+assert(state.forecast.version==version+1,'a pick without decrease changed the pools')
+-- Chaos: off, and said so.
+owned[402]=1;FloorIntel.update(state,game,room,function()return {}end,40)
+assert(next(state.predicted)==nil and state.score.lines[#state.score.lines][1]:find('forecast off (chaos)',1,true),'chaos forecast')
+owned[402]=nil
+-- A continued run is approximate; a core loaded mid-run starts one too.
+state=FloorIntel.startRun(state,game,true)
+assert(not state.forecast.exact,'continued run claimed exact')
+state=FloorIntel.new();FloorIntel.update(state,game,room,function()return {}end,1)
+assert(state.forecast and not state.forecast.exact,'mid-run start')
+for _,line in ipairs(logs)do assert(not line:find('forecast',1,true),line)end
+print('PASS item forecast: logged treasure room named before entry, fixed items, owned and picked items, Chaos off, approximate continues')

@@ -30,8 +30,10 @@ end
 
 -- rooms: FloorMap.scan(...).rooms (unvisited ones carry layout =
 -- {loot, pedestals, shop}); items[listIndex] = seen items {id, quality,
--- name, price, devil}; loot[listIndex] = loot counted in visited rooms.
-function M.evaluate(rooms, items, loot)
+-- name, price, devil}; loot[listIndex] = loot counted in visited rooms;
+-- predicted[listIndex] = forecast items of unvisited rooms, like items
+-- plus kind ("pedestal", "shop" or "boss"), shown with a "~".
+function M.evaluate(rooms, items, loot, predicted)
     local itemPoints, lootPoints, roomPoints = 0, 0, 0
     local qualities, unseen = {[0] = 0, 0, 0, 0, 0}, 0
     local lines = {}
@@ -39,23 +41,30 @@ function M.evaluate(rooms, items, loot)
         local name = typeName(room.type)
         roomPoints = roomPoints + (M.ROOM[name] or 0)
         local list = items[room.index]
-        if list and #list > 0 then
-            for _, item in ipairs(list) do
-                local q = item.quality or 1
-                local value = M.ITEM[q] or M.UNSEEN_ITEM
-                if item.devil then value = value * M.DEVIL elseif (item.price or 0) > 0 then value = value * M.SHOP end
-                itemPoints = itemPoints + value
-                qualities[q] = (qualities[q] or 0) + 1
-                local cost = item.devil and " (deal)" or (item.price or 0) > 0 and (" $" .. item.price) or ""
-                lines[#lines+1] = {string.format("%-2s Q%d %s%s", room.label or "-", q,
-                    item.name or ("#" .. tostring(item.id)), cost), q >= 3 and {1, 0.85, 0.3} or nil}
-            end
-        elseif not room.visited then
+        local forecast = not room.visited and predicted and predicted[room.index] or nil
+        if not (list and #list > 0) then list = forecast end
+        local found = {pedestal = 0, shop = 0, boss = 0}
+        for _, item in ipairs(list or {}) do
+            local q = item.quality or 1
+            local value = M.ITEM[q] or M.UNSEEN_ITEM
+            if item.devil then value = value * M.DEVIL elseif (item.price or 0) > 0 then value = value * M.SHOP end
+            itemPoints = itemPoints + value
+            qualities[q] = (qualities[q] or 0) + 1
+            if item.kind then found[item.kind] = found[item.kind] + 1 end
+            local cost = item.devil and " (deal)" or (item.price or 0) > 0 and (item.predicted and " (shop)" or (" $" .. item.price)) or ""
+            lines[#lines+1] = {string.format("%-3s Q%d %s%s", (room.label or "-") .. (item.predicted and "~" or ""), q,
+                item.name or ("#" .. tostring(item.id)), cost), q >= 3 and {1, 0.85, 0.3} or nil}
+        end
+        if not room.visited and not (items[room.index] and #items[room.index] > 0) then
+            -- What the forecast could not name: layout pedestals and shop
+            -- slots, and a boss's reward (dropped on the kill, not in the
+            -- layout), at the unseen estimate.
             local layout = room.layout or {pedestals = 0, shop = 0}
-            -- A boss drops its item on the kill: not in the layout.
-            local count = layout.pedestals + (name == "ROOM_BOSS" and 1 or 0)
-            itemPoints = itemPoints + count*M.UNSEEN_ITEM + layout.shop*M.UNSEEN_ITEM*M.SHOP
-            unseen = unseen + count + layout.shop
+            local pedestals = math.max(0, layout.pedestals - found.pedestal) +
+                ((name == "ROOM_BOSS" and found.boss == 0) and 1 or 0)
+            local shop = math.max(0, layout.shop - found.shop)
+            itemPoints = itemPoints + pedestals*M.UNSEEN_ITEM + shop*M.UNSEEN_ITEM*M.SHOP
+            unseen = unseen + pedestals + shop
         end
         local counts = room.visited and loot[room.index] or room.layout and room.layout.loot
         for kind, count in pairs(counts or {}) do

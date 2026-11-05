@@ -4,7 +4,7 @@
 
 An emergency dodge assist for The Binding of Isaac: Repentance+ on Windows: it takes over local keyboard movement only when your path is about to enter danger and a safer direction exists, with optional auto-aim and auto-combat modes.
 
-当前版本：Lua 传感器 0.21.0，原生输入程序 NativeHost 0.4.5。旧 SendInput 辅助已不再使用。
+当前版本：Lua 传感器 0.22.0，原生输入程序 NativeHost 0.4.5。旧 SendInput 辅助已不再使用。
 
 ## 它做什么
 
@@ -19,7 +19,11 @@ An emergency dodge assist for The Binding of Isaac: Repentance+ on Windows: it t
   - **楼层地图**：F5 打开，显示本层全部房间，包括还没揭示的隐藏房、超级隐藏房和究极隐藏房，每种特殊房间各有颜色和字母。房间左上角的绿点表示里面见过道具，右上角的黄点表示还有没炸的奖励石头。
   - **楼层评分**：HUD 第二行常驻 `FLOOR <等级> <分数>`。分数由三部分组成：道具（见过的按品质 0～4 计分，商店的打五折、恶魔交易打六折，没进过的宝箱房道具台和 Boss 奖励按约 1～2 级品质估算）、掉落（进过的房间按地上实有的计，没进过的按房间布局计）、稀有房间（星象房、图书馆、骰子房等）。地图右侧列出每件道具，以及恶魔房概率、星象房概率、Boss Rush 和 Hush 的剩余时间。
   - **奖励石头**：当前房间里没炸的有色石头、超级有色石头、愚人金石头、骷髅/罐子类石头，按种类用彩色菱形框出来。
-  - 没进过的房间里具体是什么道具，目前不显示：查道具要调用游戏的道具池函数，它会改写游戏状态。见 [native/research/api-map-items.md](native/research/api-map-items.md)。
+  - **道具预知**：没进过的宝箱房、隐藏房、星象房、究极隐藏房、诅咒房、图书馆、恶魔房、黑市的道具台和 Boss 奖励，进门前就显示具体道具，评分按真实品质计。地图上用青点标出，列表里带 `~`。原理是用纯 Lua 复刻游戏的道具池（`item_emulator.lua`），并跟着游戏每一次取道具同步，从不调用游戏的道具池函数。日志回放 126 次取道具对上 124 次（宝箱房 36/36）。细节见 [native/research/item-emulation.md](native/research/item-emulation.md)。
+  - 预知有几种情况会关掉或降级，评分面板最后一行会写明 `forecast exact`、`approx` 或 `off (原因)`：
+    - **关掉**：贪婪模式、挑战，以及有人拿着混沌或 TMTRAINER。
+    - **降级为近似**：继续游戏，或者在一局中途才加载模组。
+    - **不预测**：普通商店的货架、骑士类 Boss 的固定掉落。
 
 ## 支持范围
 
@@ -63,6 +67,8 @@ Lua 传感器（游戏内模组） -> 威胁与危险建模 -> 九方向规划�
 | `floor_score.lua` | 楼层评分 |
 | `room_rewards.lua` | 当前房间里没炸的奖励石头 |
 | `map_view.lua` | F5 地图与 HUD 评分行的绘制 |
+| `item_emulator.lua` / `item_pool_data.lua` | 游戏道具池的纯 Lua 复刻及其数据（数据由 `tools/gen_item_pool_data.py` 从游戏文件生成，游戏更新后要重新生成） |
+| `item_forecast.lua` | 用复刻的道具池预知未进房间的道具，跟着游戏的每次取道具同步 |
 | `diagnostics.lua` | 受伤追踪、性能统计等日志记录 |
 
 **原生输入**（`native/`）
@@ -83,7 +89,7 @@ Lua 传感器（游戏内模组） -> 威胁与危险建模 -> 九方向规划�
 
 1. 重启游戏，在 Mods 菜单启用 Isaac Dodge Assist。
 2. 打开桌面的“以撒原生输入躲避”（指向 NativeHost 0.4.5），保留原生辅助窗口；旧“以撒紧急躲弹”辅助应关闭。
-3. 确认 HUD 显示 `DODGE v0.21.0`（热更新部署后带 `+<构建号>`）。`600/612ms` 表示设置窗口/实际预测窗口（联机时会加上测得的输入延迟）；HUD 的威胁状态不等同于输入已执行。
+3. 确认 HUD 显示 `DODGE v0.22.0`（热更新部署后带 `+<构建号>`）。`600/612ms` 表示设置窗口/实际预测窗口（联机时会加上测得的输入延迟）；HUD 的威胁状态不等同于输入已执行。
 4. F6 开关，左 Shift 按一下暂停、再按一下恢复（换房间也保持；联机表情占用左 Alt），F8 切换 250 / 350 / 450 / 600ms（默认 600）。多人时按本机输入设备自动识别你的角色；判断不出来（或想纠正）时用 F7 切换，F7 之后 30 秒内不再自动改绑。当前原生执行器仅适配本机键盘设备。
 5. F9 开关危险预览，F10 切换战斗辅助：关 → 自动瞄准（AIM）→ 自动战斗（AUTO）→ 关。F5 开关楼层地图。
 
