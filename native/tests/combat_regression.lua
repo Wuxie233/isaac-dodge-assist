@@ -251,6 +251,12 @@ s=Combat.new();Combat.cycle(s);Combat.cycle(s)
 weapons[WeaponType.WEAPON_BRIMSTONE]=true
 update(s,{target});update(s,{target,attack(EntityType.ENTITY_LASER,{MaxDistance=110})})
 assert(s.laserReach==110 and s.info.goalX,'laser reach recorded')
+-- 0.20 hit-and-run: early in the charge it waits further out on the line,
+-- and closes in to strike from inside the laser as the charge fills.
+local early=math.abs(s.info.goalX-400)+math.abs(s.info.goalY-180)
+assert(early>110 and early<=131,'early charge does not wait outside the laser: '..early)
+while s.releaseIn>3 do update(s,{target}) end
+update(s,{target})
 assert(math.abs(s.info.goalX-400)+math.abs(s.info.goalY-180)<=110,'goal inside the laser')
 weapons={}
 print('PASS charge timing from MaxFireDelay, release check, beam wait, fire evidence, laser reach')
@@ -525,3 +531,38 @@ assert(atRelease>now*1.8,'release-time payoff not used: '..now..' vs '..atReleas
 -- worth less than one we can.
 weapons={}
 print('PASS 0.19 combat: Brimstone payoff picks the axis, waits for walkers (capped), spares exploders, lines up the goal at release time')
+
+-- 0.20: a hit drops a Brimstone charge (2026-11-05: 3 of 3 releases after a
+-- hit fired nothing), so the count restarts instead of releasing early.
+weapons[WeaponType.WEAPON_BRIMSTONE]=true
+p.Position,p.Velocity=Vector(100,180),Vector(0,0)
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+for i=1,20 do update(s,{enemy(100,40)}) end
+assert(s.weapon=='charge' and s.held>5,'not charging: '..tostring(s.weapon)..' '..s.held)
+Combat.hurt(s)
+assert(s.held==0,'hit kept the charge')
+-- Other charged weapons keep it (no evidence either way).
+weapons={[WeaponType.WEAPON_MONSTROS_LUNGS]=true}
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+for i=1,6 do update(s,{enemy(100,40)}) end
+local held=s.held;Combat.hurt(s)
+assert(held>0 and s.held==held,'a non-Brimstone charge was reset')
+-- While our beam is out it follows us: step across with the enemy it hits.
+weapons[WeaponType.WEAPON_BRIMSTONE]=true
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+local walker=enemy(220,200,0,4)
+update(s,{walker})
+s.beamAxis=2
+update(s,{walker,attack(EntityType.ENTITY_LASER,{MaxDistance=0})})
+-- Same row, same distance (120; a free goal would stand 208 off).
+assert(s.info.goalY and math.abs(s.info.goalY-200)<1 and math.abs(s.info.goalX-100)<1,'beam not kept on the enemy: '..tostring(s.info.goalX)..','..tostring(s.info.goalY))
+weapons={}
+-- AUTO never walks across an item pedestal (a hazard cell next to us),
+-- even when the walk would end past it.
+s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+p.Position=Vector(100,180)
+local _,mv=update(s,{enemy(460,180)},{stride=20,hazardCells={[room:GetGridIndex(Vector(140,180))]=true}})
+assert(mv~=2,'walked right over the pedestal')
+local _,free=update(s,{enemy(460,180)},{stride=20})
+assert(free==2,'open path not taken: '..tostring(free))
+print('PASS 0.20 combat: hit restarts a Brimstone charge, beam follows its enemy, pedestals avoided')

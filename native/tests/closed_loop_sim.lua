@@ -8,6 +8,11 @@
 -- SIM_COMBAT=auto presses F10 twice (AUTO) and keeps the human's hands off:
 -- the native port then walks and shoots from the IAD2 word; enemies have HP,
 -- the player fires tears, killed enemies respawn at an edge.
+-- SIM_WEAPON=azazel|brimstone gives the player a charged beam instead
+-- (charge ceil(MaxFireDelay) updates of held fire, a hit restarts it; the
+-- beam lasts 9 updates, follows the player, hits everything along it, and
+-- Azazel's stops at 83). Scenarios spiders (erratic dashes) and boss (one
+-- 150 HP charger) exercise it.
 local modDir, latency, seed, scenario, updates = arg[1], tonumber(arg[2]), tonumber(arg[3]), arg[4], tonumber(arg[5] or 2400)
 math.randomseed(seed)
 local mt={};mt.__index=mt
@@ -26,7 +31,8 @@ function mt:Rotated(a)local r=math.rad(a);return Vector(self.X*math.cos(r)-self.
 local function enum()
  return setmetatable({}, {__index=function(t,k)local n=(rawget(t,'_next') or 0)+1;t._next=n;rawset(t,k,n);return n end})
 end
-for _,name in ipairs({'EntityType','EffectVariant','EntityCollisionClass','GridCollisionClass','GridEntityType','EntityFlag','PlayerType','ModCallbacks','Keyboard','BombVariant','ProjectileFlags','NpcState','TearFlags'})do _G[name]=enum()end
+for _,name in ipairs({'EntityType','EffectVariant','EntityCollisionClass','GridCollisionClass','GridEntityType','EntityFlag','PlayerType','ModCallbacks','Keyboard','BombVariant','ProjectileFlags','NpcState','TearFlags','WeaponType'})do _G[name]=enum()end
+local weapon=os.getenv('SIM_WEAPON')
 GridCollisionClass.COLLISION_NONE=0
 -- Standard 1x1 room: 15x9 grid with a wall ring; interior x 40..560, y 40..320.
 local W,H,LEFT,RIGHT,TOP,BOTTOM=15,9,40,560,40,320
@@ -58,6 +64,8 @@ function p:IsCoopGhost()return false end
 function p:AreControlsEnabled()return true end
 function p:ToPlayer()return self end
 function p:GetMovementInput()return applied end
+function p:HasWeaponType(kind)return weapon~=nil and kind==WeaponType.WEAPON_BRIMSTONE end
+if weapon then p.MaxFireDelay,p.Damage=33.85,3.5 end
 local scene,callbacks,packet,combatWord={}, {}, nil, nil
 function RegisterMod()return {AddCallback=function(_,kind,fn)callbacks[kind]=fn end}end
 -- Optional tuning experiments: SIM_FAST_DELAY / SIM_SLOW_DELAY override the
@@ -91,6 +99,7 @@ Isaac={GetTime=function()return os.clock()*1000 end,GetPlayer=function()return p
  GetRoomEntities=function()return scene end,RenderText=function()end,WorldToScreen=function(v)return v end,
  DebugString=function(s)
   if os.getenv('SIM_DEBUG') and s:find('^IAD KIN') then print(s) end
+  if os.getenv('SIM_BEAMDEBUG') and s:find('^IAD BEAM') then print(s) end
   local word=s:match('^IAD2|%d+|(%d+)$')
   if word then combatWord=tonumber(word) end
   local body=s:match('^IAD1|(.*)$')
@@ -147,9 +156,10 @@ local function base(kind)
  function e:IsDead()return false end;function e:HasEntityFlags()return false end
  function e:IsActiveEnemy()return false end;function e:IsBoss()return false end
  function e:GetSprite()return {GetAnimation=function()return 'Walk' end,GetFrame=function()return 0 end}end
+ function e:ToPlayer()return nil end
  return e
 end
-local HP={turret=20,chaser=15,fly=6}
+local HP={turret=20,chaser=15,fly=6,spider=10,boss=150}
 local function npc(x,y,size,ai)
  local e=base(EntityType.ENTITY_NPC);e.Position=Vector(x,y);e.Size=size;e.ai=ai;e.timer=math.random(10,40)
  e.HitPoints=HP[ai]
@@ -175,9 +185,13 @@ elseif scenario=='chasers' then chasers=2;turrets=1
 elseif scenario=='spread' then turrets=2;spread=3;period=40
 elseif scenario=='dense' then turrets=4;period=24;shot=8
 elseif scenario=='flies' then flies=6 end
+local spiders=scenario=='spiders' and 4 or 0
+local bosses=scenario=='boss' and 1 or 0
 for _=1,turrets do local x,y=edgePoint();npcs[#npcs+1]=npc(x,y,13,'turret')end
 for _=1,chasers do local x,y=edgePoint();npcs[#npcs+1]=npc(x,y,13,'chaser')end
 for _=1,flies do local x,y=edgePoint();npcs[#npcs+1]=npc(x,y,9,'fly')end
+for _=1,spiders do local x,y=edgePoint();npcs[#npcs+1]=npc(x,y,9,'spider')end
+for _=1,bosses do local x,y=edgePoint();npcs[#npcs+1]=npc(x,y,20,'boss')end
 -- Player physics and the human: wanders, re-choosing a direction every 0.5-1.5 s.
 local F,K=0.885,4.0
 local manual,manualLeft=1,0
@@ -187,6 +201,7 @@ local tears,kills,shots,fireCooldown,respawns={},0,0,0,{}
 local FIRE_TICKS,TEAR_DAMAGE,TEAR_SPEED=22,3.5,10
 local TEAR_INHERIT=tonumber(os.getenv('SIM_TEAR_INHERIT') or 1.3)
 local pending={}
+heldFire=false
 -- Online play queues every local input (manual and native override) for a
 -- fixed number of 60Hz ticks before it moves the player (SIM_INPUT_DELAY).
 local inputDelay=tonumber(os.getenv('SIM_INPUT_DELAY') or 0)
@@ -207,16 +222,23 @@ local function classify()
  local kind=lead<=2 and 'late' or (not safeSeen and 'trapped') or (choseSafe and 'chose_safe') or 'ignored_safe'
  classes[kind]=classes[kind]+1
 end
+local charge,beam,lastFire,beams,landed,wasted,dealt=0,nil,nil,0,0,0,0
+local HIT_RESET=os.getenv('SIM_HIT_RESET')~='0'
+local function hurt(source)
+ if HIT_RESET then charge=0 end
+ local cb=callbacks[ModCallbacks.MC_ENTITY_TAKE_DMG]
+ if cb then cb(nil,p,1,0,{Entity=source}) end
+end
 local function collide()
  if invulnerable>0 then return end
  for i=#bullets,1,-1 do
   if bullets[i].Position:Distance(p.Position)<bullets[i].Size+p.Size then
-   hits=hits+1;invulnerable=60;table.remove(bullets,i);classify();return
+   hits=hits+1;invulnerable=60;local b=table.remove(bullets,i);classify();hurt(b);return
   end
  end
  for _,e in ipairs(npcs) do
   if e.Position:Distance(p.Position)<e.Size+p.Size then
-   hits=hits+1;invulnerable=60;p.Velocity=(p.Position-e.Position):Resized(6);classify();return
+   hits=hits+1;invulnerable=60;p.Velocity=(p.Position-e.Position):Resized(6);classify();hurt(e);return
   end
  end
 end
@@ -241,7 +263,10 @@ local function tick()
  local queued=#inputQueue>inputDelay and table.remove(inputQueue,1) or {move=dirs[1]}
  local direction=queued.move
  fireCooldown=fireCooldown-1
- if queued.fire and fireCooldown<=0 then
+ if weapon then
+  if queued.fire then lastFire=queued.fire end
+  heldFire=queued.fire~=nil
+ elseif queued.fire and fireCooldown<=0 then
   fireCooldown=FIRE_TICKS;shots=shots+1
   -- Tears inherit SIM_TEAR_INHERIT (default 1.3, measured in the 2026-11-02
   -- IAD AIM samples) of the player's sideways velocity, and of its forward
@@ -274,7 +299,58 @@ local function tick()
  if invulnerable>0 then invulnerable=invulnerable-1 end
  collide()
 end
+local REACH=weapon=='azazel' and 83 or nil
+local BEAM_TICKS,BEAM_DAMAGE=9,5.25
+local function kill(j)
+ local e=npcs[j];kills=kills+1;table.remove(npcs,j);respawns[#respawns+1]={at=45,ai=e.ai,size=e.Size}
+end
+local function beamUpdate()
+ if beam then
+  beam.Timeout=beam.Timeout-1
+  if beam.Timeout<0 then
+   if os.getenv('SIM_BEAMDEBUG') and not beam.landed then print('MISS '..beam.note) end
+   beam=nil
+  end
+ end
+ if beam then
+  beam.Position=p.Position
+  local d=shootDirs[beam.dir]
+  local length=REACH or 1000
+  local any=false
+  for j=#npcs,1,-1 do
+   local e=npcs[j];local r=e.Position-p.Position
+   local forward=r.X*d.X+r.Y*d.Y
+   if forward>0 and forward<=length+e.Size and math.abs(r.X*d.Y-r.Y*d.X)<=e.Size+12 then
+    any=true;e.HitPoints=e.HitPoints-BEAM_DAMAGE;dealt=dealt+BEAM_DAMAGE
+    local cb=callbacks[ModCallbacks.MC_ENTITY_TAKE_DMG]
+    if cb then cb(nil,e,BEAM_DAMAGE,0,{Entity=beam}) end
+    if e.HitPoints<=0 then kill(j) end
+   end
+  end
+  if any and not beam.landed then beam.landed=true;landed=landed+1 end
+ elseif heldFire then charge=charge+1
+ elseif charge>0 then
+  if charge>=math.ceil(p.MaxFireDelay) and lastFire then
+   beams=beams+1
+   local b=base(EntityType.ENTITY_LASER);b.Variant=1
+   b.Position,b.dir,b.Timeout,b.CollisionDamage,b.Size=p.Position,lastFire,BEAM_TICKS,BEAM_DAMAGE,16
+   b.MaxDistance=REACH or 0
+   b.SpawnerEntity,b.Parent,b.SpawnerType,b.EntityCollisionClass=p,p,EntityType.ENTITY_PLAYER,EntityCollisionClass.ENTCOLL_ENEMIES
+   function b:ToLaser()return self end;function b:IsCircleLaser()return false end
+   function b:IsDead()return self.Timeout<0 end
+   function b:GetEndPoint()return self.Position+shootDirs[self.dir]*(REACH or 1000)end
+   beam=b
+   if os.getenv('SIM_BEAMDEBUG') then
+    local parts={string.format('t=%d dir=%d p=%.0f,%.0f v=%.1f,%.1f',ticks,lastFire,p.Position.X,p.Position.Y,p.Velocity.X,p.Velocity.Y)}
+    for _,e in ipairs(npcs) do parts[#parts+1]=string.format('%s@%.0f,%.0f v=%.1f,%.1f',e.ai,e.Position.X-p.Position.X,e.Position.Y-p.Position.Y,e.Velocity.X,e.Velocity.Y) end
+    b.note=table.concat(parts,' ')
+   end
+  else wasted=wasted+1 end
+  charge=0
+ end
+end
 local function worldUpdate()
+ if weapon then beamUpdate() end
  for i=#tears,1,-1 do
   local t=tears[i];t.Position=t.Position+t.Velocity;t.travel=t.travel+TEAR_SPEED
   local gone=t.travel>p.TearRange or not room:IsPositionInRoom(t.Position,0)
@@ -306,6 +382,21 @@ local function worldUpdate()
      bullets[#bullets+1]=bullet(e.Position+aim*15,aim:Rotated(angle)*shot)
     end
    end
+  elseif e.ai=='spider' or e.ai=='boss' then
+   -- Dash toward the player at a random angle, then pause (spiders); the
+   -- boss walks after the player and charges every 50-80 updates.
+   e.rest=(e.rest or 0)-1
+   if (e.dash or 0)>0 then e.dash=e.dash-1;e.Velocity=e.dashVel
+   elseif e.rest<=0 then
+    local spread=e.ai=='spider' and 70 or 15
+    e.dashVel=(p.Position-e.Position):Resized(e.ai=='spider' and 6.5 or 8):Rotated(math.random(-spread,spread))
+    e.dash=e.ai=='spider' and math.random(4,8) or 10
+    e.rest=e.ai=='spider' and math.random(6,16) or math.random(50,80)
+   elseif e.ai=='boss' then e.Velocity=e.Velocity*0.8+(p.Position-e.Position):Resized(2.5)*0.2
+   else e.Velocity=e.Velocity*0.5 end
+   local x=math.max(LEFT+e.Size,math.min(RIGHT-e.Size,e.Position.X+e.Velocity.X))
+   local y=math.max(TOP+e.Size,math.min(BOTTOM-e.Size,e.Position.Y+e.Velocity.Y))
+   e.Position=Vector(x,y)
   elseif e.ai=='fly' then
    -- Attack-fly-like: slow pursuit with a random wobble that changes often.
    if math.random()<0.15 then e.wobble=Vector(math.random()*2-1,math.random()*2-1):Resized(2.2) end
@@ -322,6 +413,7 @@ local function worldUpdate()
  for _,e in ipairs(npcs)do scene[#scene+1]=e end
  for _,b in ipairs(bullets)do scene[#scene+1]=b end
  for _,t in ipairs(tears)do scene[#scene+1]=t end
+ if beam then scene[#scene+1]=beam end
 end
 local started=os.clock()
 for update=1,updates do
@@ -341,4 +433,5 @@ if assist and callbacks[ModCallbacks.MC_PRE_GAME_EXIT] then callbacks[ModCallbac
 print(string.format("mod=%s latency=%d seed=%d scenario=%s updates=%d hits=%d per_min=%.2f override_ticks=%.1f%% ms/update=%.2f",
  modDir,latency,seed,scenario,updates,hits,hits*1800/updates,overrides*100/ticks,(os.clock()-started)*1000/updates)..
  string.format(" late=%d trapped=%d chose_safe=%d ignored_safe=%d",classes.late,classes.trapped,classes.chose_safe,classes.ignored_safe)..
- string.format(" kills=%d shots=%d",kills,shots))
+ string.format(" kills=%d shots=%d",kills,shots)..
+ (weapon and string.format(" beams=%d landed=%d wasted=%d dealt=%.0f",beams,landed,wasted,dealt) or ""))

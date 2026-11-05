@@ -6,7 +6,12 @@ for _,name in ipairs({'EntityType','EffectVariant','EntityCollisionClass','GridC
 GridCollisionClass.COLLISION_NONE=0
 local callbacks,logs,scene={}, {}, {}
 function RegisterMod()return {AddCallback=function(_,kind,fn)callbacks[kind]=fn end}end
-function include(name)return dofile('mod/isaac_dodge_assist/'..name..'.lua')end
+-- combatCtx: the last context the core handed to Combat.update.
+function include(name)
+ local m=dofile('mod/isaac_dodge_assist/'..name..'.lua')
+ if name=='combat' then local update=m.update;m.update=function(state,ctx)combatCtx=ctx;return update(state,ctx)end end
+ return m
+end
 local room={}
 function room:GetGridWidth()return 25 end
 function room:GetGridSize()return 625 end
@@ -221,6 +226,40 @@ assert(gridHit and gridHit:find(' s=0 Idle:12@540.0,500.0',1,true),'spike hit di
 p.Position=Vector(470,500)
 room.GetGridEntity,room.GetGridCollision=poopEntity,poopCollision
 print('PASS spikes: plain spike at any State, on/off State 1 and retracted exclusions, spiked rock and flight, grid hit record')
+-- 0.20: AUTO keeps off Sacrifice Room spikes even when flying (they hurt
+-- flyers) and off item pedestals and shop items; the dodge field leaves both
+-- alone, since stepping on them is the player's choice.
+RoomType={ROOM_DEFAULT=1,ROOM_SACRIFICE=13}
+PickupVariant={PICKUP_COLLECTIBLE=100}
+local roomType=RoomType.ROOM_SACRIFICE
+function room:GetType()return roomType end
+function room:GetGridEntity(i)
+ if i~=poopIndex then return nil end
+ return {Position=room:GetGridPosition(i),State=0,GetType=function()return GridEntityType.GRID_SPIKES end,
+  GetVariant=function()return 0 end,
+  GetSprite=function()return {GetAnimation=function()return 'Idle' end,GetFrame=function()return 0 end,IsFinished=function()return false end}end}
+end
+function room:GetGridCollision()return 0 end
+scene={};p.CanFly=true
+for i=1,7 do tick()end
+assert(combatCtx.hazardCells[poopIndex],'flying AUTO may walk on a sacrifice spike')
+for _,v in ipairs(packet())do assert(v==0,'sacrifice spike entered the dodge field of a flyer')end
+roomType=RoomType.ROOM_DEFAULT;tick()
+assert(not combatCtx.hazardCells[poopIndex],'flying AUTO avoids an ordinary spike')
+p.CanFly=false
+local function pickup(variant,subtype,x,price)
+ local e=entity(EntityType.ENTITY_PICKUP,variant);e.SubType,e.Position,e.Price=subtype,Vector(x,300),price
+ function e:ToPickup()return self end
+ return e
+end
+scene={pickup(100,12,300,0),pickup(100,0,380,0),pickup(10,1,460,5),pickup(10,1,540,0)}
+tick()
+local cells=combatCtx.hazardCells
+local function at(x)return cells[room:GetGridIndex(Vector(x,300))]==true end
+assert(at(300) and not at(380) and at(460) and not at(540),'pedestal/shop cells: '..tostring(at(300))..tostring(at(380))..tostring(at(460))..tostring(at(540)))
+RoomType,PickupVariant,room.GetType=nil,nil,nil
+room.GetGridEntity,room.GetGridCollision=poopEntity,poopCollision
+print('PASS AUTO hazard cells: sacrifice spikes for flyers, item pedestals and shop items')
 -- F9 danger preview: off by default, toggles, captures and renders lines.
 local renders,loaded=0,nil
 function Sprite()return {Load=function(_,path)loaded=path end,Play=function()end,

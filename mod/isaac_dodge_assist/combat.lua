@@ -222,6 +222,13 @@ local function fireControl(state, ctx, p, aligned, safe)
     local delay = ctx.queueDelay or 0
     local fresh, beam, reach, lasers, newTear = scanAttacks(state, ctx.entities, p)
     if reach then state.laserReach = reach end
+    if state.beamOut and not beam and state.beamDealt then
+        -- One line per finished beam: what it actually dealt.
+        log(string.format("IAD BEAM END: dealt=%.1f", state.beamDealt))
+        if state.stats and state.beamDealt > 0 then state.stats.landed = state.stats.landed + 1 end
+        state.beamDealt = nil
+    end
+    state.beamOut = beam
     if state.stats then state.stats.tears = state.stats.tears + fresh end
     -- Calibration for a later aim fix: does a tear inherit player motion?
     if newTear and state.aimLogs < 30 then
@@ -317,6 +324,7 @@ local function fireControl(state, ctx, p, aligned, safe)
                 hold, state.releaseLeft = false, 1
                 state.releasedAt, state.checkAt, state.checkHeld, state.held = state.tick, state.tick, state.held, 0
                 state.beamWait = state.brimstone and state.tick or nil
+                state.beamAxis = state.lastShoot
             end
         end
     end
@@ -387,6 +395,9 @@ local AXES = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}} -- shoot 1 left, 2 right, 3 up, 
 -- where the target is when the queued release lands. It hits what overlaps
 -- its width (about BEAM_HALF each side) up to its reach.
 local BEAM_HALF = 12
+-- A capped beam is only counted on an enemy it overlaps by half its size:
+-- grazing the tip missed in the closed-loop sim whenever we drifted back.
+local function inReach(forward, reach, size) return forward <= reach + size*0.5 end
 local function aimBeam(player, target, delay, beam)
     local p, t, v = player.Position, target.Position, target.Velocity
     local pv = player.Velocity or Vector(0, 0)
@@ -402,7 +413,7 @@ local function aimBeam(player, target, delay, beam)
     end
     if not best then return 1, false, px, py end
     local reach = (px - ox)*AXES[best][1] + (py - oy)*AXES[best][2]
-    return best, bestMiss <= target.Size + BEAM_HALF and reach <= beam.reach + target.Size, px, py
+    return best, bestMiss <= target.Size + BEAM_HALF and inReach(reach, beam.reach, target.Size), px, py
 end
 -- For each shooting axis: lead the target by the tear's flight time plus the
 -- online input queue, from where the queued command will actually fire, and
@@ -522,7 +533,7 @@ local function beamValue(state, ctx, p, enemies, shoot, ox, oy, from, step, stil
             local fx = e.Position.X + ev.X*t - ox - pv.X*t
             local fy = e.Position.Y + ev.Y*t - oy - pv.Y*t
             local forward = fx*ax + fy*ay
-            if forward > 0 and forward <= reach + e.Size and abs(fx*ay - fy*ax) <= e.Size + BEAM_HALF then
+            if forward > 0 and inReach(forward, reach, e.Size) and abs(fx*ay - fy*ax) <= e.Size + BEAM_HALF then
                 overlap = overlap + (step or 1)
             end
         end
@@ -573,6 +584,11 @@ end
 -- the charge for the moment it is full (state.releaseIn updates ahead):
 -- enemies are taken where they will be then, and a spot we cannot reach by
 -- then (plus the wait cap) counts half.
+-- A short beam (Azazel, about 80) has to strike from close by. While it
+-- charges, wait further out on the same line, as far as the rest of the
+-- charge lets us walk back in (up to STANDOFF), so we close in only for the
+-- release: 2026-11-05 took 5 of 6 hits standing 60 from the target.
+local STANDOFF, APPROACH = 130, 0.7
 local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
     local p, room = ctx.player, ctx.room
     local range = attackRange(state, p)
@@ -599,6 +615,10 @@ local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
         for i = 1, min(2, #others) do anchors[#anchors+1] = others[i] end
     end
     local releaseIn = state.releaseIn or 0
+    local extra = 0
+    if beam and preferred < STANDOFF then
+        extra = min(STANDOFF - preferred, APPROACH*(ctx.stride or 4)*max(0, releaseIn - 3))
+    end
     local best, bestCost, bx, by, bestSide
     for pass = 1, 2 do
       for a, anchor in ipairs(anchors) do
@@ -609,13 +629,21 @@ local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
             tx, ty = tx + v.X*releaseIn, ty + v.Y*releaseIn
         end
         for _, d in ipairs({preferred, preferred*0.75, min(preferred*1.3, range-20)}) do
-            for side, o in ipairs({{d,0}, {-d,0}, {0,d}, {0,-d}}) do
+            for side, o in ipairs({{1,0}, {-1,0}, {0,1}, {0,-1}}) do
                 side = side + (a-1)*4
-                local x, y = tx + o[1], ty + o[2]
-                local i = cellOf(room, g, x, y)
-                local steps = i and fromPlayer[i]
-                if steps and room:IsPositionInRoom(Vector(x, y), p.Size + 4) and
-                    (pass == 2 or laneClear(room, g, x, y, tx, ty, ignoreRocks)) then
+                -- The strike spot (x,y) and, while charging, the waiting
+                -- spot behind it; near a wall wait less far out.
+                local x, y = tx + o[1]*d, ty + o[2]*d
+                local i, steps, wx, wy
+                for _, back in ipairs({extra, extra*0.5, 0}) do
+                    wx, wy = x + o[1]*back, y + o[2]*back
+                    i = cellOf(room, g, wx, wy)
+                    steps = i and fromPlayer[i]
+                    if steps and room:IsPositionInRoom(Vector(wx, wy), p.Size + 4) then break end
+                    steps = nil
+                    if back == 0 then break end
+                end
+                if steps and (pass == 2 or laneClear(room, g, x, y, tx, ty, ignoreRocks)) then
                     local cost = steps*40 + abs(d - preferred)*0.5
                     if beam then
                         -- Another enemy's line must be clearly better to win.
@@ -635,18 +663,18 @@ local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
                     end
                     for _, e in ipairs(enemies) do
                         if e ~= target then
-                            local gap = e.Position:Distance(Vector(x, y)) - e.Size
+                            local gap = e.Position:Distance(Vector(wx, wy)) - e.Size
                             -- Mulliboom and leeches run at us: more room.
                             local keep = chaser(e) and 150 or exploder(e) and 130 or 110
                             if gap < keep then cost = cost + (keep-gap)*5 end
                         end
                     end
-                    if state.goalX and abs(state.goalX-x) + abs(state.goalY-y) < 30 then cost = cost - 50 end
+                    if state.goalX and abs(state.goalX-wx) + abs(state.goalY-wy) < 30 then cost = cost - 50 end
                     -- Circling to the other side of the same target is what
                     -- made AUTO run around: it must be clearly better. 60 (not
                     -- 120) keeps the simulated chaser hits at the 0.13 level.
                     if state.goalSide and side ~= state.goalSide then cost = cost + 60 end
-                    if not bestCost or cost < bestCost then best, bestCost, bx, by, bestSide = i, cost, x, y, side end
+                    if not bestCost or cost < bestCost then best, bestCost, bx, by, bestSide = i, cost, wx, wy, side end
                 end
             end
         end
@@ -656,18 +684,45 @@ local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
     return best, bx, by, bestSide
 end
 
+-- While our beam is out it moves with us along a fixed axis. Keep the
+-- enemy it hits best on it: step across with it and hold the distance
+-- (inside the reach of a short beam). Nil when the beam reaches none.
+local function trackBeam(state, ctx, enemies)
+    local axis = AXES[state.beamAxis or 0]
+    if not axis then return nil end
+    local p = ctx.player.Position
+    local reach = state.laserReach or math.huge
+    local delay = ctx.queueDelay or 0
+    local best, bestMiss, bx, by
+    for _, e in ipairs(enemies) do
+        local v = e.Velocity or ZERO
+        local x, y = e.Position.X + v.X*delay, e.Position.Y + v.Y*delay
+        local forward = (x - p.X)*axis[1] + (y - p.Y)*axis[2]
+        local miss = abs((x - p.X)*axis[2] - (y - p.Y)*axis[1])
+        if forward > 0 and forward <= reach + e.Size and miss <= e.Size + BEAM_HALF + 40 and
+            (not bestMiss or miss < bestMiss) then
+            local keep = max(20, min(forward, reach*0.8))
+            best, bestMiss, bx, by = e, miss, x - axis[1]*keep, y - axis[2]*keep
+        end
+    end
+    return best, bx, by
+end
+
 -- Endpoint after LOOK updates of full-speed walking, cut at the first
--- unsafe sample.
-local function endpoint(ctx, dir, stride)
+-- unsafe sample, and whether the walk crosses a hazard cell.
+local function endpoint(ctx, g, dir, stride)
     local p = ctx.player.Position
     local x, y = p.X, p.Y
     local step = stride * LOOK / 4
+    local crossed = false
     for _ = 1, 4 do
         local nx, ny = x + dir.X*step, y + dir.Y*step
         if not ctx.gridSafeXY(ctx.room, ctx.player, nx, ny) then break end
         x, y = nx, ny
+        local i = g.hazard and cellOf(ctx.room, g, x, y)
+        if i and g.hazard[i] then crossed = true end
     end
-    return x, y
+    return x, y, crossed
 end
 
 -- Dodge first: walk toward the goal only through directions with the best
@@ -699,10 +754,21 @@ local function chooseMove(state, ctx, costs)
     return best
 end
 
+-- Taking damage drops a charge in progress: 2026-11-05, every release after
+-- a hit during the charge (3 of 3) produced nothing at the usual hold.
+-- Count it again from zero instead of releasing early and raising the bias.
+function M.hurt(state)
+    if state.weapon == "charge" and state.brimstone and state.held > 0 then
+        log(string.format("IAD CHARGE: hit restarts held=%d", state.held))
+        state.held = 0
+    end
+end
+
 -- Per-room AUTO summary (IAD COMBAT STATS), flushed by main.lua.
 function M.stats(state)
     if not state.stats then
-        state.stats = {ticks=0, firing=0, aligned=0, switches=0, retargets=0, sides=0, distance=0, tears=0, dealt=0}
+        state.stats = {ticks=0, firing=0, aligned=0, switches=0, retargets=0, sides=0, distance=0, tears=0, dealt=0,
+            beams=0, landed=0}
     end
     return state.stats
 end
@@ -710,14 +776,18 @@ function M.flushStats(state, reason)
     local s = state.stats
     state.stats = nil
     if not s or s.ticks == 0 then return end
-    log(string.format("IAD COMBAT STATS: ticks=%d firing=%.0f%% aligned=%.0f%% switches=%d retargets=%d sides=%d meanDist=%.0f tears=%d dealt=%.1f reason=%s",
-        s.ticks, s.firing*100/s.ticks, s.aligned*100/s.ticks, s.switches, s.retargets, s.sides, s.distance/s.ticks, s.tears, s.dealt, reason))
+    log(string.format("IAD COMBAT STATS: ticks=%d firing=%.0f%% aligned=%.0f%% switches=%d retargets=%d sides=%d meanDist=%.0f tears=%d dealt=%.1f beams=%d landed=%d reason=%s",
+        s.ticks, s.firing*100/s.ticks, s.aligned*100/s.ticks, s.switches, s.retargets, s.sides, s.distance/s.ticks, s.tears, s.dealt,
+        s.beams, s.landed, reason))
 end
 -- Damage taken by an enemy (core's damage callback): counted for the AUTO
 -- stats when one of our own attacks dealt it.
 function M.dealt(state, player, source, amount)
     local s, e = state.stats, source and source.Entity
-    if s and state.mode == 2 and e and ownedBy(e, player) then s.dealt = s.dealt + amount end
+    if s and state.mode == 2 and e and ownedBy(e, player) then
+        s.dealt = s.dealt + amount
+        if state.beamDealt then state.beamDealt = state.beamDealt + amount end
+    end
 end
 
 -- ctx: player, room, frame, entities, playerOwned, gridSafeXY, directions,
@@ -785,8 +855,10 @@ function M.update(state, ctx)
     -- one while a beam is out or just released), plus the online queue.
     state.releaseIn = max(0, need - state.held) + (ctx.queueDelay or 0)
     if plan and plan.shoot and state.releasedAt == state.tick then
-        log(string.format("IAD BEAM: value=%.2f hits=%d waited=%d shoot=%d", plan.value, plan.hits,
-            wasHeld + 1 - need, plan.shoot))
+        log(string.format("IAD BEAM: value=%.2f hits=%d waited=%d shoot=%d dist=%.0f reach=%.0f", plan.value, plan.hits,
+            wasHeld + 1 - need, plan.shoot, target.Position:Distance(p.Position), state.laserReach or -1))
+        state.beamDealt = 0
+        if stats then stats.beams = stats.beams + 1 end
     end
     stats.ticks, stats.distance = stats.ticks + 1, stats.distance + target.Position:Distance(p.Position)
     if hold then stats.firing = stats.firing + 1 end
@@ -796,7 +868,16 @@ function M.update(state, ctx)
     local start = cellOf(room, g, p.Position.X, p.Position.Y)
     local costs = {}
     local goal, gx, gy, side
-    if start then
+    local tracked
+    if start and state.beamGoals and state.beamOut then
+        local x, y
+        tracked, x, y = trackBeam(state, ctx, enemies)
+        local i = tracked and cellOf(room, g, x, y)
+        if i and g.walk[i] and not (g.hazard and g.hazard[i]) and room:IsPositionInRoom(Vector(x, y), p.Size + 4) then
+            goal, gx, gy, side = i, x, y, state.goalSide
+        end
+    end
+    if start and not goal then
         local fromPlayer = flood(g, start)
         goal, gx, gy, side = pickGoal(state, ctx, g, target, enemies, fromPlayer)
     end
@@ -807,9 +888,9 @@ function M.update(state, ctx)
         info.goalX, info.goalY = gx, gy
         local field = flood(g, goal)
         for i, dir in ipairs(ctx.directions) do
-            local x, y = endpoint(ctx, dir, ctx.stride)
+            local x, y, crossed = endpoint(ctx, g, dir, ctx.stride)
             local cell = cellOf(room, g, x, y)
-            local steps = cell and field[cell]
+            local steps = not crossed and cell and field[cell]
             costs[i] = steps and (steps*40 + sqrt((x-gx)^2 + (y-gy)^2)*0.35) or 1e6
         end
     else
@@ -817,8 +898,8 @@ function M.update(state, ctx)
         state.goalX, state.goalY = nil, nil
         local t = target.Position
         for i, dir in ipairs(ctx.directions) do
-            local x, y = endpoint(ctx, dir, ctx.stride)
-            costs[i] = -sqrt((x-t.X)^2 + (y-t.Y)^2)
+            local x, y, crossed = endpoint(ctx, g, dir, ctx.stride)
+            costs[i] = -sqrt((x-t.X)^2 + (y-t.Y)^2) + (crossed and 1e6 or 0)
         end
     end
     -- Tears inherit sideways motion, so while firing, walking across the

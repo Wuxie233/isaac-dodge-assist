@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.19.1"
+local VERSION = "0.20.0"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
@@ -234,7 +234,8 @@ local function contactThreat(entity)
     if entity.CollisionDamage <= 0 then return false end
     return entity.Type == EntityType.ENTITY_FIREPLACE or entity:IsActiveEnemy(false)
 end
--- Grid cells AUTO must not path through (active spikes, red poop).
+-- Grid cells AUTO must not path through (active spikes, red poop, item
+-- pedestals and shop items it would take for us).
 local hazardCells = {}
 -- Predicted death update per exploder seed, for the IAD BURST record.
 local deathAt = {}
@@ -515,11 +516,17 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
         logGrid(room)
     end
     hazardCells = {}
+    -- Sacrifice Room spikes hurt flying characters too (Azazel walked AUTO
+    -- over them). They stay out of the dodge field: stepping on them is a
+    -- choice, and the helper must not fight it; AUTO just never does.
+    local sacrifice = RoomType and room:GetType() == RoomType.ROOM_SACRIFICE
     for _, index in ipairs(gridCells) do
         local grid = room:GetGridEntity(index)
         if grid then
             local kind = grid:GetType()
-            if not p.CanFly and spikesActive(grid, kind) then
+            if p.CanFly and sacrifice and spikesActive(grid, kind) then
+                hazardCells[index] = true
+            elseif not p.CanFly and spikesActive(grid, kind) then
                 areas[#areas+1] = {position=grid.Position,velocity=Vector(0,0),radius=20}
                 hazardCells[index] = true
             elseif kind == GridEntityType.GRID_POOP and not p.CanFly and grid:GetVariant() == RED_POOP and
@@ -542,6 +549,18 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
                 if threatened then
                     areas[#areas+1] = {position=grid.Position,velocity=Vector(0,0),radius=100,warning=true}
                 end
+            end
+        end
+    end
+    -- AUTO never walks over an item: in co-op it would take it from the
+    -- partner, and a shop or devil deal costs.
+    if PickupVariant then
+        for _, entity in ipairs(entities) do
+            local pickup = entity.Type == EntityType.ENTITY_PICKUP and entity.ToPickup and entity:ToPickup()
+            if pickup and ((pickup.Variant == PickupVariant.PICKUP_COLLECTIBLE and pickup.SubType ~= 0) or
+                (pickup.Price or 0) ~= 0) then
+                local index = room:GetGridIndex(pickup.Position)
+                if index >= 0 then hazardCells[index] = true end
             end
         end
     end
@@ -611,6 +630,7 @@ mod:AddCallback(ModCallbacks.MC_ENTITY_TAKE_DMG, function(_, entity, amount, fla
         return
     end
     if player.InitSeed ~= boundSeed then return end
+    Combat.hurt(combat)
     Diagnostics.hit(frame,player,source,amount,flags,Isaac.GetRoomEntities())
     -- Spikes, poop and sourceless hits come from the grid: record it.
     if flags & (128 | 512) ~= 0 or not source.Entity then Diagnostics.grid(game:GetRoom(),player) end
