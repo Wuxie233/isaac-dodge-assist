@@ -146,3 +146,10 @@ assert(joined:find('|S|',1,true) and joined:find('FLOOR ',1,true),'labels/score 
 texts={};MapView.scoreLine(state.score,48,64)
 assert(#texts==1 and texts[1]:find('^FLOOR '),'score line')
 print('PASS map view: cells, labels, score panel and HUD line')
+-- Descriptors that never compare equal: the dimension filter gives up
+-- rather than hiding every room.
+local savedHash=GetPtrHash
+GetPtrHash=function(x)return math.random() end
+assert(#FloorMap.scan(level).rooms==6,'map emptied when no descriptor matched')
+GetPtrHash=savedHash
+print('PASS floor map: dimension filter falls back to every room')

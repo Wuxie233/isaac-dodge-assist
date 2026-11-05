@@ -115,13 +115,22 @@ function M.scan(level, layoutOf)
     local floor = {rooms = {}, current = nil}
     local list = level:GetRooms()
     local hash = GetPtrHash
+    -- Rooms of another dimension (mirror world, mineshaft, Death
+    -- Certificate) share grid indexes with this one: keep ours only. Should
+    -- the descriptors ever stop comparing equal, keep them all instead of
+    -- showing an empty map.
+    local ours, any = {}, false
+    for i = 0, list.Size - 1 do
+        local desc = list:Get(i)
+        if desc and desc.Data and desc.SafeGridIndex >= 0 then
+            ours[i] = not hash or hash(level:GetRoomByIdx(desc.SafeGridIndex, -1)) == hash(desc)
+            any = any or ours[i]
+        end
+    end
     for i = 0, list.Size - 1 do
         local desc = list:Get(i)
         local data = desc and desc.Data
-        -- Rooms of another dimension (mirror world, mineshaft, Death
-        -- Certificate) share grid indexes with this one: keep ours only.
-        if data and desc.SafeGridIndex >= 0 and
-            (not hash or hash(level:GetRoomByIdx(desc.SafeGridIndex, -1)) == hash(desc)) then
+        if ours[i] ~= nil and (ours[i] or not any) then
             local kind = kindOf(data.Type)
             local visited = (desc.VisitedCount or 0) > 0
             floor.rooms[#floor.rooms+1] = {index = desc.ListIndex, safe = desc.SafeGridIndex, shape = data.Shape,
