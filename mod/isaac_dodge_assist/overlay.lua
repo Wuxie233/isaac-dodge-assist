@@ -7,7 +7,7 @@ local M = {}
 local sqrt, atan, cos, sin, pi, max, min = math.sqrt, math.atan, math.cos, math.sin, math.pi, math.max, math.min
 local HARD, WARN, PATH = {1, 0.15, 0.15}, {1, 0.75, 0.1}, {1, 0.35, 0.35}
 local TARGET, GOAL = {0.3, 0.9, 1}, {0.35, 1, 0.45}
-local shapes, marks, enabled, sprite = {}, {}, false, nil
+local shapes, marks, rewards, enabled, sprite = {}, {}, {}, false, nil
 
 function M.enabled() return enabled end
 function M.toggle() enabled = not enabled; if not enabled then shapes, marks = {}, {} end; return enabled end
@@ -59,6 +59,18 @@ function M.capture(scene, playerRadius)
     shapes = list
 end
 
+-- Reward rocks (always shown, F9 or not): a diamond around each unbroken
+-- one, in its kind's colour. list: RoomRewards.scan entries.
+function M.rewards(list)
+    local out = {}
+    for _, r in ipairs(list or {}) do
+        local x, y, d = r.x, r.y, 17
+        line(out, x, y-d, x+d, y, r.colour, 0.9, 2); line(out, x+d, y, x, y+d, r.colour, 0.9, 2)
+        line(out, x, y+d, x-d, y, r.colour, 0.9, 2); line(out, x-d, y, x, y-d, r.colour, 0.9, 2)
+    end
+    rewards = out
+end
+
 -- Combat marks (F10 modes): target ring, aim point, standing goal.
 function M.combat(info)
     if not enabled then return end
@@ -107,10 +119,12 @@ local function draw(s, list, mirror, width)
     end
 end
 function M.render(room)
-    if not enabled or (#shapes == 0 and #marks == 0) then return end
+    if #rewards == 0 and (not enabled or (#shapes == 0 and #marks == 0)) then return end
     local s = ensureSprite()
     local mirror = room and room.IsMirrorWorld and room:IsMirrorWorld() or false
     local width = mirror and Isaac.GetScreenWidth() or 0
+    draw(s, rewards, mirror, width)
+    if not enabled then return end
     draw(s, shapes, mirror, width)
     draw(s, marks, mirror, width)
 end

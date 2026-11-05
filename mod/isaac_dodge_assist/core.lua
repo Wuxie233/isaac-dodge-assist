@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.20.0"
+local VERSION = "0.21.0"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
@@ -20,10 +20,14 @@ local PlayerMotion = include("player_motion")
 local InputQueue = include("input_queue")
 local Combat = include("combat")
 local PlayerBinding = include("player_binding")
+local FloorIntel = include("floor_intel")
+local MapView = include("map_view")
 local terrain
 local kinematics = PlayerMotion.new()
 local inputs = InputQueue.new()
 local combat, combatWord = Combat.new(), 0
+-- Floor map, seen items and loot, floor score (F5 shows the map).
+local intel, intelFailed = FloorIntel.new(), false
 -- Slot evidence for "which player does this keyboard drive" (see player_binding).
 local binding = PlayerBinding.new()
 local manualUntil = -1
@@ -66,6 +70,7 @@ if saved then
     kinematics, inputs, binding = saved.kinematics, saved.inputs, saved.binding
     frame, sequence, state = saved.frame, saved.sequence, saved.state
     runEnded = saved.runEnded or false
+    if saved.intel then intel = saved.intel; intel.scanAt = -100 end
     if saved.overlay ~= Overlay.enabled() then Overlay.toggle() end
     for _, key in ipairs({"mode", "bias", "hint", "weapon", "provenAuto", "autoFireAt", "aimLogs"}) do
         if saved.combat[key] ~= nil then combat[key] = saved.combat[key] end
@@ -75,7 +80,8 @@ local function snapshot()
     return {enabled=enabled, paused=paused, horizonIndex=horizonIndex,
         selected=selected, boundSeed=boundSeed, manualUntil=manualUntil, previousCount=previousCount,
         kinematics=kinematics, inputs=inputs, binding=binding,
-        frame=frame, sequence=sequence, state=state, runEnded=runEnded, overlay=Overlay.enabled(), combat=combat}
+        frame=frame, sequence=sequence, state=state, runEnded=runEnded, overlay=Overlay.enabled(), combat=combat,
+        intel=intel}
 end
 local function reset()
     Diagnostics.reset("game-start")
@@ -349,6 +355,7 @@ mod:AddCallback(ModCallbacks.MC_POST_GAME_STARTED, function(_, continued)
     local ok, seed = pcall(function() return game:GetSeeds():GetStartSeedString() end)
     local player = Isaac.GetPlayer(0)
     runEnded = false
+    if not continued then intel = FloorIntel.new() end
     runMarker("begin continued=" .. tostring(continued == true) ..
         " player=" .. tostring(player and player:GetPlayerType() or -1) ..
         " seed=" .. (ok and tostring(seed):gsub("%s", "") or "unknown"))
@@ -358,12 +365,40 @@ mod:AddCallback(ModCallbacks.MC_POST_GAME_END, function(_, gameOver)
     runEnded = true
     runMarker("end reason=" .. (gameOver and "death" or "win"))
 end)
+-- Seeds print unsigned, as the game's own log lines do.
+local function u32(n)
+    local i = math.tointeger(n)
+    return i and tostring(i & 0xFFFFFFFF) or tostring(n)
+end
+local function calibrationRoom()
+    pcall(function()
+        local room, desc = game:GetRoom(), game:GetLevel():GetCurrentRoomDesc()
+        if not room:IsFirstVisit() then return end
+        Isaac.DebugString("IAD MAPCAL ROOM " .. desc.Data.Type .. "." .. desc.Data.Variant .. " list=" .. desc.ListIndex ..
+            " ss=" .. u32(desc.SpawnSeed) .. " as=" .. u32(desc.AwardSeed) .. " spawns=" .. desc.Data.Spawns.Size ..
+            " tinted=" .. room:GetTintedRockIdx())
+    end)
+end
 local function flushKinematics(reason)
     if kinematics.idleN+kinematics.driveN+kinematics.kN>0 then
         Isaac.DebugString("IAD KIN: "..PlayerMotion.summary(kinematics).." "..InputQueue.summary(inputs).." reason="..reason)
     end
 end
-mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); Combat.flushStats(combat, "room"); frame = 0; motion = {}; deathAt = {}; gridLogged = false; Diagnostics.reset("room"); emit(false) end)
+mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); Combat.flushStats(combat, "room"); frame = 0; motion = {}; deathAt = {}; gridLogged = false; Diagnostics.reset("room"); FloorIntel.newRoom(intel); calibrationRoom(); emit(false) end)
+mod:AddCallback(ModCallbacks.MC_POST_NEW_LEVEL, function() FloorIntel.newLevel(intel) end)
+-- Calibration for predicting unvisited rooms' items (see
+-- native/research/api-map-items.md 3.6): the seeds the game itself uses
+-- for layout spawns and item picks. Observation only: every handler
+-- returns nothing, so the game's choice is untouched.
+mod:AddCallback(ModCallbacks.MC_PRE_ROOM_ENTITY_SPAWN, function(_, kind, variant, subtype, gridIndex, seed)
+    Isaac.DebugString("IAD MAPCAL SPAWN t=" .. tostring(kind) .. " v=" .. tostring(variant) .. " s=" .. tostring(subtype) ..
+        " g=" .. tostring(gridIndex) .. " seed=" .. u32(seed))
+end)
+if ModCallbacks.MC_PRE_GET_COLLECTIBLE then
+    mod:AddCallback(ModCallbacks.MC_PRE_GET_COLLECTIBLE, function(_, pool, decrease, seed)
+        Isaac.DebugString("IAD MAPCAL GETCOL pool=" .. tostring(pool) .. " dec=" .. tostring(decrease) .. " seed=" .. u32(seed))
+    end)
+end
 mod:AddCallback(ModCallbacks.MC_PRE_GAME_EXIT, function(_, shouldSave)
     flushKinematics("game-exit"); Combat.flushStats(combat, "game-exit"); Diagnostics.flushPerformance("game-exit"); emit(false); selected = -1
     -- A saving exit can be continued later; leaving without a save ends it
@@ -373,6 +408,11 @@ mod:AddCallback(ModCallbacks.MC_PRE_GAME_EXIT, function(_, shouldSave)
 end)
 mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     frame = frame + 1
+    -- Floor intel and reward rocks run whatever the dodge state. They are
+    -- extras: an error there is logged once and never stops the dodging.
+    local ok, rocks = pcall(FloorIntel.update, intel, game, game:GetRoom(), Isaac.GetRoomEntities, frame)
+    if ok then Overlay.rewards(rocks)
+    elseif not intelFailed then intelFailed = true; Isaac.DebugString("IAD INTEL: error " .. tostring(rocks)) end
     local count = game:GetNumPlayers()
     if count ~= previousCount then
         -- A co-op partner joining or leaving, or a re-hosted online lobby,
@@ -667,7 +707,12 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
     if Input.IsButtonTriggered(Keyboard.KEY_F10, 0) then
         Isaac.DebugString("IAD COMBAT: " .. Combat.MODES[Combat.cycle(combat)])
     end
+    if Input.IsButtonTriggered(Keyboard.KEY_F5, 0) then intel.showMap = not intel.showMap end
     Overlay.render(game:GetRoom())
+    pcall(function()
+        if intel.showMap then MapView.render(intel.map, FloorIntel.extras(intel), intel.score) end
+        MapView.scoreLine(intel.score, 48, 64)
+    end)
     if game:IsPaused() then emit(false) end
     local label = "DODGE v" .. VERSION .. (build and ("+" .. build) or "") .. " " .. (enabled and state or "OFF") .. "  P" .. (selected + 1) ..
         "  " .. horizons[horizonIndex] .. "/" .. effectiveHorizon .. "ms" .. (Overlay.enabled() and "  VIEW" or "") ..
