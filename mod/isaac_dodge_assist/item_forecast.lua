@@ -118,41 +118,88 @@ function M.players(game)
     return n
 end
 
+local VOID = 12
+local function stageOf(game)
+    local ok, stage = pcall(function() return game:GetLevel():GetStage() end)
+    return ok and stage or 0
+end
+-- The boss that ends a chapter drops no item. 2026-11-04..06 logs: It Lives
+-- x6, Mom's Heart, Hush x3, Isaac, Satan, The Lamb x2, Mega Satan x2 and
+-- Delirium x2 killed, none with an item; in The Void the bosses do drop one
+-- (Satan included), Delirium does not. Boss ids as the game records them:
+-- Mom's Heart 8, Satan 24, It Lives 25, Isaac 39, ??? 40, The Lamb 54, Mega
+-- Satan 55, Hush 63, Delirium 70, Mother 88 (??? and Mother not logged yet).
+local NO_REWARD = {[8] = true, [24] = true, [25] = true, [39] = true, [40] = true, [54] = true,
+    [55] = true, [63] = true, [70] = true, [88] = true}
+local DELIRIUM = 70
+-- How many items a boss room drops: one per person, or none.
+function M.bossItems(game, room)
+    if room.type ~= 5 then return 0 end
+    if NO_REWARD[room.subtype] and (stageOf(game) ~= VOID or room.subtype == DELIRIUM) then return 0 end
+    return M.players(game)
+end
+
+-- Tainted Isaac in the party: every pedestal cycles between two items.
+local ISAAC_B = 21
+function M.cycles(game)
+    for i = 0, game:GetNumPlayers() - 1 do
+        local player = Isaac.GetPlayer(i)
+        if player.GetPlayerType and player:GetPlayerType() == ISAAC_B then return true end
+    end
+    return false
+end
+
 -- Forecast for one unvisited room (FloorMap room with spawnSeed, awardSeed,
--- flags, subtype, type and layout.slots): a list of {id, kind} with kind
--- "pedestal", "shop" or "boss". Shop slots only in devil rooms and black
--- markets (an ordinary shop mixes slot types the copy does not model).
+-- flags, subtype, type and layout.slots): a list of {id, kind, altOf} with
+-- kind "pedestal", "shop" or "boss". Shop slots only in devil rooms and
+-- black markets (an ordinary shop mixes slot types the copy does not model).
 -- A boss room's reward follows its layout; with two or more people the
 -- second person's boss-pool item follows it (later ones are not modelled).
+-- In The Void the first reward comes from a pool picked at random, which is
+-- not modelled. With Tainted Isaac every pedestal's second item (altOf =
+-- the first one's id) follows it.
 function M.room(state, game, room)
     local slots = room.layout and room.layout.slots or {}
     local pool = Emu.poolForRoom(room.type, {subtype = room.subtype,
         devilTreasure = (room.flags or 0) & FLAG_DEVIL_TREASURE ~= 0})
     if not pool then return nil end
     local opts = options(state, game)
-    local picks, kinds, out = {}, {}, {}
+    local cycles = M.cycles(game)
+    local picks, kinds, seconds, out = {}, {}, {}, {}
+    local function add(pick, kind, second) picks[#picks+1] = pick; kinds[#picks] = kind; seconds[#picks] = second end
+    -- One pedestal: its pick (nil when not modelled), then Tainted Isaac's
+    -- second item from the same pool (the boss pool in The Void).
+    local function pedestal(poolType, pickSeed, initSeed, kind, secondPool)
+        if pickSeed then add({poolType, pickSeed}, kind) end
+        if cycles then add({secondPool or poolType, Emu.altPickSeed(initSeed)}, kind, pickSeed ~= nil) end
+    end
     for _, slot in ipairs(slots) do
         if slot.variant == 100 and slot.subtype > 0 then
             out[#out+1] = {id = slot.subtype, kind = "pedestal"}
         elseif slot.variant == 100 or ((room.type == DEVIL or room.type == BLACK_MARKET) and slot.variant == 150) then
-            picks[#picks+1] = {pool, Emu.layoutPickSeed(room.spawnSeed, slot.index)}
-            kinds[#picks] = slot.variant == 150 and "shop" or "pedestal"
+            local init = Emu.layoutInitSeed(room.spawnSeed, slot.index)
+            pedestal(pool, Emu.pickSeedFromInitSeed(init), init, slot.variant == 150 and "shop" or "pedestal")
         end
     end
     -- A boss drops its reward on the kill (the Horsemen a fixed item).
-    local rewardPool = room.type == 5 and Emu.bossRewardPool(room.subtype)
-    local function add(pick, kind) picks[#picks+1] = pick; kinds[#picks] = kind end
+    local rewards = M.bossItems(game, room)
+    local rewardPool = rewards > 0 and Emu.bossRewardPool(room.subtype)
     if rewardPool then
-        add({rewardPool, Emu.bossPickSeed(room.awardSeed)}, "boss")
-        if M.players(game) > 1 then
-            local first = Emu.bossItemInitSeed(room.awardSeed, room.subtype)
-            add({Emu.POOL.BOSS, Emu.extraBossPickSeed(first)}, "boss")
+        local first = Emu.bossItemInitSeed(room.awardSeed, room.subtype)
+        local void = stageOf(game) == VOID
+        pedestal(rewardPool, not void and Emu.bossPickSeed(room.awardSeed) or nil, first, "boss",
+            void and Emu.POOL.BOSS or nil)
+        if rewards > 1 then
+            pedestal(Emu.POOL.BOSS, Emu.extraBossPickSeed(first), Emu.extraBossInitSeed(first), "boss")
         end
     end
     if #picks > 0 then
         local items = state.emu:predictRoom(picks, opts)
         for i = 1, #picks do
-            if items[i] then out[#out+1] = {id = items[i], kind = kinds[i]} end
+            if items[i] then
+                local altOf = seconds[i] and items[i-1] or nil
+                if altOf ~= items[i] then out[#out+1] = {id = items[i], kind = kinds[i], altOf = altOf} end
+            end
         end
     end
     return out
@@ -162,8 +209,9 @@ end
 -- pedestal (found by its InitSeed) and the item the next pedestal will hold
 -- once it is taken. pedestals = {seed (InitSeed), ...}; nil when there is
 -- none to tell.
+-- With Tainted Isaac also the next pedestal's second item.
 function M.bossNext(state, game, room, pedestals)
-    if not state or room.type ~= 5 or M.players(game) < 2 then return nil end
+    if not state or room.type ~= 5 or M.bossItems(game, room) < 2 then return nil end
     local s, first = room.awardSeed & 0xFFFFFFFF, {}
     for n = 1, 3 do
         s = Emu.next(s, 35)
@@ -171,8 +219,12 @@ function M.bossNext(state, game, room, pedestals)
     end
     for _, pedestal in ipairs(pedestals) do
         if pedestal.seed and first[pedestal.seed] then
-            local id = state.emu:predict(Emu.POOL.BOSS, Emu.extraBossPickSeed(pedestal.seed), options(state, game))
-            if id then return pedestal, id end
+            local picks = {{Emu.POOL.BOSS, Emu.extraBossPickSeed(pedestal.seed)}}
+            if M.cycles(game) then
+                picks[2] = {Emu.POOL.BOSS, Emu.altPickSeed(Emu.extraBossInitSeed(pedestal.seed))}
+            end
+            local items = state.emu:predictRoom(picks, options(state, game), true)
+            if items[1] then return pedestal, items[1], items[2] ~= items[1] and items[2] or nil end
         end
     end
     return nil

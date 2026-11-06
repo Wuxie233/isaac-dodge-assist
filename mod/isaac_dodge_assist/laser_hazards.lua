@@ -150,7 +150,9 @@ end
 -- (down, drifting sideways as it fires, which the shape's velocity
 -- carries), Krampus "Attack2Alt" 30 (the cardinal cross, which may turn a
 -- quarter later), an Eye "Shoot" 11 (a thin laser at the player; a
--- Bloodshot Eye fires brimstone the same way). aim = toward the target.
+-- Bloodshot Eye fires brimstone the same way); 2026-11-06 Red Ghost
+-- "ShootLeft" 14 (its beam along the side the animation names). aim =
+-- toward the target; prefix = the animation ends in the direction.
 local bossBeams
 local function appendBossBeam(npc, room, shapes, target)
     if not bossBeams then
@@ -164,6 +166,7 @@ local function appendBossBeam(npc, room, shapes, target)
             ENTITY_FALLEN = {{variant=1, animation="Attack2Alt", frame=29, angles={0, 90, 180, 270}}},
             ENTITY_EYE = {{variant=0, animation="Shoot", frame=10, aim=true, width=12},
                 {variant=1, animation="Shoot", frame=10, aim=true}},
+            ENTITY_RED_GHOST = {{prefix="Shoot", frame=13}},
         }) do
             if EntityType[name] then bossBeams[EntityType[name]] = beams end
         end
@@ -173,8 +176,9 @@ local function appendBossBeam(npc, room, shapes, target)
     local sprite = npc:GetSprite()
     local animation = sprite:GetAnimation()
     for _, beam in ipairs(beams) do
-        if animation == beam.animation and (not beam.variant or beam.variant == npc.Variant) then
-            local angles = beam.angles
+        local side = beam.prefix and animation:sub(1, #beam.prefix) == beam.prefix and animation:sub(#beam.prefix + 1)
+        local angles = side and brimstoneAngles[side] or beam.angles
+        if (animation == beam.animation or (side and angles)) and (not beam.variant or beam.variant == npc.Variant) then
             if beam.aim then
                 if not target then return end
                 local to = target - npc.Position

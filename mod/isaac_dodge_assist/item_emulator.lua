@@ -24,6 +24,7 @@ validated offline on 130 logged pedestals (see native/research/item-emulation.md
       Emu.layoutPickSeed(desc.SpawnSeed, i)       -- = X35(InitSeed), InitSeed = X35(X11^(i+1)(SpawnSeed))
     boss clear reward (first pedestal):  Emu.bossPickSeed(desc.AwardSeed)  -- = X35(AwardSeed)
       pool: Emu.bossRewardPool(desc.Data.Subtype)  (nil = Horsemen fixed drop)
+    Tainted Isaac's second item on any pedestal: Emu.altPickSeed(InitSeed), same pool, right after it
     co-op boss room, the next item (one per extra player, spawned once the first is taken):
       Emu.extraBossPickSeed(firstInitSeed)  -- = X30(InitSeed of the first boss pedestal), boss pool
       firstInitSeed = Emu.bossItemInitSeed(desc.AwardSeed, desc.Data.Subtype)  -- X35^3, Mom X35^2
@@ -43,6 +44,7 @@ local SHIFT = {
   [27] = {3, 23, 25},  -- start seed RNG (stage seeds ...)
   [30] = {4, 3, 17},   -- co-op extra boss item, from the first boss pedestal's InitSeed
   [35] = {5, 9, 7},    -- default RNG (entity InitSeed RNG)
+  [38] = {5, 13, 6},   -- Tainted Isaac's second item on a pedestal, from its InitSeed
 }
 
 local function xs(x, s)
@@ -183,6 +185,13 @@ end
 --- X30(InitSeed of the first boss pedestal) (seven of seven logged rooms); later ones are not
 --- modelled.
 function M.extraBossPickSeed(firstInitSeed) return X(firstInitSeed & M32, 30) end
+--- InitSeed of that next pedestal: X30^2(first pedestal InitSeed).
+function M.extraBossInitSeed(firstInitSeed) return X(X(firstInitSeed & M32, 30), 30) end
+
+--- With Tainted Isaac in the party every pedestal cycles between its item and a second one,
+--- picked right after it from the same pool with X38(InitSeed) (38 of 38 logged pedestals,
+--- 2026-11-06). In The Void a boss pedestal's second item comes from the boss pool.
+function M.altPickSeed(initSeed) return X(initSeed & M32, 38) end
 
 --- Pool of the first boss reward from the boss room's Data.Subtype (= boss id).
 --- The Fallen (23) rewards from the devil pool [C-log]; the Horsemen (Famine 9, Pestilence 10,
@@ -352,11 +361,12 @@ end
 
 --- Predict the pedestals of one not-yet-visited room, in spawn order. Each pick is applied to a
 --- private copy (decrease + room blacklist) before the next, as the game does on room load.
---- picks = { {poolType, seed}, ... }; the room blacklist starts empty (new room).
+--- picks = { {poolType, seed}, ... }; the room blacklist starts empty (new room), or stays the
+--- current room's with sameRoom (picks still to come in the room the players are in).
 --- Returns { item1, item2, ... } (nil entries when a pool is exhausted).
-function Emu:predictRoom(picks, opts)
+function Emu:predictRoom(picks, opts, sameRoom)
   local sim = self:clone()
-  sim.roomBlacklist = {}
+  if not sameRoom then sim.roomBlacklist = {} end
   local out = {}
   for i, p in ipairs(picks) do
     local item = sim:predict(p[1], p[2], opts)

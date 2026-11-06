@@ -155,7 +155,8 @@ function M.renderPage(score)
         local kind = UI.room(e.roomType)
         UI.text((e.predicted and "~" or " ") .. (kind and kind[3] or "?"), left, y, e.predicted and {0.35, 0.9, 1} or UI.DIM, alpha)
         local colour = UI.QUALITY[e.quality] or UI.TEXT
-        UI.text(UI.fit(UI.itemName(e.id, e.name), nameW), left + 40, y, colour, alpha)
+        local label = (e.altOf and (UI.t("orWord") .. " ") or "") .. UI.itemName(e.id, e.name)
+        UI.text(UI.fit(label, nameW), left + 40, y, colour, alpha)
         UI.text("Q" .. e.quality, left + 40 + nameW + 4, y, colour, alpha)
         local x = left + 40 + nameW + 4 + UI.width("Q4") + 8
         local need = e.need and UI.t("need_" .. e.need) or nil
@@ -170,8 +171,8 @@ end
 
 -- Tooltip over the collectible pedestal nearest the player (within reach):
 -- name, quality and stat changes, and in a co-op boss room the item the
--- next pedestal will hold once this one is taken. pedestal = {x, y, id,
--- price, next}.
+-- next pedestal will hold once this one is taken (with Tainted Isaac, both
+-- of its items). pedestal = {x, y, id, price, next, nextOr}.
 local REACH = 70
 function M.renderTooltip(pedestals, player)
     local best, bestD
@@ -187,7 +188,13 @@ function M.renderTooltip(pedestals, player)
     local after, afterQuality
     if best.next then
         afterQuality = UI.quality(best.next)
-        after = UI.t("nextItem", UI.itemName(best.next)) .. "  Q" .. tostring(afterQuality or "?")
+        local named = UI.itemName(best.next)
+        if best.nextOr then
+            local orQuality = UI.quality(best.nextOr)
+            named = named .. " " .. UI.t("orWord") .. " " .. UI.itemName(best.nextOr)
+            if orQuality and (not afterQuality or orQuality > afterQuality) then afterQuality = orQuality end
+        end
+        after = UI.t("nextItem", named) .. "  Q" .. tostring(afterQuality or "?")
     end
     local w = math.max(UI.width(title), after and UI.width(after) or 0)
     local statsW = 0

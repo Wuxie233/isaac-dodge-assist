@@ -69,7 +69,9 @@ local rooms = {
 }
 local items = {[2] = {{id = 118, quality = 4}}, [4] = {{id = 3, quality = 3, price = 15}, {id = 12, quality = 2, price = 15},
     {id = 46, quality = 1, price = 7}}}
-local predicted = {[6] = {{id = 182, quality = 4, kind = "boss", predicted = true}},
+-- The boss room's pedestal cycles (Tainted Isaac): its other item, "or".
+local predicted = {[6] = {{id = 182, quality = 4, kind = "boss", predicted = true},
+        {id = 12, quality = 2, kind = "boss", predicted = true, altOf = 182}},
     [9] = {{id = 588, quality = 3, kind = "pedestal", predicted = true}},
     [12] = {{id = 34, quality = 3, kind = "pedestal", predicted = true}},
     [14] = {{id = 245, quality = 2, kind = "pedestal", predicted = true}}}
@@ -83,7 +85,7 @@ if scene == "page" then
     ItemView.renderPage(score)
 elseif scene == "room" then
     Hud.render(Hud.new(), {state = "MONITOR / HELPER", combatMode = 2, score = score}, 48, 50)
-    ItemView.renderTooltip({{x = 240, y = 150, id = 118, price = 0}}, Vector(240, 175))
+    ItemView.renderTooltip({{x = 240, y = 150, id = 118, price = 0, next = 182, nextOr = 34}}, Vector(240, 175))
     ItemView.renderPills({{x = 150, y = 200, effect = 1}, {x = 330, y = 200, effect = 8, horse = true}})
 elseif scene == "panel" then
     Hud.render(Hud.new(), {state = "MONITOR / HELPER", combatMode = 2, score = score, hidden = true}, 48, 50)

@@ -31,6 +31,7 @@ end
 -- A new floor: forget everything about the last one (the pools go on).
 function M.newLevel(state)
     state.map, state.items, state.loot, state.layout, state.score = nil, {}, {}, {}, nil
+    state.firstOnPedestal = {}
     state.predicted, state.forecastKey = {}, nil
     state.scanAt = -100
 end
@@ -47,7 +48,9 @@ function M.newRoom(state, game)
         if list and #list > 0 and list.spawnSeed == desc.SpawnSeed then
             local index = desc.ListIndex
             local words = {}
-            for _, item in ipairs(list) do words[#words+1] = item.id .. ":" .. tostring(item.kind) end
+            for _, item in ipairs(list) do
+                words[#words+1] = item.id .. ":" .. tostring(item.kind) .. (item.altOf and "/or" or "")
+            end
             Isaac.DebugString("IAD FORECAST: room=" .. index .. " exact=" .. tostring(state.forecast and state.forecast.exact) ..
                 " items=" .. table.concat(words, ","))
         end
@@ -117,6 +120,12 @@ local function scanRoom(state, game, index, entities, rocks, player)
     local items = state.items[index] or {}
     local seen = {}
     for _, item in ipairs(items) do seen[item.id] = true end
+    -- The item each pedestal (by InitSeed) showed first. A cycling pedestal
+    -- (Tainted Isaac, Glitched Crown) shows its others in turn: they are
+    -- one choice, altOf the first.
+    state.firstOnPedestal = state.firstOnPedestal or {}
+    local first = state.firstOnPedestal[index] or {}
+    state.firstOnPedestal[index] = first
     local loot = {}
     for _, e in ipairs(entities) do
         local pickup = e.Type == EntityType.ENTITY_PICKUP and e.ToPickup and e:ToPickup()
@@ -127,12 +136,15 @@ local function scanRoom(state, game, index, entities, rocks, player)
                     pedestals[#pedestals+1] = {x = pickup.Position.X, y = pickup.Position.Y, id = pickup.SubType,
                         price = pickup.Price or 0, seed = pickup.InitSeed and pickup.InitSeed & 0xFFFFFFFF}
                 end
+                local seed = pickup.InitSeed and pickup.InitSeed & 0xFFFFFFFF
                 if pickup.SubType > 0 and not seen[pickup.SubType] then
                     local info = itemInfo(pickup.SubType)
                     info.price = pickup.Price or 0
                     info.devil = (pickup.Price or 0) < 0
+                    if seed and first[seed] and first[seed] ~= pickup.SubType then info.altOf = first[seed] end
                     items[#items+1], seen[pickup.SubType] = info, true
                 end
+                if seed and pickup.SubType > 0 and not first[seed] then first[seed] = pickup.SubType end
             elseif (pickup.Price or 0) == 0 then
                 if PickupVariant and pickup.Variant == PickupVariant.PICKUP_PILL and pickup.SubType > 0 then
                     local ok, effect, horse = pcall(PillInfo.effect, game, pickup.SubType, player)
@@ -223,7 +235,7 @@ local function forecastRooms(state, game)
                 if ok and list and #list > 0 then
                     for _, item in ipairs(list) do
                         local info = itemInfo(item.id)
-                        info.kind, info.predicted = item.kind, true
+                        info.kind, info.predicted, info.altOf = item.kind, true, item.altOf
                         info.devil = room.type == 14 and item.kind == "shop"
                         info.price = item.kind == "shop" and 1 or 0
                         list[_] = info
@@ -253,6 +265,14 @@ function M.update(state, game, room, entities, frame, player)
         return state.layout[index] or nil
     end
     state.map = FloorMap.scan(level, layoutOf)
+    -- How many items each boss room drops (one per person; none after a
+    -- chapter's last boss), for the score's estimate of what is unseen.
+    for _, r in ipairs(state.map.rooms) do
+        if r.type == 5 then
+            local ok, n = pcall(ItemForecast.bossItems, game, r)
+            if ok then r.rewards = n end
+        end
+    end
     -- A core loaded in the middle of a run never saw its start. The
     -- forecast is an extra on top of the map: if it fails, it is off and
     -- says why, and everything else goes on.
@@ -272,12 +292,18 @@ function M.update(state, game, room, entities, frame, player)
     if status ~= "off" then
         for _, room in ipairs(state.map.rooms) do
             if room.index == state.map.current then
-                local ok, pedestal, id = pcall(ItemForecast.bossNext, state.forecast, game, room, state.pedestals or {})
+                local ok, pedestal, id, second = pcall(ItemForecast.bossNext, state.forecast, game, room, state.pedestals or {})
                 if ok and pedestal then
-                    pedestal.next = id
+                    pedestal.next, pedestal.nextOr = id, second
                     local info = itemInfo(id)
                     info.kind, info.predicted = "boss", true
-                    state.bossNext = {index = room.index, info = info}
+                    local extra = {info}
+                    if second then
+                        local other = itemInfo(second)
+                        other.kind, other.predicted, other.altOf = "boss", true, id
+                        extra[2] = other
+                    end
+                    state.bossNext = {index = room.index, list = extra}
                 end
             end
         end
@@ -290,15 +316,16 @@ function M.update(state, game, room, entities, frame, player)
     local items = state.items
     local extra = state.bossNext
     if extra then
-        local list, present = {}, false
+        local list, present = {}, {}
         for _, item in ipairs(items[extra.index] or {}) do
             list[#list+1] = item
-            if item.id == extra.info.id then present = true end
+            present[item.id] = true
         end
-        if not present then
-            list[#list+1] = extra.info
-            items = setmetatable({[extra.index] = list}, {__index = state.items})
+        local added = false
+        for _, info in ipairs(extra.list) do
+            if not present[info.id] then list[#list+1], added = info, true end
         end
+        if added then items = setmetatable({[extra.index] = list}, {__index = state.items}) end
     end
     state.score = FloorScore.evaluate(state.map.rooms, items, state.loot, state.predicted, okAccess and access or nil)
     state.readouts = readouts(game, level)

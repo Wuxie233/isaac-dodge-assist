@@ -82,6 +82,9 @@ function M.evaluate(rooms, items, loot, predicted, access)
         local forecast = not room.visited and predicted and predicted[room.index] or nil
         if not (list and #list > 0) then list = forecast end
         local found = {pedestal = 0, shop = 0, boss = 0}
+        -- A cycling pedestal (Tainted Isaac) is one choice: its items count
+        -- as the best of them (altOf names the pedestal's first item).
+        local choices, order = {}, {}
         for _, item in ipairs(list or {}) do
             local q = item.quality or 1
             local value = M.ITEM[q] or M.UNSEEN_ITEM
@@ -93,11 +96,22 @@ function M.evaluate(rooms, items, loot, predicted, access)
                 factor = factor * (short and M.SHOP_SHORT or M.SHOP)
                 if short and not itemNeed then itemNeed = "coins" end
             end
-            itemPoints = itemPoints + value*factor
-            qualities[q] = (qualities[q] or 0) + 1
-            if item.kind then found[item.kind] = found[item.kind] + 1 end
-            entries[#entries+1] = {id = item.id, quality = q, name = item.name, roomType = room.type,
-                predicted = item.predicted, price = item.price or 0, devil = item.devil, need = itemNeed, factor = factor}
+            local key = item.altOf or item.id
+            local choice = choices[key]
+            if not choice then choice = {points = 0}; choices[key] = choice; order[#order+1] = key end
+            if value*factor >= choice.points then choice.points, choice.quality = value*factor, q end
+            choice.factor = math.max(choice.factor or 0, factor)
+            choice.id = choice.id or item.id
+            choice.predicted = choice.predicted or item.predicted
+            if item.kind and not item.altOf then found[item.kind] = found[item.kind] + 1 end
+            entries[#entries+1] = {id = item.id, quality = q, name = item.name, roomType = room.type, altOf = item.altOf,
+                predicted = item.predicted, price = item.price or 0, devil = item.devil, need = itemNeed, factor = factor,
+                choice = choice}
+        end
+        for _, key in ipairs(order) do
+            local choice = choices[key]
+            itemPoints = itemPoints + choice.points
+            qualities[choice.quality] = (qualities[choice.quality] or 0) + 1
         end
         if not room.visited and not (items[room.index] and #items[room.index] > 0) then
             -- What the forecast could not name: layout pedestals and shop
@@ -105,7 +119,7 @@ function M.evaluate(rooms, items, loot, predicted, access)
             -- layout), at the unseen estimate.
             local layout = room.layout or {pedestals = 0, shop = 0}
             local pedestals = math.max(0, layout.pedestals - found.pedestal) +
-                (name == "ROOM_BOSS" and math.max(0, bossItems - found.boss) or 0)
+                (name == "ROOM_BOSS" and math.max(0, (room.rewards or bossItems) - found.boss) or 0)
             local shop = math.max(0, layout.shop - found.shop)
             itemPoints = itemPoints + (pedestals*M.UNSEEN_ITEM + shop*M.UNSEEN_ITEM*M.SHOP)*reach
             unseen = unseen + pedestals + shop
@@ -122,12 +136,21 @@ function M.evaluate(rooms, items, loot, predicted, access)
         if total >= g[1] then grade, colour = g[2], g[3] break end
     end
     -- Reachable items first, best first; then seen before forecast.
+    -- A pedestal's choices stay together, its first item on top, ordered by
+    -- the best of them.
     table.sort(entries, function(a, b)
-        if (a.factor > 0) ~= (b.factor > 0) then return a.factor > 0 end
-        if a.quality ~= b.quality then return a.quality > b.quality end
-        if (a.predicted or false) ~= (b.predicted or false) then return not a.predicted end
+        local x, y = a.choice, b.choice
+        if x ~= y then
+            if (x.factor > 0) ~= (y.factor > 0) then return x.factor > 0 end
+            if x.quality ~= y.quality then return x.quality > y.quality end
+            if (x.predicted or false) ~= (y.predicted or false) then return not x.predicted end
+            if x.id ~= y.id then return x.id < y.id end
+            return tostring(x) < tostring(y)
+        end
+        if (a.altOf == nil) ~= (b.altOf == nil) then return a.altOf == nil end
         return a.id < b.id
     end)
+    for _, e in ipairs(entries) do e.choice = nil end
     return {total = total, grade = grade, colour = colour, items = itemPoints, loot = lootPoints, rooms = roomPoints,
         qualities = qualities, unseen = floor(unseen + 0.5), entries = entries, lootTotals = lootTotals, special = special}
 end

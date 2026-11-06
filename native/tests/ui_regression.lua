@@ -118,6 +118,12 @@ assert(table.concat(texts,'|'):find('Brimstone',1,true),'tooltip: '..table.conca
 -- Co-op boss room: the item the next pedestal will hold, under the stats.
 texts={};ItemView.renderTooltip({{x=0,y=0,id=118,next=1}},Vector(30,0))
 assert(table.concat(texts,'|'):find('Then: The Sad Onion  Q4',1,true),'next boss item: '..table.concat(texts,'|'))
+-- With Tainted Isaac the next pedestal has two items; the list marks a
+-- pedestal's other item with "or".
+texts={};ItemView.renderTooltip({{x=0,y=0,id=118,next=1,nextOr=5}},Vector(30,0))
+assert(table.concat(texts,'|'):find('Then: The Sad Onion or My Reflection',1,true),'next pair: '..table.concat(texts,'|'))
+texts={};ItemView.renderPage({entries={{id=1,quality=1,roomType=4,factor=1},{id=5,quality=3,roomType=4,factor=1,altOf=1}}})
+assert(table.concat(texts,'|'):find('or My Reflection',1,true),'or marker: '..table.concat(texts,'|'))
 texts={};ItemView.renderPills({{x=0,y=0,effect=1},{x=50,y=0,effect=0,horse=true}})
 local labels=table.concat(texts,'|')
 assert(labels:find('Bad Trip',1,true) and labels:find('Bad Gas (horse)',1,true),'pill labels: '..labels)

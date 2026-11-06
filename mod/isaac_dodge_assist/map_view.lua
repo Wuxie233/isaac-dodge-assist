@@ -166,7 +166,9 @@ local function drawSide(score, readouts, x, top, width, bottom)
         local need = item.need and ("  " .. UI.t("need_" .. item.need)) or ""
         local alpha = (item.factor or 1) > 0 and 1 or 0.45
         UI.text(tag, x, y, item.predicted and {0.35, 0.9, 1} or UI.DIM, alpha)
-        local name = UI.fit(UI.itemName(item.id, item.name) .. cost, nameWidth - UI.width(need))
+        -- A cycling pedestal's other item, right under its first one.
+        local label = (item.altOf and (UI.t("orWord") .. " ") or "") .. UI.itemName(item.id, item.name)
+        local name = UI.fit(label .. cost, nameWidth - UI.width(need))
         UI.text(name, x + 40, y, colour, alpha)
         if need ~= "" then UI.text(need, x + 40 + UI.width(name), y, UI.WARN, alpha) end
         UI.text("Q" .. item.quality, x + width - UI.width("Q4"), y, colour, alpha)

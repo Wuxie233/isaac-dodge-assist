@@ -349,3 +349,58 @@ assert(not guarded.forecastError,'owned scan on a new room: '..tostring(guarded.
 data.items[9999]=nil
 Isaac.GetPlayer,Isaac.GetItemConfig=unchecked,configured
 print('PASS owned items: no retired id in the pool data, ids without a config never asked about')
+
+-- 0.25.4 (2026-11-06 Online run 84C0BJH9, Azazel + Tainted Isaac, to
+-- Delirium): a chapter's last boss drops nothing (It Lives, Hush, Satan,
+-- The Lamb, Delirium...), except in The Void, where only Delirium keeps it
+-- so; and with Tainted Isaac every pedestal's second item (X38 of its
+-- InitSeed, same pool) is forecast as the other choice of that pedestal.
+Isaac.GetPlayer=function(i)return people[i+1] end
+local function bossRoom(subtype)
+ local d=desc(1,6*13+7,1,RoomType.ROOM_BOSS,false);d.AwardSeed=1150171659;d.Data.Subtype=subtype;return d
+end
+local function forecastFor(subtype,stage)
+ rooms={desc(0,6*13+6,1,RoomType.ROOM_DEFAULT,true),bossRoom(subtype)}
+ byIndex={};for _,d in ipairs(rooms)do byIndex[d.SafeGridIndex]=d end
+ current=rooms[1];level.GetStage=function()return stage end
+ local s=FloorIntel.startRun(FloorIntel.new(),coop,false)
+ FloorIntel.update(s,coop,room,function()return {}end,1)
+ return s
+end
+local itLives=forecastFor(25,8)
+assert(itLives.predicted[1]==nil and itLives.score.unseen==0,'It Lives forecast an item: unseen '..itLives.score.unseen)
+local voidSatan=forecastFor(24,12)
+assert(voidSatan.predicted[1] and #voidSatan.predicted[1]==1 and voidSatan.score.unseen==1,
+ 'Void boss: only the second person item is known')
+local delirium=forecastFor(70,12)
+assert(delirium.predicted[1]==nil and delirium.score.unseen==0,'Delirium forecast an item')
+local mom=forecastFor(6,6)
+assert(#mom.predicted[1]==2,'an ordinary boss lost its items')
+-- Tainted Isaac: the logged treasure room 4.13 of run 4RRYH7RK (Angry Fly,
+-- 511) gets its second item right under it, and counts once.
+local cycling=setmetatable({GetPlayerType=function()return 21 end},{__index=people[2]})
+Isaac.GetPlayer=function(i)return i==0 and people[1] or cycling end
+rooms={desc(0,6*13+6,1,RoomType.ROOM_DEFAULT,true),desc(1,6*13+7,1,RoomType.ROOM_TREASURE,false,slotSpawns(6,100,0))}
+rooms[2].SpawnSeed,rooms[2].AwardSeed=206474361,1
+byIndex={};for _,d in ipairs(rooms)do byIndex[d.SafeGridIndex]=d end
+current=rooms[1];level.GetStage=nil
+local solo4R=setmetatable({GetSeeds=function()return {GetStartSeed=function()return startSeed('4RRYH7RK')end}end},{__index=coop})
+local t=FloorIntel.startRun(FloorIntel.new(),solo4R,false)
+FloorIntel.update(t,solo4R,room,function()return {}end,1)
+local pair=t.predicted[1]
+assert(pair and #pair==2 and pair[1].id==511 and pair[2].altOf==511 and pair[2].id~=511,'Tainted Isaac pair: '..
+ tostring(pair and pair[2] and pair[2].id))
+local counted=0;for q=0,4 do counted=counted+(t.score.qualities[q] or 0) end
+assert(counted==1 and t.score.entries[1].altOf==nil and t.score.entries[2].altOf==511,'a pedestal counted twice')
+-- In the room: the pedestal shows one item, then the other; the second is
+-- the same choice.
+local cycle=pickup(100,511);cycle.InitSeed=Emu.layoutInitSeed(206474361,6)
+current=rooms[2];rooms[2].VisitedCount=1;FloorIntel.newRoom(t,solo4R)
+FloorIntel.update(t,solo4R,room,function()return {cycle}end,2)
+cycle.SubType=pair[2].id;t.scanAt=-100
+FloorIntel.update(t,solo4R,room,function()return {cycle}end,3)
+assert(#t.items[1]==2 and t.items[1][2].altOf==511,'cycled item not the same choice')
+counted=0;for q=0,4 do counted=counted+(t.score.qualities[q] or 0) end
+assert(counted==1,'cycling pedestal counted twice: '..counted)
+Isaac.GetPlayer=onePlayer;level.GetStage=nil
+print('PASS boss rewards and cycling pedestals: none after a chapter boss (Void exception), Tainted Isaac pairs forecast, seen and counted once')

@@ -128,6 +128,16 @@ assert(#beams==1 and beams[1].activeFrom==5 and Fresh.clearanceXY(beams[1],460,2
 assert(Fresh.clearanceXY(beams[1],300,300,300,300,5,10)>0,'Eye beam covers off its line')
 beams={};Fresh.appendWarnings(variant(60,0,'Shoot',5),room,beams);assert(#beams==0,'Eye beam without a target')
 beams={};Fresh.appendWarnings(variant(60,2,'Shoot',5),room,beams,Vector(460,260));assert(#beams==0,'Holy Eye fires light, not a beam')
+-- Red Ghost (2026-11-06: ShootLeft frame 14, player 175 to its left).
+EntityType.ENTITY_RED_GHOST=285
+Fresh=dofile('mod/isaac_dodge_assist/laser_hazards.lua')
+beams={};Fresh.appendWarnings(variant(285,0,'ShootLeft',9),room,beams)
+assert(#beams==1 and beams[1].activeFrom==4 and Fresh.clearanceXY(beams[1],125,182,125,182,4,10)<0 and
+ Fresh.clearanceXY(beams[1],475,182,475,182,4,10)>0,'Red Ghost beam to its left only')
+beams={};Fresh.appendWarnings(variant(285,0,'ShootDown',9),room,beams)
+assert(#beams==1 and Fresh.clearanceXY(beams[1],300,300,300,300,4,10)<0,'Red Ghost beam down')
+beams={};Fresh.appendWarnings(variant(285,0,'Shoot',9),room,beams);assert(#beams==0,'Red Ghost without a side')
+beams={};Fresh.appendWarnings(variant(285,0,'Float',9),room,beams);assert(#beams==0,'floating Red Ghost fired')
 -- The enemy brimstone swirl (2026-11-04: cross on IdleQuick frame 25).
 EffectVariant={ENEMY_BRIMSTONE_SWIRL=110}
 beams={};Fresh.appendEffectWarnings({Variant=110,Position=Vector(300,180),Velocity=Vector(0,0),
@@ -137,7 +147,7 @@ beams={};Fresh.appendEffectWarnings({Variant=12,Position=Vector(300,180),Velocit
  GetSprite=function()return {GetAnimation=function()return 'IdleQuick' end,GetFrame=function()return 20 end}end},room,beams)
 assert(#beams==0,'another effect fired')
 EffectVariant=nil
-print('PASS boss beams: Monstro II, Dark One, The Haunt, Satan, Mega Satan, Krampus, Eye (aimed), brimstone swirl; timing, variants, idle exclusion')
+print('PASS boss beams: Monstro II, Dark One, The Haunt, Satan, Mega Satan, Krampus, Eye (aimed), Red Ghost (by side), brimstone swirl; timing, variants, idle exclusion')
 -- Swept rotating beams are approximated by a few rotated slices plus an arc
 -- margin, and distant queries are rejected by a radial/cone lower bound. Both
 -- must stay on the safe side of a dense sweep: never report more clearance
