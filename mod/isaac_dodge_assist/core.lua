@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.25.4"
+local VERSION = "0.25.5"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
@@ -177,16 +177,36 @@ local function landingThreat(entity)
     return entity.SpriteOffset.Y < -5 or animation:find("jump",1,true) ~= nil or
         animation:find("land",1,true) ~= nil or animation:find("stomp",1,true) ~= nil
 end
+-- Repentance+ Deathmatch (the Online versus room after a win): the other
+-- players are the opponents, and only our own player's side is friendly.
+-- 2026-11-06: 17 hits there from the partner's tears, all counted as ours.
+local deathmatch = false
+local DEATHMATCH = RoomType and RoomType.ROOM_DEATHMATCH or 30
 local function playerOwned(entity)
     local seen = {}
     while entity and not seen[entity.InitSeed] do
         seen[entity.InitSeed] = true
-        if entity.Type == EntityType.ENTITY_PLAYER or entity.Type == EntityType.ENTITY_FAMILIAR or
+        if deathmatch then
+            if entity.Type == EntityType.ENTITY_PLAYER then return entity.InitSeed == boundSeed end
+            if entity.Type == EntityType.ENTITY_FAMILIAR then
+                local familiar = entity.ToFamiliar and entity:ToFamiliar()
+                local owner = familiar and familiar.Player
+                return owner ~= nil and owner.InitSeed == boundSeed
+            end
+            if entity:HasEntityFlags(EntityFlag.FLAG_FRIENDLY) then return true end
+        elseif entity.Type == EntityType.ENTITY_PLAYER or entity.Type == EntityType.ENTITY_FAMILIAR or
             entity:HasEntityFlags(EntityFlag.FLAG_FRIENDLY) or
             entity.SpawnerType == EntityType.ENTITY_PLAYER or entity.SpawnerType == EntityType.ENTITY_FAMILIAR then return true end
         entity = entity.Parent or entity.SpawnerEntity
     end
     return false
+end
+-- An opponent's tear in Deathmatch, as the dodge field reads a projectile.
+-- Tears fly in the player's height band until they land: always in reach.
+local function tearAsBullet(tear)
+    return {InitSeed = tear.InitSeed, Position = tear.Position, Velocity = tear.Velocity, Size = tear.Size,
+        Height = tear.Height, FallingSpeed = tear.FallingSpeed, FallingAccel = tear.FallingAcceleration or 0,
+        HasProjectileFlags = function() return true end}
 end
 -- API effect families whose damage is not always exposed as CollisionDamage.
 local groundEffects = {
@@ -377,6 +397,7 @@ mod:AddCallback(ModCallbacks.MC_POST_GAME_STARTED, function(_, continued)
         " player=" .. tostring(player and player:GetPlayerType() or -1) ..
         " seed=" .. (ok and tostring(seed):gsub("%s", "") or "unknown"))
     reset()
+    gridRoom, gridScanAt = nil, -GRID_RESCAN
 end)
 mod:AddCallback(ModCallbacks.MC_POST_GAME_END, function(_, gameOver)
     runEnded = true
@@ -401,7 +422,9 @@ local function flushKinematics(reason)
         Isaac.DebugString("IAD KIN: "..PlayerMotion.summary(kinematics).." "..InputQueue.summary(inputs).." reason="..reason)
     end
 end
-mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); Combat.flushStats(combat, "room"); frame = 0; motion = {}; deathAt = {}; gridLogged = false; Diagnostics.reset("room"); pcall(FloorIntel.newRoom, intel, game); calibrationRoom(); emit(false) end)
+-- The update counter restarts with every room: so does the grid rescan
+-- clock (a new room must never wait out the last room's long timer).
+mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); Combat.flushStats(combat, "room"); frame = 0; gridRoom, gridScanAt = nil, -GRID_RESCAN; motion = {}; deathAt = {}; gridLogged = false; Diagnostics.reset("room"); pcall(FloorIntel.newRoom, intel, game); calibrationRoom(); emit(false) end)
 mod:AddCallback(ModCallbacks.MC_POST_NEW_LEVEL, function() FloorIntel.newLevel(intel) end)
 -- Calibration for predicting unvisited rooms' items (see
 -- native/research/api-map-items.md 3.6): the room seeds (calibrationRoom)
@@ -478,7 +501,7 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     elseif p:IsDead() then reason = "DEAD"
     elseif p:IsCoopGhost() then reason = "GHOST"
     elseif not p:AreControlsEnabled() then reason = "CONTROLS LOCKED"
-    elseif paused then reason = "PAUSED (SHIFT)" end
+    elseif paused then reason = "PAUSED" end
     if reason then motion = {}; state = reason; Overlay.clear(); emit(false); return end
     local input = PlayerMotion.input(p)
     PlayerMotion.observe(kinematics,p,input,frame)
@@ -493,6 +516,7 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     local stride = PlayerMotion.reach(kinematics,p)
     -- Queued online input is committed; plan the selected window after it.
     local entities = Isaac.GetRoomEntities()
+    deathmatch = RoomType ~= nil and game:GetRoom():GetType() == DEATHMATCH
     -- A fuse that ends past the window must still be planned for: by the time
     -- a 14-update window saw the 0.12.6 troll bomb, the player was cornered.
     local steps = math.min(22,math.max(math.ceil(horizons[horizonIndex]*30/1000),
@@ -562,6 +586,10 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
                 not projectile:HasProjectileFlags(ProjectileFlags.CANT_HIT_PLAYER) and
                 projectile.Position:Distance(p.Position) < reach+projectile.Size+16+MotionPrediction.reach(motion,projectile,steps) then
                 bullets[#bullets+1] = projectile
+            elseif deathmatch and entity.Type == EntityType.ENTITY_TEAR and not entity:IsDead() and
+                not playerOwned(entity) and
+                entity.Position:Distance(p.Position) < reach+entity.Size+16+entity.Velocity:Length()*steps then
+                bullets[#bullets+1] = tearAsBullet(entity.ToTear and entity:ToTear() or entity)
             elseif entity:ToNPC() and not entity:IsDead() and contactThreat(entity) and not playerOwned(entity) and
                 entity.Position:Distance(p.Position) < reach+entity.Size+32+MotionPrediction.reach(motion,entity,steps) then
                 contacts[#contacts+1] = entity
@@ -731,12 +759,20 @@ local function toast(key, ...)
     pcall(function() Hud.toast(hud, UI.t(key, table.unpack(args))) end)
 end
 local COMBAT_TOASTS = {[0] = "combatOff", "aim", "auto"}
+-- The floor panel (1) and the items-and-stats page (2).
+local PANEL_SHADER = "IAD-RenderAboveHUD"
+local shaderSeenAt, pendingPage = -100, 0
+local function drawPanel(page)
+    if page == 1 then MapView.render(intel.map, FloorIntel.extras(intel), intel.score, intel.readouts)
+    elseif page == 2 then ItemView.renderPage(intel.score or {entries = {}}) end
+end
 mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
     if Input.IsButtonTriggered(Keyboard.KEY_F6, 0) then
         enabled = not enabled; emit(false)
         toast("toastDodge", UI.t(enabled and "on" or "off"))
     end
-    if Input.IsButtonTriggered(Keyboard.KEY_LEFT_SHIFT, 0) then
+    -- ` (grave accent) pauses and resumes: Left Shift was too easy to hit.
+    if Input.IsButtonTriggered(Keyboard.KEY_GRAVE_ACCENT or 96, 0) then
         paused = not paused; emit(false)
         toast(paused and "toastPause" or "toastResume")
     end
@@ -759,29 +795,52 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
         Isaac.DebugString("IAD COMBAT: " .. Combat.MODES[mode])
         toast("toastCombat", UI.t(COMBAT_TOASTS[mode]))
     end
-    -- F5: map page, then the items-and-stats page, then closed.
-    if Input.IsButtonTriggered(Keyboard.KEY_F5, 0) then intel.page = ((intel.page or 0) + 1) % 3 end
+    -- F5 opens and closes the items-and-stats page; the floor panel shows
+    -- while the game's map button (Tab) is held.
+    if Input.IsButtonTriggered(Keyboard.KEY_F5, 0) then intel.statsPage = not intel.statsPage end
     Overlay.render(game:GetRoom())
     if game:IsPaused() then emit(false) end
     -- Everything on screen is an extra: a drawing error never reaches the
     -- dodge loop (one log line).
     local ok, err = pcall(function()
         local count = game:GetNumPlayers()
-        local coop = count > 1 and selected >= 0 and selected < count
-        -- The open floor panel covers the HUD block; toasts still show.
-        local page = intel.page or 0
+        local bound = selected >= 0 and selected < count and Isaac.GetPlayer(selected) or nil
+        local coop = count > 1 and bound ~= nil
+        local held = Input.IsButtonPressed(Keyboard.KEY_TAB, 0) or
+            (bound ~= nil and ButtonAction ~= nil and Input.IsActionPressed ~= nil and
+                Input.IsActionPressed(ButtonAction.ACTION_MAP, bound.ControllerIndex))
+        local page = game:IsPaused() and 0 or held and 1 or intel.statsPage and 2 or 0
+        intel.page = page
         if page == 0 then
-            -- In the room: the effect over each pill, the nearest pedestal's stats.
+            -- In the room: the effect over each pill and card, the nearest pedestal's stats.
             ItemView.renderPills(intel.pills or {})
-            if selected >= 0 and selected < count then ItemView.renderTooltip(intel.pedestals or {}, Isaac.GetPlayer(selected).Position) end
+            ItemView.renderCards(intel.cards or {}, bound and bound.Position)
+            if bound then ItemView.renderTooltip(intel.pedestals or {}, bound.Position) end
         end
+        -- The open panel covers the HUD block; toasts still show.
         Hud.render(hud, {state = enabled and state or "OFF", combatMode = combat.mode, preview = Overlay.enabled(),
             player = coop and selected + 1 or nil, score = intel.score, hidden = page > 0}, 48, 50)
-        if coop then Hud.playerLabel(Isaac.GetPlayer(selected).Position, selected + 1) end
-        if page == 1 then MapView.render(intel.map, FloorIntel.extras(intel), intel.score, intel.readouts)
-        elseif page == 2 and intel.score then ItemView.renderPage(intel.score) end
+        if coop then Hud.playerLabel(bound.Position, selected + 1) end
+        -- With content/shaders.xml loaded (a game restart after install),
+        -- the panel waits for the shader callback, which comes after the HUD
+        -- and the game's map: drawn there it covers them. Without it, here.
+        local frameNow = Isaac.GetFrameCount and Isaac.GetFrameCount() or 0
+        if page > 0 and frameNow - shaderSeenAt <= 2 then pendingPage = page
+        else drawPanel(page) end
     end)
     if not ok and not hudFailed then hudFailed = true; Isaac.DebugString("IAD HUD: error " .. tostring(err)) end
+end)
+-- Rendering from here sits above the HUD (StageAPI's RenderAboveHUD way):
+-- the game asks each shader for its parameters after drawing the HUD.
+mod:AddCallback(ModCallbacks.MC_GET_SHADER_PARAMS, function(_, name)
+    if name ~= PANEL_SHADER then return end
+    shaderSeenAt = Isaac.GetFrameCount and Isaac.GetFrameCount() or 0
+    local page = pendingPage
+    pendingPage = 0
+    if page > 0 then
+        local ok, err = pcall(drawPanel, page)
+        if not ok and not hudFailed then hudFailed = true; Isaac.DebugString("IAD HUD: error " .. tostring(err)) end
+    end
 end)
 Isaac.DebugString("IAD: sensor " .. VERSION .. (build and (" build " .. build) or "") .. (saved and " reloaded" or " loaded"))
 toast(saved and "toastReloaded" or "toastLoaded", VERSION .. (build and ("+" .. build) or ""))

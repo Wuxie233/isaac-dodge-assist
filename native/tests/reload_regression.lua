@@ -61,7 +61,7 @@ for _=1,6 do tick()end
 assert(loader.build()=='A' and logged(' build A loaded'),'cold start')
 press(Keyboard.KEY_F8)   -- 450 -> 600
 press(Keyboard.KEY_F10)  -- OFF -> AIM
-press(Keyboard.KEY_LEFT_SHIFT) -- pause
+press(Keyboard.KEY_GRAVE_ACCENT) -- pause
 tick()
 local before=lastPacket()
 assert(before[6]=='600' and before[4]=='0','settings before reload: '..table.concat(before,'|'))
@@ -79,7 +79,7 @@ assert(after[6]=='600' and after[4]=='0','settings lost across reload: '..table.
 -- The new core says so in a toast that names the build.
 local shown=false;for _,label in ipairs(labels)do if label:find('v'..'%d.*%+B') then shown=true end end
 assert(shown,'no toast for the new build')
-press(Keyboard.KEY_LEFT_SHIFT);tick()  -- resume
+press(Keyboard.KEY_GRAVE_ACCENT);tick()  -- resume
 press(Keyboard.KEY_F10)                 -- AIM -> AUTO: combat mode survived
 assert(logs[#logs]=='IAD COMBAT: AUTO','combat mode lost across reload: '..logs[#logs])
 press(Keyboard.KEY_F10)                 -- back to OFF

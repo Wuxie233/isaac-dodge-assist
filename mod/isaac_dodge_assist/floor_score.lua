@@ -65,13 +65,16 @@ end
 -- quality, roomType, predicted, price, devil, need, factor), lootTotals[kind]
 -- and special (room type names worth points, in floor order). access (see
 -- M.access) discounts what we cannot get into or pay for yet.
+-- Loot that makes an ordinary room worth a line in the room list.
+local RICH = {chest = true, gold = true, tinted = true, super = true, goldrock = true}
 function M.evaluate(rooms, items, loot, predicted, access)
     -- A boss drops one item per person.
     local bossItems = math.max(1, access and access.players or 1)
     local itemPoints, lootPoints, roomPoints = 0, 0, 0
     local qualities, unseen = {[0] = 0, 0, 0, 0, 0}, 0
-    local entries, lootTotals, special = {}, {}, {}
+    local entries, lootTotals, special, roomList = {}, {}, {}, {}
     for _, room in ipairs(rooms) do
+        local here, before = {}, itemPoints + lootPoints
         local name = typeName(room.type)
         local need, reach = M.access(name, room.visited, access)
         if M.ROOM[name] then
@@ -81,7 +84,7 @@ function M.evaluate(rooms, items, loot, predicted, access)
         local list = items[room.index]
         local forecast = not room.visited and predicted and predicted[room.index] or nil
         if not (list and #list > 0) then list = forecast end
-        local found = {pedestal = 0, shop = 0, boss = 0}
+        local found, unseenHere = {pedestal = 0, shop = 0, boss = 0}, nil
         -- A cycling pedestal (Tainted Isaac) is one choice: its items count
         -- as the best of them (altOf names the pedestal's first item).
         local choices, order = {}, {}
@@ -107,6 +110,7 @@ function M.evaluate(rooms, items, loot, predicted, access)
             entries[#entries+1] = {id = item.id, quality = q, name = item.name, roomType = room.type, altOf = item.altOf,
                 predicted = item.predicted, price = item.price or 0, devil = item.devil, need = itemNeed, factor = factor,
                 choice = choice}
+            here[#here+1] = entries[#entries]
         end
         for _, key in ipairs(order) do
             local choice = choices[key]
@@ -123,13 +127,31 @@ function M.evaluate(rooms, items, loot, predicted, access)
             local shop = math.max(0, layout.shop - found.shop)
             itemPoints = itemPoints + (pedestals*M.UNSEEN_ITEM + shop*M.UNSEEN_ITEM*M.SHOP)*reach
             unseen = unseen + pedestals + shop
+            unseenHere = pedestals + shop
         end
         local counts = room.visited and loot[room.index] or room.layout and room.layout.loot
+        local valuable = false
         for kind, count in pairs(counts or {}) do
             lootPoints = lootPoints + (M.LOOT[kind] or 0) * count * reach
             lootTotals[kind] = (lootTotals[kind] or 0) + count
+            if count > 0 and RICH[kind] then valuable = true end
+        end
+        -- What each resource room gives: every special room, and an
+        -- ordinary one with an item, a chest or a reward rock.
+        if name ~= "ROOM_DEFAULT" or #here > 0 or (unseenHere or 0) > 0 or valuable then
+            roomList[#roomList+1] = {index = room.index, type = room.type, visited = room.visited, colour = room.colour,
+                need = need, reach = reach, items = here, unseen = unseenHere or 0, loot = counts or {},
+                points = itemPoints + lootPoints - before}
         end
     end
+    -- Rooms not entered yet first (reachable ones before the rest), best
+    -- first; the visited ones after them.
+    table.sort(roomList, function(a, b)
+        if (a.visited or false) ~= (b.visited or false) then return not a.visited end
+        if (a.reach > 0) ~= (b.reach > 0) then return a.reach > 0 end
+        if a.points ~= b.points then return a.points > b.points end
+        return a.index < b.index
+    end)
     local total = floor(itemPoints + lootPoints + roomPoints + 0.5)
     local grade, colour
     for _, g in ipairs(GRADES) do
@@ -152,7 +174,8 @@ function M.evaluate(rooms, items, loot, predicted, access)
     end)
     for _, e in ipairs(entries) do e.choice = nil end
     return {total = total, grade = grade, colour = colour, items = itemPoints, loot = lootPoints, rooms = roomPoints,
-        qualities = qualities, unseen = floor(unseen + 0.5), entries = entries, lootTotals = lootTotals, special = special}
+        qualities = qualities, unseen = floor(unseen + 0.5), entries = entries, lootTotals = lootTotals, special = special,
+        roomList = roomList}
 end
 
 return M

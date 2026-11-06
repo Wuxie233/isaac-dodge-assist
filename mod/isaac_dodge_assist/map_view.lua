@@ -110,22 +110,52 @@ local function drawLegend(floorMap, x, y, width)
     return y + lh
 end
 
--- Right column; returns nothing. Items fill the room left above the fixed
--- lines below them.
+-- One room's payoff as coloured words: its items (forecast ones marked
+-- "~", a cycling pedestal's other item "or"), how many are still unknown,
+-- and its loot. {text, colour}
+local PREDICTED = {0.35, 0.9, 1}
+local function roomWords(room)
+    local words = {}
+    for _, item in ipairs(room.items) do
+        local name = (item.altOf and (UI.t("orWord") .. " ") or "") .. (item.predicted and "~" or "") ..
+            UI.itemName(item.id, item.name) .. " Q" .. item.quality
+        if item.devil then name = name .. " " .. UI.t("deal")
+        elseif (item.price or 0) > 0 then name = name .. (item.predicted and (" " .. UI.t("shop")) or (" $" .. item.price)) end
+        words[#words+1] = {name, UI.QUALITY[item.quality] or UI.TEXT}
+    end
+    if room.unseen > 0 then words[#words+1] = {UI.t("unseenItems", room.unseen), PREDICTED} end
+    for _, word in ipairs(lootWords(room.loot)) do words[#words+1] = {word, UI.DIM} end
+    return words
+end
+
+-- Coloured words left to right from x, wrapping back to indent, at most
+-- `lines` lines (cut with ".."); returns the next y. colour nil = measure.
+local function words(list, x, indent, y, right, lines, alpha, draw)
+    local lh, gap, cx, used = UI.lineHeight(), UI.width("  "), x, 1
+    for _, word in ipairs(list) do
+        local w = UI.width(word[1])
+        if cx > indent and cx + w > right then
+            if used >= lines then
+                if draw then UI.text("..", cx, y, UI.DIM, alpha) end
+                return y + lh
+            end
+            cx, y, used = indent, y + lh, used + 1
+        end
+        if draw then UI.text(word[1], cx, y, word[2], alpha) end
+        cx = cx + w + gap
+    end
+    return y + lh
+end
+
+-- Right column: the floor score, then what every resource room gives when
+-- cleared (rooms not entered yet first, best first; entered ones dimmed),
+-- then the deal and planetarium chances, the clocks and the forecast state.
 local function drawSide(score, readouts, x, top, width, bottom)
     local lh = UI.lineHeight()
     local y = top
     UI.text(UI.t("score", score.grade, score.total), x, y, score.colour, 1); y = y + lh
     UI.text(UI.t("scoreParts", floor(score.items + 0.5), floor(score.loot + 0.5), floor(score.rooms + 0.5)), x, y, UI.DIM, 1)
     y = y + lh + 3
-    -- Fixed lines under the item list.
-    local tail = {}
-    local loot = lootWords(score.lootTotals)
-    local special = {}
-    for _, roomType in ipairs(score.special) do
-        local kind = UI.room(roomType)
-        if kind then special[#special+1] = kind[2] end
-    end
     readouts = readouts or {}
     local chances = {}
     if readouts.deal then chances[#chances+1] = UI.t("dealChance", readouts.deal) end
@@ -144,42 +174,42 @@ local function drawSide(score, readouts, x, top, width, bottom)
     elseif readouts.forecast == "approx" then forecast = UI.t("forecastApprox")
     elseif readouts.forecastWhy == "error" or not readouts.forecastWhy then forecast = UI.t("forecastError")
     else forecast = UI.t("forecastOff", UI.t(readouts.forecastWhy)) end
-    -- The tail (loot, rooms, chances, clocks, forecast, mark) is measured
-    -- first; the item list gets what is left above it.
-    local tail = flow(#loot > 0 and loot or {"-"}, x + 40, 0, width - 40)
-    tail = flow(#special > 0 and special or {UI.t("noRooms")}, x + 40, tail, width - 40)
-    tail = flow(chances, x, tail, width)
+    -- The tail (chances, clocks, forecast, mark) is measured first; the
+    -- room list gets what is left above it.
+    local tail = flow(chances, x, 0, width)
     tail = flow(clocks, x, tail, width) + 2*lh
-    UI.text(UI.t("items"), x, y, UI.TEXT, 1); y = y + lh
-    local room = max(1, floor((bottom - tail - 4 - y) / lh))
-    local entries = score.entries
-    if #entries == 0 then UI.text("  " .. UI.t("noItems"), x, y, UI.DIM, 1); y = y + lh end
-    local shown = #entries <= room and #entries or room - 1
-    local nameWidth = width - 40 - UI.width("Q4") - 4
-    for i = 1, shown do
-        local item = entries[i]
-        local kind = UI.room(item.roomType)
-        local tag = (item.predicted and "~" or " ") .. (kind and kind[3] or "?")
-        local cost = item.devil and (" " .. UI.t("deal")) or (item.price > 0 and (item.predicted and (" " .. UI.t("shop")) or (" $" .. item.price))) or ""
-        local colour = UI.QUALITY[item.quality] or UI.TEXT
-        -- What stands between us and it, after the name; out of reach is grey.
-        local need = item.need and ("  " .. UI.t("need_" .. item.need)) or ""
-        local alpha = (item.factor or 1) > 0 and 1 or 0.45
-        UI.text(tag, x, y, item.predicted and {0.35, 0.9, 1} or UI.DIM, alpha)
-        -- A cycling pedestal's other item, right under its first one.
-        local label = (item.altOf and (UI.t("orWord") .. " ") or "") .. UI.itemName(item.id, item.name)
-        local name = UI.fit(label .. cost, nameWidth - UI.width(need))
-        UI.text(name, x + 40, y, colour, alpha)
-        if need ~= "" then UI.text(need, x + 40 + UI.width(name), y, UI.WARN, alpha) end
-        UI.text("Q" .. item.quality, x + width - UI.width("Q4"), y, colour, alpha)
-        y = y + lh
+    UI.text(UI.t("roomsTitle"), x, y, UI.TEXT, 1); y = y + lh
+    local limit = bottom - tail - 4
+    -- An ordinary room (listed for its item, chest or reward rock) has no
+    -- kind of its own.
+    local function nameOf(room)
+        local kind = UI.room(room.type)
+        return kind and kind[2] or UI.t("normalRoom")
     end
-    if shown < #entries then UI.text("  " .. UI.t("more", #entries - shown), x, y, UI.DIM, 1); y = y + lh end
+    local label = 0
+    for _, room in ipairs(score.roomList or {}) do label = max(label, UI.width(nameOf(room))) end
+    label = min(label + 12, floor(width * 0.42))
+    local shown = 0
+    for i, room in ipairs(score.roomList or {}) do
+        local list = roomWords(room)
+        if room.need then list[#list+1] = {UI.t("need_" .. room.need), UI.WARN} end
+        if #list == 0 then list[1] = {"-", UI.MUTED} end
+        local alpha = room.visited and 0.45 or ((room.reach or 1) > 0 and 1 or 0.45)
+        -- Keep the last line for "n more" when rooms remain.
+        local reserve = i < #score.roomList and lh or 0
+        local next_ = words(list, x + label, x + label, y, x + width, 2, alpha, false)
+        if next_ > limit - reserve then
+            UI.text("  " .. UI.t("moreRooms", #score.roomList - shown), x, y, UI.DIM, 1)
+            y = y + lh
+            break
+        end
+        UI.rect(x, y + lh/2 - 2, 4, 4, room.colour or UI.DIM, alpha)
+        UI.text(UI.fit(nameOf(room), label - 10), x + 6, y, UI.TEXT, alpha)
+        y = words(list, x + label, x + label, y, x + width, 2, alpha, true)
+        shown = shown + 1
+    end
+    if #(score.roomList or {}) == 0 then UI.text("  " .. UI.t("noRooms"), x, y, UI.DIM, 1); y = y + lh end
     y = max(y + 4, bottom - tail)
-    UI.text(UI.t("loot"), x, y, UI.TEXT, 1)
-    y = flow(#loot > 0 and loot or {"-"}, x + 40, y, width - 40, UI.DIM)
-    UI.text(UI.t("rooms"), x, y, UI.TEXT, 1)
-    y = flow(#special > 0 and special or {UI.t("noRooms")}, x + 40, y, width - 40, UI.DIM)
     y = flow(chances, x, y, width, UI.DIM)
     y = flow(clocks, x, y, width, UI.DIM)
     UI.text(forecast, x, y, readouts.forecast == "exact" and UI.GOOD or UI.WARN, 1); y = y + lh

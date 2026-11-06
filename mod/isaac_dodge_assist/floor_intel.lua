@@ -16,7 +16,7 @@ end
 -- A continued run missed its earlier picks, so its forecast is approximate.
 function M.startRun(state, game, continued)
     local fresh = M.new()
-    fresh.page = state.page
+    fresh.page, fresh.statsPage = state.page, state.statsPage
     local ok, forecast = pcall(ItemForecast.start, game, not continued)
     if ok then fresh.forecast = forecast else fresh.forecastError = tostring(forecast) end
     return fresh
@@ -37,7 +37,7 @@ function M.newLevel(state)
 end
 function M.newRoom(state, game)
     state.scanAt = -100
-    state.pedestals, state.pills, state.bossNext = {}, {}, nil
+    state.pedestals, state.pills, state.cards, state.bossNext = {}, {}, {}, nil
     -- What the forecast promised for the room just entered, to be checked
     -- against the pedestals the log shows next (and the boss reward later).
     -- On a new floor this runs before newLevel, while the old floor's
@@ -115,8 +115,9 @@ end
 -- what loot lies there now.
 local function scanRoom(state, game, index, entities, rocks, player)
     local forecast = state.forecast
-    -- Where the room's pedestals and pills are, for the tooltips.
-    local pedestals, pills = {}, {}
+    -- Where the room's pedestals, pills and cards are, for the labels (shop
+    -- ones too: what an unbought pill or card does).
+    local pedestals, pills, cards = {}, {}, {}
     local items = state.items[index] or {}
     local seen = {}
     for _, item in ipairs(items) do seen[item.id] = true end
@@ -145,13 +146,17 @@ local function scanRoom(state, game, index, entities, rocks, player)
                     items[#items+1], seen[pickup.SubType] = info, true
                 end
                 if seed and pickup.SubType > 0 and not first[seed] then first[seed] = pickup.SubType end
-            elseif (pickup.Price or 0) == 0 then
+            else
                 if PickupVariant and pickup.Variant == PickupVariant.PICKUP_PILL and pickup.SubType > 0 then
                     local ok, effect, horse = pcall(PillInfo.effect, game, pickup.SubType, player)
                     pills[#pills+1] = {x = pickup.Position.X, y = pickup.Position.Y, effect = ok and effect or nil, horse = ok and horse}
+                elseif PickupVariant and pickup.Variant == PickupVariant.PICKUP_TAROTCARD and pickup.SubType > 0 then
+                    cards[#cards+1] = {x = pickup.Position.X, y = pickup.Position.Y, id = pickup.SubType}
                 end
-                local kind = M.lootKind(pickup.Variant, pickup.SubType)
-                if kind then loot[kind] = (loot[kind] or 0) + 1 end
+                if (pickup.Price or 0) == 0 then
+                    local kind = M.lootKind(pickup.Variant, pickup.SubType)
+                    if kind then loot[kind] = (loot[kind] or 0) + 1 end
+                end
             end
         end
     end
@@ -160,7 +165,7 @@ local function scanRoom(state, game, index, entities, rocks, player)
         loot[kind] = (loot[kind] or 0) + 1
     end
     state.items[index], state.loot[index], state.rocks[index] = items, loot, #rocks
-    state.pedestals, state.pills = pedestals, pills
+    state.pedestals, state.pills, state.cards = pedestals, pills, cards
 end
 
 -- Every update: reward rocks for the overlay; room and floor rescans every

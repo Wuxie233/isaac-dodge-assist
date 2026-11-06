@@ -20,7 +20,7 @@ end
 local STATES = {
     ["MONITOR / HELPER"] = {"dodge", UI.GOOD},
     ["THREAT / HELPER"] = {"dodge", UI.WARN},
-    ["PAUSED (SHIFT)"] = {"paused", UI.MUTED},
+    ["PAUSED"] = {"paused", UI.MUTED},
     ["OFF"] = {"dodgeOff", UI.MUTED},
     ["F7: SELECT YOUR PLAYER"] = {"pickPlayer", UI.WARN},
     ["F7: RESELECT PLAYER"] = {"repickPlayer", UI.WARN},

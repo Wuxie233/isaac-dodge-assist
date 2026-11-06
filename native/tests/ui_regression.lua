@@ -39,6 +39,15 @@ for name,room in pairs(UI.ROOMS.zh)do for i=1,3 do renderable(room[i],name)end e
 local okPills,pillNames=pcall(include,'pill_effects')
 assert(okPills and pillNames[1].zh,'pill effects missing')
 for id,pill in pairs(pillNames)do renderable(pill.zh,'pill '..id)end
+local okCards,cardNames=pcall(include,'card_effects')
+assert(okCards and cardNames[1].zh and cardNames[97].effect.zh,'card effects missing')
+local cardCount=0
+for id,card in pairs(cardNames)do
+ cardCount=cardCount+1
+ assert(card.en and card.effect.en and (card.class=='good' or card.class=='bad' or card.class=='neutral'),'card '..id)
+ renderable(card.zh,'card '..id);renderable(card.effect.zh,'card effect '..id)
+end
+assert(cardCount==97,'card count '..cardCount)
 local ok,names=pcall(include,'item_names')
 if ok and type(names)=='table' and names.zh then
  for id,name in pairs(names.zh)do renderable(name,'item '..id)end
@@ -124,6 +133,11 @@ texts={};ItemView.renderTooltip({{x=0,y=0,id=118,next=1,nextOr=5}},Vector(30,0))
 assert(table.concat(texts,'|'):find('Then: The Sad Onion or My Reflection',1,true),'next pair: '..table.concat(texts,'|'))
 texts={};ItemView.renderPage({entries={{id=1,quality=1,roomType=4,factor=1},{id=5,quality=3,roomType=4,factor=1,altOf=1}}})
 assert(table.concat(texts,'|'):find('or My Reflection',1,true),'or marker: '..table.concat(texts,'|'))
+-- Cards (0.25.5): every card shows its name; the nearest also its effect.
+texts={};ItemView.renderCards({{x=0,y=0,id=1},{x=200,y=0,id=46}},Vector(10,0))
+local cardText=table.concat(texts,'|')
+assert(cardText:find('0 - The Fool',1,true) and cardText:find('Teleport to the start room',1,true) and
+ cardText:find('Suicide King',1,true) and not cardText:find('Kills you',1,true),'cards: '..cardText)
 texts={};ItemView.renderPills({{x=0,y=0,effect=1},{x=50,y=0,effect=0,horse=true}})
 local labels=table.concat(texts,'|')
 assert(labels:find('Bad Trip',1,true) and labels:find('Bad Gas (horse)',1,true),'pill labels: '..labels)
@@ -132,4 +146,4 @@ texts={};ItemView.renderPage({entries={{id=1,quality=1,roomType=4,factor=1},{id=
 local page=table.concat(texts,'|')
 assert(page:find('Take all reachable',1,true) and page:find('Tears+0.7',1,true) and page:find('out of reach',1,true),'page: '..page)
 UI.setLang(nil)
-print('PASS item view: stat words and colours, totals, pill read (pure, hook-aware), tooltip (with the next co-op boss item), pill labels, F5 stats page')
+print('PASS item view: stat words and colours, totals, pill read (pure, hook-aware), tooltip (with the next co-op boss item), card labels, pill labels, F5 stats page')

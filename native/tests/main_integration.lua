@@ -5,11 +5,15 @@ end
 for _,name in ipairs({'EntityType','EffectVariant','EntityCollisionClass','GridCollisionClass','GridEntityType','EntityFlag','PlayerType','ModCallbacks','Keyboard','BombVariant','ProjectileFlags','ButtonAction'})do _G[name]=enum()end
 GridCollisionClass.COLLISION_NONE=0
 local callbacks,logs,scene={}, {}, {}
+panelDraws,panelFrom={},'render'
 function RegisterMod()return {AddCallback=function(_,kind,fn)callbacks[kind]=fn end}end
 -- combatCtx: the last context the core handed to Combat.update.
 function include(name)
  local m=dofile('mod/isaac_dodge_assist/'..name..'.lua')
  if name=='combat' then local update=m.update;m.update=function(state,ctx)combatCtx=ctx;return update(state,ctx)end end
+ -- panelDraws: which floor panel page was drawn, and from which callback.
+ if name=='map_view' then local r=m.render;m.render=function(...)panelDraws[#panelDraws+1]='map@'..panelFrom;return r(...)end end
+ if name=='item_view' then local r=m.renderPage;m.renderPage=function(...)panelDraws[#panelDraws+1]='page@'..panelFrom;return r(...)end end
  return m
 end
 local room={}
@@ -135,6 +139,28 @@ summaries=perfLogs()
 assert(#summaries==2 and summaries[2]:find('n=2 ',1,true) and summaries[2]:find('reason=game-exit',1,true),
  'game exit discarded a short encounter')
 print('PASS full main integration: creep, projectile, fast enemy, player creep skipped, IAD1 numeric contract, diagnostics, empty room and pause')
+-- 0.25.5 Deathmatch (room type 30): the opponent's tear flying at us is
+-- dodged; our own tear and, outside Deathmatch, the partner's are not.
+local opponent=entity(EntityType.ENTITY_PLAYER,0);opponent.InitSeed=77
+callbacks[ModCallbacks.MC_POST_GAME_STARTED]();paused=false
+scene={};for _=1,4 do tick() end
+local function tear(owner)
+ local t=entity(EntityType.ENTITY_TEAR,0);t.InitSeed=owner.InitSeed*10+1
+ t.SpawnerType=EntityType.ENTITY_PLAYER;t.SpawnerEntity=owner;t.Parent=owner
+ t.Position=Vector(540,480);t.Velocity=Vector(-12,0);t.Size=7;t.Height=-23;t.FallingSpeed=0;t.FallingAcceleration=0
+ return t
+end
+RoomType={ROOM_DEATHMATCH=30,ROOM_SACRIFICE=13}
+local roomType=30
+function room:GetType()return roomType end
+scene={tear(opponent)};tick();values=packet()
+assert(values[1]>0,'Deathmatch: opponent tear not dodged')
+scene={};tick();scene={tear(p)};tick();values=packet()
+for _,s in ipairs(values)do assert(s==0,'Deathmatch: own tear treated as a threat')end
+roomType=1;scene={};tick();scene={tear(opponent)};tick();values=packet()
+for _,s in ipairs(values)do assert(s==0,'co-op: partner tear treated as a threat')end
+RoomType=nil;room.GetType=nil;scene={};tick()
+print('PASS Deathmatch: opponent tears dodged, own tears and co-op partner tears not')
 -- An explosive projectile can hurt from outside its small body hitbox and
 -- when its current height/collision class prevents direct body collision.
 paused=false;scene={}
@@ -325,14 +351,14 @@ assert(word&3==2 and (word>>6)&7==2 and word&512~=0 and ((word>>2)&15)<9,'AUTO w
 -- Left Shift toggles: one press pauses (surviving a room change), holding
 -- is not needed, the next press resumes.
 local function shift()
- Input.IsButtonTriggered=function(key)return key==Keyboard.KEY_LEFT_SHIFT end
+ Input.IsButtonTriggered=function(key)return key==Keyboard.KEY_GRAVE_ACCENT end
  callbacks[ModCallbacks.MC_POST_RENDER]();Input.IsButtonTriggered=function()return false end
 end
 shift();tick();assert(combatPair()==nil,'combat word while paused by Shift')
 assert(logs[#logs]:find('|0|',1,true),'Shift pause still active')
 callbacks[ModCallbacks.MC_POST_NEW_ROOM]();for i=1,5 do tick()end
 assert(combatPair()==nil and logs[#logs]:find('|0|',1,true),'Shift pause lost on room change')
-local paused=false;for _,line in ipairs(logs)do if line=='IAD STATE: PAUSED (SHIFT)' then paused=true end end
+local paused=false;for _,line in ipairs(logs)do if line=='IAD STATE: PAUSED' then paused=true end end
 assert(paused,'pause state not reported')
 shift();tick();assert(combatPair(),'second Shift press did not resume')
 f10();tick();assert(combatPair()==nil,'combat word after OFF')
@@ -438,3 +464,29 @@ callbacks[G.MC_POST_GAME_STARTED](nil,false)
 assert(runLines(function()callbacks[G.MC_PRE_GAME_EXIT](nil,false)end)=='IAD RUN end reason=quit','unsaved exit is a quit')
 print('PASS run markers: begin/continue, pause on saving exit, end on death, win and quit')
 for _,line in ipairs(logs)do assert(not line:find('IAD LOADER: core error',1,true),line)end
+
+-- 0.25.5 floor panel: shown while Tab (the map button) is held, the stats
+-- page toggled by F5; with the shader loaded both are drawn from its
+-- callback, above the HUD and the game's own map.
+local G2=ModCallbacks
+local tab=false
+Input.IsButtonPressed=function(key)return tab and key==Keyboard.KEY_TAB end
+Isaac.GetFrameCount=function()return currentAt end
+local function render(from)
+ panelDraws={};panelFrom=from or 'render';callbacks[G2.MC_POST_RENDER]();return table.concat(panelDraws,',')
+end
+assert(render()=='','panel drawn with Tab up')
+tab=true;assert(render()=='map@render','Tab held: no floor panel')
+tab=false;Input.IsButtonTriggered=function(key)return key==Keyboard.KEY_F5 end
+assert(render()=='page@render','F5 did not open the stats page')
+Input.IsButtonTriggered=function()return false end
+assert(render()=='page@render','stats page closed by itself')
+-- The shader callback has run: the panel waits for it.
+panelFrom='shader';callbacks[G2.MC_GET_SHADER_PARAMS](nil,'IAD-RenderAboveHUD')
+tab=true;assert(render()=='','panel drawn under the HUD while the shader runs')
+panelDraws={};panelFrom='shader';callbacks[G2.MC_GET_SHADER_PARAMS](nil,'IAD-RenderAboveHUD')
+assert(table.concat(panelDraws,',')=='map@shader','panel not drawn from the shader callback')
+panelDraws={};callbacks[G2.MC_GET_SHADER_PARAMS](nil,'Another-Shader');assert(#panelDraws==0,'drawn for another shader')
+tab=false;Input.IsButtonTriggered=function(key)return key==Keyboard.KEY_F5 end;render()
+Input.IsButtonTriggered=function()return false end;Input.IsButtonPressed=function()return false end
+print('PASS floor panel: Tab held, F5 stats page, drawn from the shader callback when it runs')

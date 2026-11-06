@@ -102,7 +102,9 @@ static Decision decide(const double* risk, uint32_t blocked, uint32_t combat, co
 static Decision evaluate(void* device, DWORD now, const float* raw) {
     const Decision none{-1,-1};
     DWORD pid=0; GetWindowThreadProcessId(GetForegroundWindow(), &pid);
-    if (pid!=GetCurrentProcessId() || (GetAsyncKeyState(VK_LSHIFT)&0x8000)) return none;
+    // Pausing is the sensor's ` toggle (Lua 0.25.5); holding Left Shift no
+    // longer hands control back, it was too easy to hit by accident.
+    if (pid!=GetCurrentProcessId()) return none;
     Shared sample{};
     DWORD wait=WaitForSingleObject(mutexHandle,0);
     if (wait==WAIT_ABANDONED) { shared->active=0; ReleaseMutex(mutexHandle); return none; }

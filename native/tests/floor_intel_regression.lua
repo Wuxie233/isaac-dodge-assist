@@ -9,7 +9,8 @@ GridCollisionClass.COLLISION_NONE=0
 EntityType.ENTITY_PICKUP=5
 RoomType={ROOM_DEFAULT=1,ROOM_SHOP=2,ROOM_TREASURE=4,ROOM_BOSS=5,ROOM_SECRET=7,ROOM_SUPERSECRET=8,ROOM_SACRIFICE=13,
  ROOM_PLANETARIUM=24,ROOM_ULTRASECRET=29}
-PickupVariant={PICKUP_HEART=10,PICKUP_COIN=20,PICKUP_KEY=30,PICKUP_BOMB=40,PICKUP_CHEST=50,PICKUP_PILL=70,PICKUP_COLLECTIBLE=100}
+PickupVariant={PICKUP_HEART=10,PICKUP_COIN=20,PICKUP_KEY=30,PICKUP_BOMB=40,PICKUP_CHEST=50,PICKUP_PILL=70,PICKUP_COLLECTIBLE=100,
+ PICKUP_TAROTCARD=300}
 CoinSubType={COIN_PENNY=1,COIN_NICKEL=2,COIN_DIME=3}
 HeartSubType={HEART_FULL=1,HEART_SOUL=3}
 GridEntityType={GRID_ROCK=2,GRID_ROCKT=4,GRID_ROCK_ALT=6,GRID_ROCK_SS=22,GRID_ROCK_ALT2=26,GRID_ROCK_GOLD=27}
@@ -97,6 +98,15 @@ score=FloorScore.evaluate({{index=9,type=RoomType.ROOM_SHOP,visited=true,label='
  {[9]={{id=1,quality=2,price=15},{id=2,quality=2,devil=true}}},{})
 assert(math.abs(score.items-FloorScore.ITEM[2]*(FloorScore.SHOP+FloorScore.DEVIL))<1e-9,'priced items')
 assert(FloorIntel.readableName('#THE_SAD_ONION_NAME')=='The Sad Onion' and FloorIntel.readableName('Modded')=='Modded','names')
+-- 0.25.5 room list: what each resource room gives, rooms not entered first.
+local listed=FloorScore.evaluate({{index=1,type=RoomType.ROOM_TREASURE,visited=true,cells={}},
+ {index=2,type=RoomType.ROOM_SECRET,visited=false,cells={},layout={pedestals=0,shop=0,loot={pill=3}}},
+ {index=3,type=RoomType.ROOM_DEFAULT,visited=false,cells={},layout={pedestals=0,shop=0,loot={coin=2}}},
+ {index=4,type=RoomType.ROOM_DEFAULT,visited=false,cells={},layout={pedestals=0,shop=0,loot={chest=1}}}},
+ {[1]={{id=182,quality=4}}},{})
+local order={};for _,r in ipairs(listed.roomList)do order[#order+1]=r.index end
+assert(table.concat(order,',')=='2,4,1','room list order: '..table.concat(order,','))
+assert(listed.roomList[1].loot.pill==3 and listed.roomList[3].items[1].id==182,'room list content')
 print('PASS floor score: unseen pedestals, layout loot, seen qualities, shop and deal prices, item names')
 
 -- 0.24 access: what it takes to get into a room not entered yet.
@@ -161,6 +171,12 @@ FloorIntel.update(state,game,room,function()return {}end,40)
 assert(state.items[1][1].id==114,'taken item forgotten')
 FloorIntel.newLevel(state)
 assert(next(state.items)==nil and state.map==nil,'new floor kept old intel')
+-- Cards and pills are labelled in shops too (0.25.5), but priced ones are
+-- not loot.
+FloorIntel.newRoom(state,game)
+FloorIntel.update(state,game,room,function()return {pickup(300,1,5),pickup(300,46),pickup(70,3,5)}end,60)
+assert(#state.cards==2 and state.cards[1].id==1 and state.cards[2].id==46 and #state.pills==1,'shop cards and pills not labelled')
+assert(state.loot[1].card==1 and state.loot[1].pill==nil,'priced card or pill counted as loot')
 print('PASS floor intel: room items kept once seen, priced pickups excluded from loot, reward rocks, readouts')
 
 -- Map view, in both languages: every room cell is drawn, kind labels, the

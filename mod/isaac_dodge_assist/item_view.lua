@@ -8,15 +8,17 @@ local UI = include("ui")
 local M = {}
 function M.use(ui) UI = ui end
 
-local stats, pills
+local stats, pills, cards
 local function data()
     if stats == nil then
         local ok, t = pcall(include, "item_stats")
         stats = ok and type(t) == "table" and t or false
         ok, t = pcall(include, "pill_effects")
         pills = ok and type(t) == "table" and t or false
+        ok, t = pcall(include, "card_effects")
+        cards = ok and type(t) == "table" and t or false
     end
-    return stats or nil, pills or nil
+    return stats or nil, pills or nil, cards or nil
 end
 
 -- Stat fields of item_stats.lua in display order: key, string key; mult =
@@ -207,6 +209,35 @@ function M.renderTooltip(pedestals, player)
     UI.text(title, x, y, UI.QUALITY[quality or 1] or UI.TEXT, 1)
     if #words > 0 then line(words, x, y + lh, x + w + 1, 1) end
     if after then UI.text(after, x, y + (lines - 1)*lh, UI.QUALITY[afterQuality or 1] or UI.TEXT, 1) end
+end
+
+-- Cards, runes and soul stones on the floor (shop ones too): a tarot card
+-- looks like any other until it is used. Each shows its name; the one
+-- nearest the player (within reach) also what it does. card = {x, y, id}.
+function M.renderCards(list, player)
+    local _, _, table_ = data()
+    if not table_ or #list == 0 then return end
+    local zh = UI.lang() == "zh"
+    local near, nearD
+    for _, c in ipairs(list) do
+        local d = player and math.sqrt((c.x - player.X)^2 + (c.y - player.Y)^2)
+        if d and d <= REACH and (not nearD or d < nearD) then near, nearD = c, d end
+    end
+    local lh = UI.lineHeight()
+    for _, c in ipairs(list) do
+        local info = table_[c.id]
+        if info then
+            local colour = info.class == "good" and UI.GOOD or info.class == "bad" and UI.BAD or UI.TEXT
+            local name = (zh and info.zh or info.en) or info.en
+            local effect = c == near and ((zh and info.effect.zh or info.effect.en) or info.effect.en) or nil
+            local w = math.max(UI.width(name), effect and UI.width(effect) or 0)
+            local point = Isaac.WorldToScreen(Vector(c.x, c.y))
+            local top = point.Y - 30 - (effect and lh or 0)
+            UI.rect(point.X - w/2 - 3, top - 1, w + 6, lh*(effect and 2 or 1) + 2, {0, 0, 0}, 0.55)
+            UI.text(name, point.X - UI.width(name)/2, top, colour, 1)
+            if effect then UI.text(effect, point.X - UI.width(effect)/2, top + lh, UI.TEXT, 1) end
+        end
+    end
 end
 
 -- Effect over every pill on the floor. pill = {x, y, effect} (effect id or
