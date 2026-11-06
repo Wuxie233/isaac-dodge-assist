@@ -32,7 +32,12 @@ local STRINGS = {
         mapTitle = "Floor map", score = "Score %s %d", scoreParts = "items %d + loot %d + rooms %d",
         items = "Items", noItems = "none seen yet", loot = "Loot", rooms = "Rooms", noRooms = "nothing special",
         forecastMark = "~ = forecast, room not entered", unknownItem = "item #%d",
-        more = "+%d more", moreRooms = "+%d more rooms", normalRoom = "Room", roomsTitle = "What each room gives",
+        more = "+%d more", moreRooms = "+%d more rooms", normalRoom = "Room",
+        souls = "soul hearts %d", pills = "pills %d", cards = "cards %d", trinkets = "trinkets %d",
+        batteries = "batteries %d", sacks = "sacks %d", blueFlies = "blue flies %d", blueSpiders = "blue spiders %d",
+        trollBomb = "troll bomb", attackFlies = "flies %d", spiders = "spiders %d", teleport = "teleport",
+        rock_spiders = "spiders", rock_gas = "gas", rock_host = "enemy", rock_creep = "creep", rock_bucket = "creep",
+        emptyChest = "empty", roomsTitle = "What each room gives",
         deal = "deal", shop = "shop",
         coins = "coins %d", keys = "keys %d", bombs = "bombs %d", hearts = "hearts %d", chests = "chests %d",
         rocks = "reward rocks %d", other = "other %d",
@@ -73,7 +78,12 @@ local STRINGS = {
         mapTitle = "本层地图", score = "评分 %s %d", scoreParts = "道具 %d + 资源 %d + 房间 %d",
         items = "道具", noItems = "还没见到", loot = "资源", rooms = "房间", noRooms = "没有特殊房间",
         forecastMark = "~ 为预测，房间还没进", unknownItem = "道具 #%d",
-        more = "还有 %d 件", moreRooms = "还有 %d 间", normalRoom = "普通房", roomsTitle = "各房间收益",
+        more = "还有 %d 件", moreRooms = "还有 %d 间", normalRoom = "普通房",
+        souls = "魂心 %d", pills = "胶囊 %d", cards = "卡牌 %d", trinkets = "饰品 %d",
+        batteries = "电池 %d", sacks = "袋子 %d", blueFlies = "蓝苍蝇 %d", blueSpiders = "蓝蜘蛛 %d",
+        trollBomb = "自爆炸弹", attackFlies = "苍蝇 %d", spiders = "蜘蛛 %d", teleport = "传送",
+        rock_spiders = "蜘蛛", rock_gas = "毒气", rock_host = "敌人", rock_creep = "血迹", rock_bucket = "污水",
+        emptyChest = "空", roomsTitle = "各房间收益",
         deal = "交易", shop = "商店",
         coins = "硬币 %d", keys = "钥匙 %d", bombs = "炸弹 %d", hearts = "心 %d", chests = "箱子 %d",
         rocks = "奖励石头 %d", other = "其他 %d",
@@ -182,6 +192,12 @@ function M.itemName(id, fallback)
     end
     local list = names and names[M.lang()]
     return list and list[id] or (names and names.en and names.en[id]) or fallback or M.t("unknownItem", id)
+end
+-- A trinket's official name, the same way.
+function M.trinketName(id)
+    if names == nil then M.itemName(0) end
+    local list = names and names["trinkets_" .. M.lang()]
+    return list and list[id] or (names and names.trinkets_en and names.trinkets_en[id]) or M.t("trinkets", 1)
 end
 
 -- Fonts load on first use: the Font, false when it failed to load, or

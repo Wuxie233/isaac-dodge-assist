@@ -240,6 +240,83 @@ function M.renderCards(list, player)
     end
 end
 
+-- What an unopened chest or sack, or an alt rock, gives (FloorIntel
+-- containers: loot {kind = count}, extras {{key, count, bad}}, items
+-- {{id, altOf}}, trinket, bad, empty, rock). Coloured words.
+local COIN_VALUE = {coin = 1, nickel = 5, dime = 10}
+local LOOT_WORDS = {{"keys", {"key"}}, {"bombs", {"bomb"}}, {"hearts", {"heart"}}, {"souls", {"soul"}},
+    {"pills", {"pill"}}, {"cards", {"card"}}, {"trinkets", {"trinket"}}, {"batteries", {"battery"}},
+    {"sacks", {"sack"}}, {"chests", {"chest", "gold"}}}
+function M.contentWords(c)
+    local words = {}
+    for _, item in ipairs(c.items or {}) do
+        local quality = UI.quality(item.id)
+        words[#words+1] = {(item.altOf and (UI.t("orWord") .. " ") or "") .. UI.itemName(item.id) ..
+            " Q" .. tostring(quality or "?"), UI.QUALITY[quality or 1] or UI.TEXT}
+    end
+    if c.trinket then words[#words+1] = {UI.trinketName(c.trinket), UI.TEXT} end
+    local loot = c.loot or {}
+    local coins = 0
+    for kind, value in pairs(COIN_VALUE) do coins = coins + (loot[kind] or 0) * value end
+    if coins > 0 then words[#words+1] = {UI.t("coins", coins), UI.TEXT} end
+    for _, group in ipairs(LOOT_WORDS) do
+        local n = 0
+        for _, kind in ipairs(group[2]) do n = n + (loot[kind] or 0) end
+        if n > 0 then words[#words+1] = {UI.t(group[1], n), UI.TEXT} end
+    end
+    for _, extra in ipairs(c.extras or {}) do
+        words[#words+1] = {UI.t(extra[1], extra[2]), extra[3] and UI.BAD or UI.DIM}
+    end
+    if c.bad then words[#words+1] = {UI.t("rock_" .. c.bad), UI.BAD} end
+    if #words == 0 then words[1] = {UI.t("emptyChest"), UI.DIM} end
+    return words
+end
+-- Over each one its first words; the one nearest the player all of them.
+function M.renderContainers(list, player)
+    if #list == 0 then return end
+    local near, nearD
+    for _, c in ipairs(list) do
+        local d = player and math.sqrt((c.x - player.X)^2 + (c.y - player.Y)^2)
+        if d and d <= REACH and (not nearD or d < nearD) then near, nearD = c, d end
+    end
+    local lh, gap = UI.lineHeight(), UI.width("  ")
+    for _, c in ipairs(list) do
+        local words = M.contentWords(c)
+        local point = Isaac.WorldToScreen(Vector(c.x, c.y))
+        local maxW = c == near and 170 or 90
+        -- Lay the words out in at most two lines (one for the far ones).
+        local lines, line, width = {}, {}, 0
+        for _, w in ipairs(words) do
+            local ww = UI.width(w[1])
+            if #line > 0 and width + gap + ww > maxW then
+                lines[#lines+1], line, width = line, {}, 0
+            end
+            line[#line+1] = w
+            width = width + (#line > 1 and gap or 0) + ww
+        end
+        if #line > 0 then lines[#lines+1] = line end
+        local limit = c == near and 2 or 1
+        local cut = #lines > limit
+        while #lines > limit do table.remove(lines) end
+        if cut then local last = lines[#lines]; last[#last+1] = {"..", UI.DIM} end
+        local blockW = 0
+        for _, l in ipairs(lines) do
+            local w = 0
+            for i, word in ipairs(l) do w = w + UI.width(word[1]) + (i > 1 and gap or 0) end
+            blockW = math.max(blockW, w)
+        end
+        local top = point.Y - (c.rock and 22 or 30) - (#lines - 1)*lh
+        UI.rect(point.X - blockW/2 - 3, top - 1, blockW + 6, lh*#lines + 2, {0, 0, 0}, 0.55)
+        for i, l in ipairs(lines) do
+            local x = point.X - blockW/2
+            for _, word in ipairs(l) do
+                UI.text(word[1], x, top + (i - 1)*lh, word[2], 1)
+                x = x + UI.width(word[1]) + gap
+            end
+        end
+    end
+end
+
 -- Effect over every pill on the floor. pill = {x, y, effect} (effect id or
 -- nil when unknown).
 function M.renderPills(list)

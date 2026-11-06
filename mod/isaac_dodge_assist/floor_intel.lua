@@ -6,6 +6,7 @@ local FloorScore = include("floor_score")
 local RoomRewards = include("room_rewards")
 local ItemForecast = include("item_forecast")
 local PillInfo = include("pill_info")
+local ChestForecast = include("chest_forecast")
 local M = {}
 
 function M.new()
@@ -31,13 +32,13 @@ end
 -- A new floor: forget everything about the last one (the pools go on).
 function M.newLevel(state)
     state.map, state.items, state.loot, state.layout, state.score = nil, {}, {}, {}, nil
-    state.firstOnPedestal = {}
+    state.firstOnPedestal, state.contents, state.contentLoot = {}, {}, {}
     state.predicted, state.forecastKey = {}, nil
     state.scanAt = -100
 end
 function M.newRoom(state, game)
     state.scanAt = -100
-    state.pedestals, state.pills, state.cards, state.bossNext = {}, {}, {}, nil
+    state.pedestals, state.pills, state.cards, state.containers, state.bossNext = {}, {}, {}, {}, nil
     -- What the forecast promised for the room just entered, to be checked
     -- against the pedestals the log shows next (and the boss reward later).
     -- On a new floor this runs before newLevel, while the old floor's
@@ -111,13 +112,78 @@ local function itemInfo(id)
     return {id = id, quality = quality or 1, name = M.readableName(name)}
 end
 
+-- Chests, sacks and alt rocks: what they give before anyone opens them
+-- (chest_forecast.lua; native/research/chest-contents.md). Pure reads only:
+-- the container's drop RNG seed, a grid's spawn seed, the players' items.
+
+-- Vanilla Lua cannot read achievements. chest_forecast asks for them only
+-- for rare kinds (golden pennies, rotten hearts...), so they count as
+-- locked, except the Red Key's (415), which shows through item 580.
+local function unlocked()
+    local red = false
+    pcall(function()
+        local item = Isaac.GetItemConfig():GetCollectible(580)
+        red = item ~= nil and item:IsAvailable()
+    end)
+    return function(id) return id == 415 and red end
+end
+local function contentsContext(game, player)
+    local ok, ctx = pcall(ChestForecast.readContext, game, player, unlocked())
+    return ok and ctx or nil
+end
+-- What is not loot: {string key, bad}.
+local EXTRAS = {["3.43"] = {"blueFlies"}, ["3.73"] = {"blueSpiders"}, ["4.4"] = {"trollBomb", true},
+    ["18.0"] = {"attackFlies", true}, ["85.0"] = {"spiders", true}, ["0.1"] = {"teleport"}}
+-- chest_forecast groups -> loot {kind = count} and extras {{key, count, bad}}.
+local function contentsOf(groups)
+    local loot, extras = {}, {}
+    for _, g in ipairs(groups or {}) do
+        if g.type == 5 then
+            local kind = M.lootKind(g.variant, g.subtype)
+            if kind then loot[kind] = (loot[kind] or 0) + g.count end
+        else
+            local extra = EXTRAS[g.type .. "." .. g.variant] or EXTRAS[g.type .. ".0"]
+            if extra then extras[#extras+1] = {extra[1], g.count, extra[2]} end
+        end
+    end
+    return loot, extras
+end
+-- A container's contents: {loot, extras, items = {{id, altOf}}, empty}.
+local function containerContents(state, game, variant, subtype, seed, initSeed, ctx, roomPool, sameRoom)
+    local r = ChestForecast.predict(variant, subtype, seed, ctx, initSeed)
+    if not r then return nil end
+    local loot, extras = contentsOf(r.groups)
+    local items = {}
+    if state.forecast and not state.forecastError and #r.items > 0 then
+        local ok, list = pcall(ItemForecast.containerItems, state.forecast, game, r.items, roomPool, sameRoom,
+            ChestForecast.DEVIL_SACRIFICE)
+        if ok then items = list end
+    end
+    return {loot = loot, extras = extras, items = items, empty = r.empty}
+end
+local function addLoot(into, from)
+    for kind, n in pairs(from) do into[kind] = (into[kind] or 0) + n end
+end
+-- Item infos for the room's list, from a container's {id, altOf}.
+local function chestItems(list, into)
+    for _, item in ipairs(list) do
+        local info = itemInfo(item.id)
+        info.kind, info.predicted, info.altOf, info.price = "chest", true, item.altOf, 0
+        into[#into+1] = info
+    end
+end
+
 -- The current room's items (kept once seen, also after being taken) and
--- what loot lies there now.
+-- what loot lies there now; unopened containers count as what they hold.
 local function scanRoom(state, game, index, entities, rocks, player)
     local forecast = state.forecast
     -- Where the room's pedestals, pills and cards are, for the labels (shop
     -- ones too: what an unbought pill or card does).
-    local pedestals, pills, cards = {}, {}, {}
+    local pedestals, pills, cards, containers, contents = {}, {}, {}, {}, {}
+    local ctx = contentsContext(game, player)
+    local room = game:GetRoom()
+    local okPool, roomPool = pcall(function() return ItemForecast.roomPool(room:GetType()) end)
+    roomPool = okPool and roomPool or nil
     local items = state.items[index] or {}
     local seen = {}
     for _, item in ipairs(items) do seen[item.id] = true end
@@ -153,9 +219,27 @@ local function scanRoom(state, game, index, entities, rocks, player)
                 elseif PickupVariant and pickup.Variant == PickupVariant.PICKUP_TAROTCARD and pickup.SubType > 0 then
                     cards[#cards+1] = {x = pickup.Position.X, y = pickup.Position.Y, id = pickup.SubType}
                 end
+                -- An unopened chest or sack: its drop RNG is still at its
+                -- InitSeed state; GetSeed only reads it.
+                local held
+                if ctx and ChestForecast.isContainer(pickup.Variant) then
+                    local okSeed, seed = pcall(function() return pickup:GetDropRNG():GetSeed() end)
+                    local ok, c = pcall(containerContents, state, game, pickup.Variant, pickup.SubType,
+                        okSeed and seed or pickup.InitSeed, pickup.InitSeed, ctx, roomPool, true)
+                    if ok and c then
+                        held = c
+                        c.x, c.y = pickup.Position.X, pickup.Position.Y
+                        containers[#containers+1] = c
+                    end
+                end
                 if (pickup.Price or 0) == 0 then
-                    local kind = M.lootKind(pickup.Variant, pickup.SubType)
-                    if kind then loot[kind] = (loot[kind] or 0) + 1 end
+                    if held then
+                        addLoot(loot, held.loot)
+                        chestItems(held.items, contents)
+                    else
+                        local kind = M.lootKind(pickup.Variant, pickup.SubType)
+                        if kind then loot[kind] = (loot[kind] or 0) + 1 end
+                    end
                 end
             end
         end
@@ -163,9 +247,27 @@ local function scanRoom(state, game, index, entities, rocks, player)
     for _, rock in ipairs(rocks) do
         local kind = rock.label == "gold" and "goldrock" or rock.label
         loot[kind] = (loot[kind] or 0) + 1
+        -- An alt rock (urn, mushroom, skull, polyp, bucket) rolls on its
+        -- spawn seed when it breaks: label what it drops, or what it lets out.
+        if ctx and (rock.label == "alt" or rock.label == "skull") then
+            local ok, r = pcall(function()
+                local grid = room:GetGridEntity(rock.index)
+                local rctx = setmetatable({roomType = room:GetType(), luckyRock = ctx.trinkets and ctx.trinkets[15],
+                    isRemoved = state.forecast and function(id) return state.forecast.emu:isRemoved(id) end or nil},
+                    {__index = ctx})
+                return ChestForecast.rock(grid:GetType(), room:GetBackdropType(), grid:GetSaveState().SpawnSeed, rctx)
+            end)
+            if ok and r and not r.nothing then
+                local rockLoot, extras = contentsOf(r.groups)
+                containers[#containers+1] = {x = rock.x, y = rock.y, loot = rockLoot, extras = extras, rock = true,
+                    items = r.item and {{id = r.item}} or {}, trinket = r.trinket, bad = r.bad}
+            end
+        end
     end
     state.items[index], state.loot[index], state.rocks[index] = items, loot, #rocks
-    state.pedestals, state.pills, state.cards = pedestals, pills, cards
+    state.pedestals, state.pills, state.cards, state.containers = pedestals, pills, cards, containers
+    state.contents = state.contents or {}
+    state.contents[index] = #contents > 0 and contents or nil
 end
 
 -- Every update: reward rocks for the overlay; room and floor rescans every
@@ -228,7 +330,8 @@ local function forecastRooms(state, game)
     local key = forecast.version .. ":" .. #state.map.rooms
     if key ~= state.forecastKey then
         state.forecastKey = key
-        state.predicted = {}
+        state.predicted, state.contentLoot = {}, {}
+        local ctx
         for _, room in ipairs(state.map.rooms) do
             if not room.visited then
                 -- One odd room must not cost the others their forecast.
@@ -237,14 +340,42 @@ local function forecastRooms(state, game)
                     state.roomErrorLogged = true
                     Isaac.DebugString("IAD INTEL: forecast room " .. tostring(room.type) .. "." .. tostring(room.variant) .. " " .. tostring(list))
                 end
-                if ok and list and #list > 0 then
-                    for _, item in ipairs(list) do
-                        local info = itemInfo(item.id)
-                        info.kind, info.predicted, info.altOf = item.kind, true, item.altOf
-                        info.devil = room.type == 14 and item.kind == "shop"
-                        info.price = item.kind == "shop" and 1 or 0
-                        list[_] = info
+                list = ok and list or {}
+                for _, item in ipairs(list) do
+                    local info = itemInfo(item.id)
+                    info.kind, info.predicted, info.altOf = item.kind, true, item.altOf
+                    info.devil = room.type == 14 and item.kind == "shop"
+                    info.price = item.kind == "shop" and 1 or 0
+                    list[_] = info
+                end
+                -- A chest or sack the layout always places: its InitSeed
+                -- (as a pedestal's) decides its kind and what it holds.
+                local layout = room.layout
+                if layout and layout.containers and #layout.containers > 0 then
+                    ctx = ctx or contentsContext(game, nil)
+                    local loot = {}
+                    for kind, n in pairs(layout.loot) do loot[kind] = n end
+                    for _, c in ipairs(ctx and layout.containers or {}) do
+                        pcall(function()
+                            local init = ItemForecast.layoutInitSeed(room.spawnSeed, c.index)
+                            local v, sub = c.variant, c.subtype
+                            if sub == 0 then v, sub = ChestForecast.resolve(v, init, ctx) end
+                            if v ~= 69 and sub == 0 then sub = 1 end -- spawns closed
+                            local held = containerContents(state, game, v, sub, init, init, ctx,
+                                ItemForecast.roomPool(room.type), false)
+                            if held then
+                                if c.kind and loot[c.kind] then
+                                    loot[c.kind] = loot[c.kind] - 1
+                                    if loot[c.kind] <= 1e-9 then loot[c.kind] = nil end
+                                end
+                                addLoot(loot, held.loot)
+                                chestItems(held.items, list)
+                            end
+                        end)
                     end
+                    state.contentLoot[room.index] = loot
+                end
+                if #list > 0 then
                     list.spawnSeed = room.spawnSeed
                     state.predicted[room.index] = list
                 end
@@ -318,19 +449,32 @@ function M.update(state, game, room, entities, frame, player)
         Isaac.DebugString("IAD INTEL: forecast error " .. state.forecastError)
     end
     local okAccess, access = pcall(accessOf, game, level)
+    -- What is promised but not on the floor yet joins the room's items:
+    -- the next co-op boss item, and what unopened chests hold.
     local items = state.items
-    local extra = state.bossNext
-    if extra then
+    local promised = {}
+    if state.bossNext then promised[state.bossNext.index] = state.bossNext.list end
+    for index, list in pairs(state.contents or {}) do
+        local into = promised[index] or {}
+        for _, info in ipairs(list) do into[#into+1] = info end
+        promised[index] = into
+    end
+    local view = {}
+    for index, extra in pairs(promised) do
         local list, present = {}, {}
-        for _, item in ipairs(items[extra.index] or {}) do
+        for _, item in ipairs(state.items[index] or {}) do
             list[#list+1] = item
             present[item.id] = true
         end
-        local added = false
-        for _, info in ipairs(extra.list) do
-            if not present[info.id] then list[#list+1], added = info, true end
+        for _, info in ipairs(extra) do
+            if not present[info.id] then list[#list+1], present[info.id] = info, true end
         end
-        if added then items = setmetatable({[extra.index] = list}, {__index = state.items}) end
+        view[index] = list
+    end
+    if next(view) then items = setmetatable(view, {__index = state.items}) end
+    -- An unvisited room's loot with its chests counted as what they hold.
+    for _, r in ipairs(state.map.rooms) do
+        if not r.visited and state.contentLoot then r.contentLoot = state.contentLoot[r.index] end
     end
     state.score = FloorScore.evaluate(state.map.rooms, items, state.loot, state.predicted, okAccess and access or nil)
     state.readouts = readouts(game, level)

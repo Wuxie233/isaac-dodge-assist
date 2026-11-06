@@ -420,3 +420,49 @@ counted=0;for q=0,4 do counted=counted+(t.score.qualities[q] or 0) end
 assert(counted==1,'cycling pedestal counted twice: '..counted)
 Isaac.GetPlayer=onePlayer;level.GetStage=nil
 print('PASS boss rewards and cycling pedestals: none after a chapter boss (Void exception), Tainted Isaac pairs forecast, seen and counted once')
+
+-- 0.25.6 chests: an unopened golden chest of run GJSHZSRA (drop RNG seed
+-- 1749904949, opened to a penny, a nickel and a penny) is labelled with
+-- what it holds and counts as that loot, not as "a chest"; a chest the
+-- layout of a room not entered yet always places shows what it will hold.
+local CF=include('chest_forecast')
+local ctxPlayer=setmetatable({Variant=0,GetPlayerType=function()return 14 end,GetTrinketMultiplier=function()return 0 end},{__index=player})
+Isaac.GetPlayer=function()return ctxPlayer end
+level.GetCurrentRoomIndex=function()return 70 end
+level.GetStartingRoomIndex=function()return 84 end
+game.Difficulty=1
+local roomTypeNow=RoomType.ROOM_DEFAULT
+room.GetType=function()return roomTypeNow end
+room.GetBackdropType=function()return 1 end
+room.GetDevilRoomChance=function()return 0.34 end
+local gameRoom=game.GetRoom;game.GetRoom=function()return room end
+rooms={desc(0,6*13+6,1,RoomType.ROOM_DEFAULT,true),desc(1,6*13+7,1,RoomType.ROOM_SECRET,false,{spawn({{5,50,0,1}})})}
+rooms[2].SpawnSeed=123456789
+byIndex={};for _,d in ipairs(rooms)do byIndex[d.SafeGridIndex]=d end
+current=rooms[1];level.GetStage=function()return 1 end
+local c=FloorIntel.startRun(FloorIntel.new(),game,false)
+local chest=pickup(60,1);chest.InitSeed=1749904949
+function chest:GetDropRNG()return {GetSeed=function()return 1749904949 end}end
+FloorIntel.update(c,game,room,function()return {chest}end,1)
+local held=c.containers[1]
+assert(held and held.loot.coin==2 and held.loot.nickel==1 and #held.items==0,'golden chest contents')
+assert(c.loot[0].coin==2 and c.loot[0].nickel==1 and c.loot[0].gold==nil,'chest counted as a chest, not its contents')
+-- The secret room's layout chest: the room list shows what it holds.
+local ctxNow=CF.readContext(game,nil,function()return false end)
+local init=include('item_emulator').layoutInitSeed(123456789,0)
+local v,sub=CF.resolve(50,init,ctxNow);if v~=69 and sub==0 then sub=1 end
+local expect=CF.predict(v,sub,init,ctxNow,init)
+local secretRoom
+for _,r in ipairs(c.score.roomList)do if r.type==RoomType.ROOM_SECRET then secretRoom=r end end
+assert(secretRoom and secretRoom.loot.chest==nil and c.contentLoot[1],'layout chest not opened in the forecast')
+local expected=0;for _,g in ipairs(expect.groups)do if g.type==5 then expected=expected+g.count end end
+local got=0;for _,n in pairs(c.contentLoot[1])do got=got+n end
+assert(math.abs(got-expected)<1e-9,'layout chest contents: '..got..' vs '..expected)
+-- Labels: what the chest holds, in words.
+local ItemView2=include('item_view');ItemView2.use(UI)
+UI.setLang('en');local words={}
+for _,w in ipairs(ItemView2.contentWords(held))do words[#words+1]=w[1] end
+assert(table.concat(words,' ')=='coins 7','chest words: '..table.concat(words,' '))
+UI.setLang(nil)
+Isaac.GetPlayer=onePlayer;level.GetStage=nil;room.GetType=nil;game.GetRoom=gameRoom
+print('PASS chests: a logged golden chest labelled and counted as its coins, a layout chest of a room not entered forecast')

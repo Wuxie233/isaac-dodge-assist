@@ -230,6 +230,46 @@ function M.bossNext(state, game, room, pedestals)
     return nil
 end
 
+-- The collectibles inside a chest (chest_forecast.lua items: pool,
+-- pickSeed, excludeDevilSacrifice, cycleSeed), in order: {id, altOf}.
+-- sameRoom: the chest is in the room the players are in (its blacklist
+-- applies). roomPool: the pool Tainted Isaac's second item comes from.
+function M.containerItems(state, game, items, roomPool, sameRoom, devilSacrifice)
+    if not state or #items == 0 then return {} end
+    local opts = options(state, game)
+    local cycles = roomPool and M.cycles(game)
+    local picks, seconds = {}, {}
+    for _, it in ipairs(items) do
+        picks[#picks+1] = {it.pool, it.pickSeed, exclude = it.excludeDevilSacrifice}
+        if cycles then picks[#picks+1] = {roomPool, it.cycleSeed}; seconds[#picks] = true end
+    end
+    -- The Dark Room's start-room red chests refuse the devil-sacrifice
+    -- items: one pick at a time, each with its own availability.
+    local out, main = {}, nil
+    local sim = state.emu:clone()
+    if not sameRoom then sim.roomBlacklist = {} end
+    for i, pick in ipairs(picks) do
+        local pickOpts = opts
+        if pick.exclude and devilSacrifice then
+            pickOpts = {banActives = opts.banActives, isAvailable = function(id)
+                return not devilSacrifice[id] and opts.isAvailable(id)
+            end}
+        end
+        local id = sim:predict(pick[1], pick[2], pickOpts)
+        if id then sim:recordPick(pick[1], id) end
+        if not seconds[i] then
+            main = id
+            if id then out[#out+1] = {id = id} end
+        elseif id and id ~= main then
+            out[#out+1] = {id = id, altOf = main}
+        end
+    end
+    return out
+end
+
+function M.roomPool(roomType) return Emu.poolForRoom(roomType) end
+function M.layoutInitSeed(spawnSeed, index) return Emu.layoutInitSeed(spawnSeed, index) end
+
 function M.quality(id)
     local item = data and data.items[id]
     return item and item.q

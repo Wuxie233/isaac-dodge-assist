@@ -80,8 +80,12 @@ local PICKUP = 5
 -- slots (5.150). slots lists the spawns that are surely a pedestal or a
 -- shop slot (a single entry) with their 0-based spawn index, which seeds
 -- the item (ItemForecast). lootKind(variant, subtype) names a pickup kind.
+-- Chests and sacks (PickupVariant): their contents follow from the
+-- spawn's InitSeed (chest_forecast.lua).
+local CONTAINERS = {[50] = true, [51] = true, [52] = true, [53] = true, [54] = true, [55] = true, [56] = true,
+    [57] = true, [58] = true, [60] = true, [69] = true, [360] = true, [390] = true}
 function M.layout(desc, lootKind)
-    local loot, pedestals, shop, slots = {}, 0, 0, {}
+    local loot, pedestals, shop, slots, containers = {}, 0, 0, {}, {}
     local spawns = desc.Data.Spawns
     for i = 0, spawns.Size - 1 do
         local spawn = spawns:Get(i)
@@ -98,6 +102,10 @@ function M.layout(desc, lootKind)
                 if entry.Type == PICKUP and (entry.Variant == 100 or entry.Variant == 150) and spawn.EntryCount == 1 then
                     slots[#slots+1] = {index = i, variant = entry.Variant, subtype = entry.Subtype}
                 end
+                if entry.Type == PICKUP and CONTAINERS[entry.Variant] and spawn.EntryCount == 1 then
+                    containers[#containers+1] = {index = i, variant = entry.Variant, subtype = entry.Subtype,
+                        kind = lootKind(entry.Variant, entry.Subtype)}
+                end
                 if entry.Type == PICKUP then
                     if entry.Variant == 100 then pedestals = pedestals + share
                     elseif entry.Variant == 150 then shop = shop + share
@@ -109,7 +117,7 @@ function M.layout(desc, lootKind)
             end
         end
     end
-    return {loot = loot, pedestals = pedestals, shop = shop, slots = slots}
+    return {loot = loot, pedestals = pedestals, shop = shop, slots = slots, containers = containers}
 end
 
 -- One snapshot of the floor in the current dimension: {rooms={...},

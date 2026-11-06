@@ -133,6 +133,10 @@ texts={};ItemView.renderTooltip({{x=0,y=0,id=118,next=1,nextOr=5}},Vector(30,0))
 assert(table.concat(texts,'|'):find('Then: The Sad Onion or My Reflection',1,true),'next pair: '..table.concat(texts,'|'))
 texts={};ItemView.renderPage({entries={{id=1,quality=1,roomType=4,factor=1},{id=5,quality=3,roomType=4,factor=1,altOf=1}}})
 assert(table.concat(texts,'|'):find('or My Reflection',1,true),'or marker: '..table.concat(texts,'|'))
+-- Chests and alt rocks (0.25.6): what they hold, in words.
+local function said(c)local t={};for _,w in ipairs(ItemView.contentWords(c))do t[#t+1]=w[1] end;return table.concat(t,' ')end
+assert(said({loot={coin=2,nickel=1,key=1},items={{id=118}},extras={{'trollBomb',1,true}}})=='Brimstone Q4 coins 7 keys 1 troll bomb','chest words')
+assert(said({rock=true,loot={},items={},extras={},bad='spiders'})=='spiders' and said({loot={},items={},extras={}})=='empty','rock words')
 -- Cards (0.25.5): every card shows its name; the nearest also its effect.
 texts={};ItemView.renderCards({{x=0,y=0,id=1},{x=200,y=0,id=46}},Vector(10,0))
 local cardText=table.concat(texts,'|')

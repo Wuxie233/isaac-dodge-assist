@@ -89,6 +89,10 @@ elseif scene == "room" then
     ItemView.renderPills({{x = 150, y = 200, effect = 1}, {x = 330, y = 200, effect = 8, horse = true}})
     -- Shop cards: names over each, the nearest one's effect too.
     ItemView.renderCards({{x = 90, y = 230, id = 1}, {x = 170, y = 230, id = 46}, {x = 400, y = 230, id = 81}}, Vector(90, 250))
+    -- A golden chest near the player (all it holds), a far one, an urn.
+    ItemView.renderContainers({{x = 250, y = 120, loot = {coin = 2, nickel = 1, key = 1}, items = {{id = 118}}, extras = {}},
+        {x = 380, y = 120, loot = {bomb = 2, heart = 1}, items = {}, extras = {}},
+        {x = 330, y = 160, rock = true, loot = {}, items = {}, extras = {}, bad = "spiders"}}, Vector(250, 140))
 elseif scene == "panel" then
     Hud.render(Hud.new(), {state = "MONITOR / HELPER", combatMode = 2, score = score, hidden = true}, 48, 50)
     MapView.render(floorMap, extras, score, readouts)

@@ -129,7 +129,7 @@ function M.evaluate(rooms, items, loot, predicted, access)
             unseen = unseen + pedestals + shop
             unseenHere = pedestals + shop
         end
-        local counts = room.visited and loot[room.index] or room.layout and room.layout.loot
+        local counts = room.visited and loot[room.index] or room.layout and (room.contentLoot or room.layout.loot)
         local valuable = false
         for kind, count in pairs(counts or {}) do
             lootPoints = lootPoints + (M.LOOT[kind] or 0) * count * reach

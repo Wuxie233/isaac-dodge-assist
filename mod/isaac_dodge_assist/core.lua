@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.25.5"
+local VERSION = "0.25.6"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
@@ -812,9 +812,11 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
         local page = game:IsPaused() and 0 or held and 1 or intel.statsPage and 2 or 0
         intel.page = page
         if page == 0 then
-            -- In the room: the effect over each pill and card, the nearest pedestal's stats.
+            -- In the room: the effect over each pill and card, what each chest,
+            -- sack and alt rock holds, the nearest pedestal's stats.
             ItemView.renderPills(intel.pills or {})
             ItemView.renderCards(intel.cards or {}, bound and bound.Position)
+            ItemView.renderContainers(intel.containers or {}, bound and bound.Position)
             if bound then ItemView.renderTooltip(intel.pedestals or {}, bound.Position) end
         end
         -- The open panel covers the HUD block; toasts still show.
