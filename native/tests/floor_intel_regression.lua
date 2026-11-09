@@ -466,3 +466,30 @@ assert(table.concat(words,' ')=='coins 7','chest words: '..table.concat(words,' 
 UI.setLang(nil)
 Isaac.GetPlayer=onePlayer;level.GetStage=nil;room.GetType=nil;game.GetRoom=gameRoom
 print('PASS chests: a logged golden chest labelled and counted as its coins, a layout chest of a room not entered forecast')
+
+-- 0.25.7 room features: beggars, machines, poops, fireplaces, reward
+-- plates, from a layout (STB codes) and from the room the players are in.
+local RF=include('room_features')
+local lay=FloorMap.layout({Data={Spawns=spawns({spawn({{6,4,0,1}}),spawn({{1496,0,0,1}}),spawn({{1500,0,0,1}}),
+ spawn({{4500,1,0,1}}),spawn({{33,0,0,1}}),spawn({{17,0,0,1}})})}},FloorIntel.lootKind)
+assert(lay.features.slot4==1 and lay.features.goldenPoop==1 and lay.features.poop==1 and lay.features.rewardPlate==1 and
+ lay.features.fire==1 and lay.features.shopkeeper==1,'layout features')
+assert(table.concat(RF.words(lay.features,'zh'),' ')=='乞丐 奖励按钮 金便便 便便 店主 火堆','feature words: '..table.concat(RF.words(lay.features,'zh'),' '))
+-- An ordinary room with a beggar is listed; one with only a poop is not.
+local beggarRoom={index=1,type=RoomType.ROOM_DEFAULT,visited=false,cells={},layout={pedestals=0,shop=0,loot={},features={slot4=1}}}
+local poopRoom={index=2,type=RoomType.ROOM_DEFAULT,visited=false,cells={},layout={pedestals=0,shop=0,loot={},features={poop=1}}}
+local fs=FloorScore.evaluate({beggarRoom,poopRoom},{},{})
+assert(#fs.roomList==1 and fs.roomList[1].index==1 and fs.roomList[1].features.slot4==1,'feature room list')
+-- In the room: a beggar standing, a broken machine, a lit and a put-out
+-- fire, a golden poop, a destroyed poop, an unpressed reward plate.
+local function ent(t,v,anim,hp)
+ return {Type=t,Variant=v,SubType=0,HitPoints=hp or 10,IsDead=function()return false end,
+  GetSprite=function()return {GetAnimation=function()return anim or 'Idle' end}end}
+end
+local grids2={[3]={t=14,v=3,state=0},[4]={t=14,v=0,state=1000},[5]={t=20,v=1,state=0},[6]={t=20,v=1,state=3}}
+local room2={GetGridSize=function()return 10 end,GetGridEntity=function(_,i)local g=grids2[i];if not g then return nil end
+ return {State=g.state,GetType=function()return g.t end,GetVariant=function()return g.v end}end}
+local seen2=RF.scan(room2,{ent(6,4),ent(6,1,'Broken'),ent(33,0,'Idle',10),ent(33,0,'Idle',0)})
+assert(seen2.slot4==1 and seen2.slot1==nil and seen2.fire==1 and seen2.goldenPoop==1 and seen2.poop==nil and seen2.rewardPlate==1,
+ 'room scan features')
+print('PASS room features: layout codes, words, ordinary rooms listed for a beggar, scan of standing features')

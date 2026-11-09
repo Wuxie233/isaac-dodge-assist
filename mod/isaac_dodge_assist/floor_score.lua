@@ -2,6 +2,7 @@
 -- going on with. Items count by their quality (ItemConfig 0-4), loot by
 -- pickups and reward rocks, and the rarer rooms by what they usually give.
 -- The weights are a rough guide; the lines show what they are made of.
+local RoomFeatures = include("room_features")
 local M = {}
 local floor = math.floor
 
@@ -136,12 +137,16 @@ function M.evaluate(rooms, items, loot, predicted, access)
             lootTotals[kind] = (lootTotals[kind] or 0) + count
             if count > 0 and RICH[kind] then valuable = true end
         end
+        -- Beggars, machines, poops, fireplaces, reward plates.
+        local features = room.visited and room.features or room.layout and room.layout.features or {}
+        local featurePoints, notable = RoomFeatures.value(features)
+        lootPoints = lootPoints + featurePoints * reach
         -- What each resource room gives: every special room, and an
-        -- ordinary one with an item, a chest or a reward rock.
-        if name ~= "ROOM_DEFAULT" or #here > 0 or (unseenHere or 0) > 0 or valuable then
+        -- ordinary one with an item, a chest, a reward rock, a beggar...
+        if name ~= "ROOM_DEFAULT" or #here > 0 or (unseenHere or 0) > 0 or valuable or notable then
             roomList[#roomList+1] = {index = room.index, type = room.type, visited = room.visited, colour = room.colour,
                 need = need, reach = reach, items = here, unseen = unseenHere or 0, loot = counts or {},
-                points = itemPoints + lootPoints - before}
+                features = features, points = itemPoints + lootPoints - before}
         end
     end
     -- Rooms not entered yet first (reachable ones before the rest), best

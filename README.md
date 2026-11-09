@@ -4,7 +4,7 @@
 
 An emergency dodge assist for The Binding of Isaac: Repentance+ on Windows: it takes over local keyboard movement only when your path is about to enter danger and a safer direction exists, with optional auto-aim and auto-combat modes.
 
-当前版本：Lua 传感器 0.25.6，原生输入程序 NativeHost 0.4.6。旧 SendInput 辅助已不再使用。
+当前版本：Lua 传感器 0.25.7，原生输入程序 NativeHost 0.4.6。旧 SendInput 辅助已不再使用。
 
 ## 它做什么
 
@@ -84,6 +84,7 @@ Lua 传感器（游戏内模组） -> 威胁与危险建模 -> 九方向规划�
 | `item_names.lua` | 道具的官方中英文名（由 `tools/gen_item_names.py` 从游戏文件生成） |
 | `item_view.lua` | F5"道具与面板收益"页、道具台提示、卡牌和胶囊效果标签 |
 | `chest_forecast.lua` | 箱子、袋子、罐子类石头打开/打碎前的内容（逆向自游戏，纯 Lua） |
+| `room_features.lua` | 房间里的乞丐、机器、店主、火堆、便便、奖励按钮（布局和当前房间） |
 | `card_effects.lua` | 卡牌/符文/魂石的名字和一行效果（`tools/gen_card_effects.py` 生成） |
 | `content/shaders.xml` | 不画任何东西的着色器，只为在 HUD 之上绘制面板 |
 | `item_stats.lua` | 每件道具的属性变化（由 `tools/gen_item_stats.py` 生成） |
@@ -110,7 +111,7 @@ Lua 传感器（游戏内模组） -> 威胁与危险建模 -> 九方向规划�
 
 1. 重启游戏，在 Mods 菜单启用 Isaac Dodge Assist。
 2. 打开桌面的“以撒原生输入躲避”（指向 NativeHost 0.4.5），保留原生辅助窗口；旧“以撒紧急躲弹”辅助应关闭。
-3. 进游戏时屏幕上方会提示“躲避助手 v0.25.6 已加载”（热更新后提示“已更新到 v…+<构建号>”）。
+3. 进游戏时屏幕上方会提示“躲避助手 v0.25.7 已加载”（热更新后提示“已更新到 v…+<构建号>”）。
    - 左上角 HUD 有两行。第一行是状态：色点绿色表示正常监视，橙色表示正在判断危险，灰色表示暂停或关闭；后面跟战斗辅助模式，联机时还会显示你绑定的是 P 几。第二行是本层评分。
    - HUD 的危险状态不等于输入已经被接管。
    - 界面语言跟随游戏语言，游戏设为中文就显示中文（用游戏自带的中文字体），其他语言显示英文。

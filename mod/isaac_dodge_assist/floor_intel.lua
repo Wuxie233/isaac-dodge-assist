@@ -7,6 +7,7 @@ local RoomRewards = include("room_rewards")
 local ItemForecast = include("item_forecast")
 local PillInfo = include("pill_info")
 local ChestForecast = include("chest_forecast")
+local RoomFeatures = include("room_features")
 local M = {}
 
 function M.new()
@@ -32,7 +33,7 @@ end
 -- A new floor: forget everything about the last one (the pools go on).
 function M.newLevel(state)
     state.map, state.items, state.loot, state.layout, state.score = nil, {}, {}, {}, nil
-    state.firstOnPedestal, state.contents, state.contentLoot = {}, {}, {}
+    state.firstOnPedestal, state.contents, state.contentLoot, state.features = {}, {}, {}, {}
     state.predicted, state.forecastKey = {}, nil
     state.scanAt = -100
 end
@@ -265,6 +266,9 @@ local function scanRoom(state, game, index, entities, rocks, player)
         end
     end
     state.items[index], state.loot[index], state.rocks[index] = items, loot, #rocks
+    state.features = state.features or {}
+    local okFeatures, features = pcall(RoomFeatures.scan, room, entities)
+    if okFeatures then state.features[index] = features end
     state.pedestals, state.pills, state.cards, state.containers = pedestals, pills, cards, containers
     state.contents = state.contents or {}
     state.contents[index] = #contents > 0 and contents or nil
@@ -472,9 +476,11 @@ function M.update(state, game, room, entities, frame, player)
         view[index] = list
     end
     if next(view) then items = setmetatable(view, {__index = state.items}) end
-    -- An unvisited room's loot with its chests counted as what they hold.
+    -- An unvisited room's loot with its chests counted as what they hold;
+    -- a visited room's features as last seen standing.
     for _, r in ipairs(state.map.rooms) do
         if not r.visited and state.contentLoot then r.contentLoot = state.contentLoot[r.index] end
+        if r.visited and state.features then r.features = state.features[r.index] end
     end
     state.score = FloorScore.evaluate(state.map.rooms, items, state.loot, state.predicted, okAccess and access or nil)
     state.readouts = readouts(game, level)

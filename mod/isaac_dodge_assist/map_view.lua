@@ -4,6 +4,7 @@
 -- the Boss Rush/Hush clocks and how far the item forecast can be trusted.
 -- All text in the game's language (ui.lua). Display only.
 local UI = include("ui")
+local RoomFeatures = include("room_features")
 local M = {}
 -- include() gives every caller its own copy of ui.lua; the core hands over
 -- the one it uses, so language and fonts are decided in one place.
@@ -16,12 +17,13 @@ local function clock(seconds)
     return string.format("%d:%02d", seconds // 60, seconds % 60)
 end
 
--- Loot kinds grouped into a few words; coins count their value.
+-- Loot kinds as words; coins count their value.
 local GROUPS = {
     {"coins", {coin = 1, nickel = 5, dime = 10}},
-    {"keys", {key = 1}}, {"bombs", {bomb = 1}}, {"hearts", {heart = 1, soul = 1}},
-    {"chests", {chest = 1, gold = 1}}, {"rocks", {tinted = 1, super = 1, goldrock = 1}},
-    {"other", {pill = 1, card = 1, battery = 1, trinket = 1, sack = 1, pickup = 1}},
+    {"keys", {key = 1}}, {"bombs", {bomb = 1}}, {"hearts", {heart = 1}}, {"souls", {soul = 1}},
+    {"pills", {pill = 1}}, {"cards", {card = 1}}, {"trinkets", {trinket = 1}}, {"batteries", {battery = 1}},
+    {"sacks", {sack = 1}}, {"chests", {chest = 1, gold = 1}}, {"rocks", {tinted = 1, super = 1, goldrock = 1}},
+    {"urns", {alt = 1}}, {"randomPickup", {pickup = 1}},
 }
 local function lootWords(totals)
     local words = {}
@@ -113,7 +115,7 @@ end
 -- One room's payoff as coloured words: its items (forecast ones marked
 -- "~", a cycling pedestal's other item "or"), how many are still unknown,
 -- and its loot. {text, colour}
-local PREDICTED = {0.35, 0.9, 1}
+local PREDICTED, FEATURE = {0.35, 0.9, 1}, {1, 0.8, 0.55}
 local function roomWords(room)
     local words = {}
     for _, item in ipairs(room.items) do
@@ -123,7 +125,8 @@ local function roomWords(room)
         elseif (item.price or 0) > 0 then name = name .. (item.predicted and (" " .. UI.t("shop")) or (" $" .. item.price)) end
         words[#words+1] = {name, UI.QUALITY[item.quality] or UI.TEXT}
     end
-    if room.unseen > 0 then words[#words+1] = {UI.t("unseenItems", room.unseen), PREDICTED} end
+    if room.unseen > 0 then words[#words+1] = {UI.t("unseenItems", floor(room.unseen + 0.5)), PREDICTED} end
+    for _, word in ipairs(RoomFeatures.words(room.features, UI.lang())) do words[#words+1] = {word, FEATURE} end
     for _, word in ipairs(lootWords(room.loot)) do words[#words+1] = {word, UI.DIM} end
     return words
 end

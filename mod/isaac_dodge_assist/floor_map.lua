@@ -74,6 +74,7 @@ M.kindOf = kindOf
 -- Layout spawn type codes (RoomConfig .stb): grid rocks that drop
 -- something, and pickups (EntityType 5) by variant.
 local LAYOUT_ROCKS = {[1003] = "tinted", [1011] = "goldrock", [1002] = "alt"}
+local RoomFeatures = include("room_features")
 local PICKUP = 5
 -- What an unvisited room's layout places, as loot counts weighted by how
 -- likely each spawn's entry is, plus item pedestals (5.100) and shop
@@ -85,7 +86,7 @@ local PICKUP = 5
 local CONTAINERS = {[50] = true, [51] = true, [52] = true, [53] = true, [54] = true, [55] = true, [56] = true,
     [57] = true, [58] = true, [60] = true, [69] = true, [360] = true, [390] = true}
 function M.layout(desc, lootKind)
-    local loot, pedestals, shop, slots, containers = {}, 0, 0, {}, {}
+    local loot, pedestals, shop, slots, containers, features = {}, 0, 0, {}, {}, {}
     local spawns = desc.Data.Spawns
     for i = 0, spawns.Size - 1 do
         local spawn = spawns:Get(i)
@@ -112,12 +113,14 @@ function M.layout(desc, lootKind)
                     else kind = lootKind(entry.Variant, entry.Subtype) or (entry.Variant == 0 and "pickup") end
                 else
                     kind = LAYOUT_ROCKS[entry.Type]
+                    local feature = RoomFeatures.fromLayout(entry.Type, entry.Variant, entry.Subtype)
+                    if feature then features[feature] = (features[feature] or 0) + share end
                 end
                 if kind then loot[kind] = (loot[kind] or 0) + share end
             end
         end
     end
-    return {loot = loot, pedestals = pedestals, shop = shop, slots = slots, containers = containers}
+    return {loot = loot, pedestals = pedestals, shop = shop, slots = slots, containers = containers, features = features}
 end
 
 -- One snapshot of the floor in the current dimension: {rooms={...},

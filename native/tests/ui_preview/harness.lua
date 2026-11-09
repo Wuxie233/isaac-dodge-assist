@@ -63,9 +63,10 @@ local rooms = {
     room(0, 6, 6, 1, 1, true), room(1, 7, 6, 6, 1, true), room(2, 5, 6, 1, 4, true),
     room(3, 6, 5, 4, 1, true), room(4, 9, 6, 1, 2, true), room(5, 6, 4, 1, 1, false),
     room(6, 6, 3, 1, 5, false), room(7, 5, 5, 1, 7, false, {layout = {pedestals = 0, shop = 0, loot = {pill = 3}}}),
-    room(8, 8, 5, 1, 8, false, {layout = {pedestals = 1, shop = 0, loot = {}}}),
+    room(8, 8, 5, 1, 8, false, {layout = {pedestals = 1, shop = 0, loot = {}, features = {slot4 = 1, blackPoop = 1}}}),
     room(9, 5, 7, 1, 24, false), room(10, 7, 7, 9, 1, false), room(11, 4, 6, 1, 10, false),
     room(12, 7, 4, 1, 12, false), room(13, 8, 7, 1, 13, false), room(14, 9, 5, 1, 29, false),
+    room(15, 4, 7, 1, 1, false, {layout = {pedestals = 0, shop = 0, loot = {pill = 1, alt = 4}, features = {goldenPoop = 1, slot1 = 1}}}),
 }
 local items = {[2] = {{id = 118, quality = 4}}, [4] = {{id = 3, quality = 3, price = 15}, {id = 12, quality = 2, price = 15},
     {id = 46, quality = 1, price = 7}}}

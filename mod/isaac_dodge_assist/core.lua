@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.25.6"
+local VERSION = "0.25.7"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
