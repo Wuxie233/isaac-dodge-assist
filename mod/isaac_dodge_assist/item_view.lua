@@ -288,6 +288,7 @@ function M.contentWords(c)
     -- A slot or beggar: which payment pays out first, then what.
     if c.none then return {{UI.t("noPrize"), UI.MUTED}} end
     if c.nth then words[1] = {UI.t("nthPay", c.nth), UI.MUTED} end
+    if c.lead then words[#words+1] = {UI.t(c.lead), UI.TEXT} end
     for _, item in ipairs(c.items or {}) do
         local quality = UI.quality(item.id)
         words[#words+1] = {(item.altOf and (UI.t("orWord") .. " ") or "") .. UI.itemName(item.id) ..
@@ -311,6 +312,18 @@ function M.contentWords(c)
     if #words == 0 or (c.nth and #words == 1) then words[#words+1] = {UI.t("emptyChest"), UI.DIM} end
     return words
 end
+-- A sacrifice room's spikes: one line per coming sacrifice ("#4: chest
+-- coins 7"), or Sanguine Bond's next roll ("next: ...").
+local function sacrificeLines(c)
+    local lines = {}
+    if c.done then return {{{UI.t("sac_done"), UI.MUTED}}} end
+    for _, o in ipairs(c.sacrifice) do
+        local line = {{o.n and UI.t("nthPay", o.n) or UI.t("sac_next"), UI.MUTED}}
+        for _, w in ipairs(M.contentWords(o)) do line[#line+1] = w end
+        lines[#lines+1] = line
+    end
+    return lines
+end
 -- Over each one its first words; the one nearest the player all of them.
 function M.renderContainers(list, player)
     if #list == 0 then return end
@@ -321,26 +334,43 @@ function M.renderContainers(list, player)
     end
     local lh, gap = UI.lineHeight(), UI.width("  ")
     for _, c in ipairs(list) do
-        local words = M.contentWords(c)
         local point = Isaac.WorldToScreen(Vector(c.x, c.y))
-        -- A beggar's prize always shows in full: it is short and the point.
-        local full = c == near or c.nth ~= nil
-        local maxW = full and 170 or 90
-        -- Lay the words out in at most two lines (one for the far ones).
-        local lines, line, width = {}, {}, 0
-        for _, w in ipairs(words) do
-            local ww = UI.width(w[1])
-            if #line > 0 and width + gap + ww > maxW then
-                lines[#lines+1], line, width = line, {}, 0
+        local lines
+        if c.sacrifice then
+            -- One line per sacrifice, each cut to its width.
+            lines = sacrificeLines(c)
+            for _, l in ipairs(lines) do
+                local width, keep = 0, {}
+                for i, w in ipairs(l) do
+                    local ww = UI.width(w[1]) + (i > 1 and gap or 0)
+                    if width + ww > 220 then keep[#keep+1] = {"..", UI.DIM}; break end
+                    keep[#keep+1], width = w, width + ww
+                end
+                for i = #l, 1, -1 do l[i] = nil end
+                for i, w in ipairs(keep) do l[i] = w end
             end
-            line[#line+1] = w
-            width = width + (#line > 1 and gap or 0) + ww
+        else
+            local words = M.contentWords(c)
+            -- A beggar's prize always shows in full: it is short and the point.
+            local full = c == near or c.nth ~= nil
+            local maxW = full and 170 or 90
+            -- Lay the words out in at most two lines (one for the far ones).
+            local line, width = {}, 0
+            lines = {}
+            for _, w in ipairs(words) do
+                local ww = UI.width(w[1])
+                if #line > 0 and width + gap + ww > maxW then
+                    lines[#lines+1], line, width = line, {}, 0
+                end
+                line[#line+1] = w
+                width = width + (#line > 1 and gap or 0) + ww
+            end
+            if #line > 0 then lines[#lines+1] = line end
+            local limit = full and 2 or 1
+            local cut = #lines > limit
+            while #lines > limit do table.remove(lines) end
+            if cut then local last = lines[#lines]; last[#last+1] = {"..", UI.DIM} end
         end
-        if #line > 0 then lines[#lines+1] = line end
-        local limit = full and 2 or 1
-        local cut = #lines > limit
-        while #lines > limit do table.remove(lines) end
-        if cut then local last = lines[#lines]; last[#last+1] = {"..", UI.DIM} end
         local blockW = 0
         for _, l in ipairs(lines) do
             local w = 0

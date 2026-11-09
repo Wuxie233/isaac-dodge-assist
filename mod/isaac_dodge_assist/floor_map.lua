@@ -83,10 +83,12 @@ local PICKUP = 5
 -- the item (ItemForecast). lootKind(variant, subtype) names a pickup kind.
 -- Chests and sacks (PickupVariant): their contents follow from the
 -- spawn's InitSeed (chest_forecast.lua).
+local SACRIFICE_SPIKES = 1930
 local CONTAINERS = {[50] = true, [51] = true, [52] = true, [53] = true, [54] = true, [55] = true, [56] = true,
     [57] = true, [58] = true, [60] = true, [69] = true, [360] = true, [390] = true}
 function M.layout(desc, lootKind)
     local loot, pedestals, shop, slots, containers, features, featureSpawns = {}, 0, 0, {}, {}, {}, {}
+    local sacrifice
     local spawns = desc.Data.Spawns
     for i = 0, spawns.Size - 1 do
         local spawn = spawns:Get(i)
@@ -112,6 +114,9 @@ function M.layout(desc, lootKind)
                     elseif entry.Variant == 150 then shop = shop + share
                     else kind = lootKind(entry.Variant, entry.Subtype) or (entry.Variant == 0 and "pickup") end
                 else
+                    -- A sacrifice room's spikes (STB 1930): its index seeds
+                    -- what each sacrifice gives (sacrifice_forecast.lua).
+                    if entry.Type == SACRIFICE_SPIKES and spawn.EntryCount == 1 then sacrifice = i end
                     kind = LAYOUT_ROCKS[entry.Type]
                     local feature = RoomFeatures.fromLayout(entry.Type, entry.Variant, entry.Subtype)
                     if feature then
@@ -127,7 +132,7 @@ function M.layout(desc, lootKind)
         end
     end
     return {loot = loot, pedestals = pedestals, shop = shop, slots = slots, containers = containers, features = features,
-        featureSpawns = featureSpawns}
+        featureSpawns = featureSpawns, sacrifice = sacrifice}
 end
 
 -- One snapshot of the floor in the current dimension: {rooms={...},

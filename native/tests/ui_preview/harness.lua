@@ -98,7 +98,12 @@ elseif scene == "room" then
         {x = 380, y = 120, loot = {bomb = 2, heart = 1}, items = {}, extras = {}},
         {x = 330, y = 160, rock = true, loot = {}, items = {}, extras = {}, bad = "spiders"},
         {x = 120, y = 170, rock = true, loot = {coin = 6}, items = {}, extras = {}},
-        {x = 430, y = 175, nth = 6, loot = {}, items = {{id = 12}}, extras = {}}}, Vector(250, 140))
+        {x = 430, y = 175, nth = 6, loot = {}, items = {{id = 12}}, extras = {}},
+        -- Sacrifice room spikes: the next three.
+        {x = 120, y = 250, rock = true, sacrifice = {
+            {n = 6, lead = "sac_chest", loot = {coin = 4, key = 1}, items = {}, extras = {}, words = {}},
+            {n = 7, loot = {}, items = {{id = 33}}, extras = {}, words = {}},
+            {n = 8, loot = {}, items = {}, extras = {}, words = {{"sac_trollBombs", true}}}}}}, Vector(250, 140))
 elseif scene == "panel" then
     Hud.render(Hud.new(), {state = "MONITOR / HELPER", combatMode = 2, score = score, hidden = true}, 48, 50)
     MapView.render(floorMap, extras, score, readouts)

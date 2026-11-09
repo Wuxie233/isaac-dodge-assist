@@ -29,6 +29,9 @@ M.KINDS = {
     whitePoop = {"white poop", "白便便", 0, true}, gigaPoop = {"giga poop", "巨型便便", 1, true},
     charmingPoop = {"charming poop", "魅惑便便", 0.5, true},
     rewardPlate = {"reward plate", "奖励按钮", 0, true},
+    -- Sacrifice room spikes: only named in prize words ("sacrifice pays on
+    -- #7"), not listed as a feature (the room's type says it).
+    sacrifice = {"sacrifice", "献祭", 0, false},
 }
 -- Order the words come in.
 M.ORDER = {"slot4", "slot5", "slot7", "slot9", "slot13", "slot18", "slot1", "slot2", "slot3", "slot6",

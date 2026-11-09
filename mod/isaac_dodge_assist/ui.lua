@@ -70,6 +70,12 @@ local STRINGS = {
         form_bob = "Bob", form_syringe = "Spun", form_mom = "Yes Mother?", form_baby = "Conjoined",
         form_devil = "Leviathan", form_poop = "Oh Crap", form_book = "Book Worm", form_spider = "Spider Baby",
         formDone = "done", spindown = "Spindown:", spinNone = "nothing", spinBattery = "(Car Battery)",
+        sac_nothing = "nothing", sac_angel15 = "angel chance +15%", sac_angel50 = "angel chance +50%",
+        sac_chest = "chest", sac_teleport = "to the angel room", sac_angelItem = "angel item",
+        sac_trollBombs = "7 troll bombs", sac_uriel = "Uriel fight", sac_gabriel = "Gabriel fight",
+        sac_darkRoom = "to the Dark Room", sac_start = "back to the start room", sac_done = "sacrifices done",
+        sac_next = "Next:", sang_damage = "damage up", sang_black = "2 black hearts", sang_item = "item",
+        sang_leviathan = "Leviathan +3",
     },
     zh = {
         dodge = "躲避", dodgeOff = "躲避已关闭（F6）", paused = "已暂停（`）", standby = "躲避",
@@ -124,6 +130,12 @@ local STRINGS = {
         form_bob = "鲍勃", form_syringe = "嗑药", form_mom = "好的妈妈？", form_baby = "连体",
         form_devil = "利维坦", form_poop = "拉了", form_book = "书虫", form_spider = "蜘蛛宝宝",
         formDone = "已变身", spindown = "计数二十面骰：", spinNone = "空", spinBattery = "（车载电池）",
+        sac_nothing = "无", sac_angel15 = "天使房概率+15%", sac_angel50 = "天使房概率+50%",
+        sac_chest = "箱子", sac_teleport = "传送天使房", sac_angelItem = "天使道具",
+        sac_trollBombs = "7个自爆炸弹", sac_uriel = "乌列战", sac_gabriel = "加百列战",
+        sac_darkRoom = "传送暗室", sac_start = "回起始房", sac_done = "献祭已结束",
+        sac_next = "下一次：", sang_damage = "伤害提升", sang_black = "2个黑心", sang_item = "道具",
+        sang_leviathan = "利维坦+3",
     },
 }
 M.STRINGS = STRINGS

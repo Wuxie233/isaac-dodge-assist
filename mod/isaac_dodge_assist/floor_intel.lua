@@ -10,6 +10,7 @@ local ChestForecast = include("chest_forecast")
 local DropForecast = include("drop_forecast")
 local RoomFeatures = include("room_features")
 local ItemNotes = include("item_notes")
+local SacrificeForecast = include("sacrifice_forecast")
 local M = {}
 
 function M.new()
@@ -214,6 +215,67 @@ local function slotPrize(state, game, r, roomPool, sameRoom)
     return c
 end
 
+-- A sacrifice's outcome (sacrifice_forecast.lua) as contents for a label:
+-- {loot, extras, items, words = {{key, bad}}, lead}.
+local SAC_WORDS = {nothing = "sac_nothing", angelTeleport = "sac_teleport", trollBombs = "sac_trollBombs"}
+local function sacrificeContents(state, game, o, ctx, roomPool, sameRoom)
+    local c = {loot = {}, extras = {}, items = {}, words = {}}
+    local function pick(pool, seed)
+        if not (state.forecast and not state.forecastError) then return false end
+        local ok, list = pcall(ItemForecast.containerItems, state.forecast, game, {{pool = pool, pickSeed = seed}}, nil, sameRoom)
+        if ok and list[1] then c.items[#c.items+1] = list[1]; return true end
+        return false
+    end
+    if o.kind == "penny" or o.kind == "coins" then c.loot.coin = o.coins or 1
+    elseif o.kind == "bomb" then c.loot.bomb = 1
+    elseif o.kind == "soulHeart" then
+        c.loot.soul = 1
+        if o.orRedemption then c.items[1] = {id = SacrificeForecast.REDEMPTION, altOf = SacrificeForecast.REDEMPTION} end
+    elseif o.kind == "soulHearts" then c.loot.soul = 7
+    elseif o.kind == "redemption" then c.items[1] = {id = o.fixedItem}
+    elseif o.kind == "angelItem" then
+        if not pick(o.item.pool, o.item.pickSeed) then c.lead = "sac_angelItem" end
+    elseif o.kind == "angelChance" then c.words[1] = {o.angelChance >= 0.5 and "sac_angel50" or "sac_angel15"}
+    elseif o.kind == "chest" then
+        c.lead = "sac_chest"
+        local held = o.chest and containerContents(state, game, o.chest.variant, o.chest.subtype, o.chest.seed,
+            o.chest.seed, ctx, roomPool, sameRoom)
+        if held then c.loot, c.extras, c.items = held.loot, held.extras, held.items end
+    elseif o.kind == "boss" then c.words[1] = {o.boss == 271 and "sac_uriel" or "sac_gabriel", true}
+    elseif o.kind == "darkRoom" then c.words[1] = {o.teleport == "start" and "sac_start" or "sac_darkRoom"}
+    elseif SAC_WORDS[o.kind] then c.words[1] = {SAC_WORDS[o.kind], o.kind == "trollBombs"}
+    end
+    return c
+end
+-- The sacrifice context on top of the room-feature one. Redemption: the
+-- item emulator knows whether the pools still hold it (nil when it cannot).
+local function sacrificeContext(state, game, ctx, inRoom)
+    local sctx = setmetatable({}, {__index = ctx})
+    SacrificeForecast.addContext(sctx, game)
+    if not inRoom then sctx.done = false end
+    if sctx.redemptionAvailable == nil and state.forecast and not state.forecastError and state.forecast.exact then
+        local ok, removed = pcall(function() return state.forecast.emu:isRemoved(SacrificeForecast.REDEMPTION) end)
+        if ok then sctx.redemptionAvailable = not removed end
+    end
+    return sctx
+end
+-- The sacrifices worth a line in the room list, up to the 12th (at least
+-- three ahead): an angel room teleport, an angel item or Redemption, the
+-- Dark Room. At most two, first come first.
+local SAC_NOTABLE = {angelTeleport = true, angelItem = true, redemption = true, darkRoom = true}
+local function sacrificePrizes(state, game, seed, count, ctx, roomPool, sameRoom)
+    local out = {}
+    local list = SacrificeForecast.forecast(seed, count, ctx, math.max(3, 12 - count))
+    for _, o in ipairs(list) do
+        if SAC_NOTABLE[o.kind] and #out < 2 then
+            local c = sacrificeContents(state, game, o, ctx, roomPool, sameRoom)
+            c.key, c.nth = "sacrifice", o.n
+            out[#out+1] = c
+        end
+    end
+    return out
+end
+
 -- Item infos for the room's list, from a container's {id, altOf}.
 local function chestItems(list, into)
     for _, item in ipairs(list) do
@@ -228,9 +290,12 @@ end
 -- something when broken or put out, and their items. Also logs each one on
 -- the first scan of a room (IAD FEAT) and every change after (IAD FEATX),
 -- for checking the forecasts against the drops.
-local POOP_GRID, PLATE_GRID = 14, 20
+local POOP_GRID, PLATE_GRID, SPIKES_GRID = 14, 20, 8
+local SANGUINE = 100
+local SANGUINE_WORDS = {damage = "sang_damage", blackHearts = "sang_black", item = "sang_item",
+    leviathan = "sang_leviathan"}
 local function u32(n) return n and n & 0xFFFFFFFF or -1 end
-local function featureScan(state, game, room, entities, ctx, roomPool, labels, loot, items)
+local function featureScan(state, game, room, entities, ctx, roomPool, labels, loot, items, index)
     state.featLog = state.featLog or {}
     local logged = state.featLog
     local function log(key, sig, line)
@@ -251,10 +316,47 @@ local function featureScan(state, game, room, entities, ctx, roomPool, labels, l
     end
     local poop = GridEntityType and GridEntityType.GRID_POOP or POOP_GRID
     local plate = GridEntityType and GridEntityType.GRID_PRESSURE_PLATE or PLATE_GRID
+    local spikes = GridEntityType and GridEntityType.GRID_SPIKES or SPIKES_GRID
+    local sacrificeRoom = room:GetType() == SacrificeForecast.ROOM_SACRIFICE
     for i = 0, room:GetGridSize() - 1 do
         local g = room:GetGridEntity(i)
         local t = g and g:GetType()
-        if t == poop or (t == plate and g:GetVariant() == 1) then
+        if t == spikes and (sacrificeRoom or g:GetVariant() > SANGUINE) then
+            -- What the next sacrifices give: the spike's own RNG (read,
+            -- never advanced) and how many were made (VarData). Sanguine
+            -- Bond's spikes in a devil room roll differently.
+            local d = g:GetSaveState()
+            local okSeed, seed = pcall(function() return g:GetRNG():GetSeed() end)
+            seed = okSeed and seed or d.VariableSeed
+            local count = g.VarData or d.VarData or 0
+            local sctx = sacrificeContext(state, game, ctx, true)
+            local label
+            if g:GetVariant() > SANGUINE then
+                local o = SacrificeForecast.sanguine(seed, sctx)
+                log("s" .. i, u32(seed), string.format("sanguine g=%d seed=%d next=%s", i, u32(seed), o.kind))
+                local c = {loot = {}, extras = {}, items = {}, words = {}}
+                if o.kind == "coins" then c.loot.coin = 6
+                else c.words[1] = {SANGUINE_WORDS[o.kind] or "sac_nothing"} end
+                label = {sacrifice = {c}}
+            else
+                local list = SacrificeForecast.forecast(seed, count, sctx, 3)
+                local kinds = {}
+                for _, o in ipairs(list) do kinds[#kinds+1] = o.kind end
+                log("s" .. i, count .. ":" .. u32(seed), string.format("sacrifice g=%d v=%d count=%d seed=%d done=%s next=%s",
+                    i, g:GetVariant(), count, u32(seed), tostring(sctx.done), table.concat(kinds, ",")))
+                local outcomes = {}
+                for _, o in ipairs(list) do
+                    local c = sacrificeContents(state, game, o, sctx, roomPool, true)
+                    c.n = o.n
+                    outcomes[#outcomes+1] = c
+                end
+                label = {sacrifice = outcomes, done = sctx.done}
+                -- Kept for the room list after we leave.
+                state.sacrificePrizes = state.sacrificePrizes or {}
+                if index then state.sacrificePrizes[index] = sacrificePrizes(state, game, seed, count, sctx, roomPool, true) end
+            end
+            place(g.Position.X, g.Position.Y, label, {rock = true})
+        elseif t == poop or (t == plate and g:GetVariant() == 1) then
             local d = g:GetSaveState()
             local v, st = g:GetVariant(), g.State
             log("g" .. i, st, string.format("g=%d t=%d v=%d st=%d ss=%d vd=%d", i, t, v, st, u32(d.SpawnSeed), d.VarData or 0))
@@ -400,7 +502,7 @@ local function scanRoom(state, game, index, entities, rocks, player)
         end
     end
     if ctx then
-        local ok, err = pcall(featureScan, state, game, room, entities, ctx, roomPool, containers, loot, contents)
+        local ok, err = pcall(featureScan, state, game, room, entities, ctx, roomPool, containers, loot, contents, index)
         if not ok and not state.featureErrorLogged then
             state.featureErrorLogged = true
             Isaac.DebugString("IAD INTEL: features " .. tostring(err))
@@ -496,6 +598,19 @@ local function forecastRooms(state, game)
                 -- A chest or sack the layout always places: its InitSeed
                 -- (as a pedestal's) decides its kind and what it holds.
                 local layout = room.layout
+                -- A sacrifice room: what its spikes give, from the layout
+                -- spawn's seed, as prizes in the room list.
+                if layout and layout.sacrifice and room.type == SacrificeForecast.ROOM_SACRIFICE then
+                    ctx = ctx or contentsContext(game, nil)
+                    if ctx then
+                        pcall(function()
+                            local sctx = sacrificeContext(state, game, ctx, false)
+                            local first = SacrificeForecast.initialRngSeed(SacrificeForecast.layoutSeed(room.spawnSeed, layout.sacrifice))
+                            local prizes = sacrificePrizes(state, game, first, 0, sctx, nil, false)
+                            if #prizes > 0 then state.slotPrizes[room.index] = prizes end
+                        end)
+                    end
+                end
                 local hasFeatures = layout and layout.featureSpawns and #layout.featureSpawns > 0
                 if layout and ((layout.containers and #layout.containers > 0) or hasFeatures) then
                     ctx = ctx or contentsContext(game, nil)
@@ -648,6 +763,10 @@ function M.update(state, game, room, entities, frame, player)
     for _, r in ipairs(state.map.rooms) do
         if not r.visited and state.contentLoot then r.contentLoot = state.contentLoot[r.index] end
         if not r.visited and state.slotPrizes then r.slotPrizes = state.slotPrizes[r.index] end
+        -- A sacrifice room seen: its spikes' next notable payouts.
+        if r.visited and state.sacrificePrizes and state.sacrificePrizes[r.index] then
+            r.slotPrizes, r.keepPrizes = state.sacrificePrizes[r.index], true
+        end
         if r.visited and state.features then r.features = state.features[r.index] end
     end
     state.score = FloorScore.evaluate(state.map.rooms, items, state.loot, state.predicted, okAccess and access or nil)

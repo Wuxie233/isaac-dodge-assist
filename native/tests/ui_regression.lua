@@ -181,3 +181,19 @@ local tip=table.concat(texts,'|')
 UI.setLang(nil)
 assert(tip:find('Guppy|P1 2/3|P3 0/3',1,true) and tip:find('Seraphim|P1 0/3|P3 done',1,true) and tip:find('Spindown:|',1,true),'notes: '..tip)
 print('PASS pedestal notes: transformation progress per player, Spindown chain (skips, Car Battery, Dad\'s Note)')
+
+-- Sacrifice spikes (0.26.0): one line per coming sacrifice; a finished
+-- room says so; Sanguine Bond's single "next" line.
+UI.setLang('en')
+texts={};ItemView.renderContainers({{x=0,y=0,rock=true,sacrifice={
+ {n=3,loot={},items={},extras={},words={{'sac_angel15'}}},
+ {n=4,lead='sac_chest',loot={coin=5,key=1},items={},extras={},words={}},
+ {n=5,loot={},items={},extras={},words={{'sac_nothing'}}}}}},Vector(0,20))
+local sac=table.concat(texts,'|')
+assert(sac:find('#3:|angel chance +15%|#4:|chest|coins 5|keys 1|#5:|nothing',1,true),'sacrifice label: '..sac)
+texts={};ItemView.renderContainers({{x=0,y=0,rock=true,done=true,sacrifice={}}},Vector(0,20))
+assert(table.concat(texts,'|')=='sacrifices done','done: '..table.concat(texts,'|'))
+texts={};ItemView.renderContainers({{x=0,y=0,rock=true,sacrifice={{loot={coin=6},items={},extras={},words={}}}}},Vector(0,20))
+assert(table.concat(texts,'|')=='Next:|coins 6','sanguine: '..table.concat(texts,'|'))
+UI.setLang(nil)
+print('PASS sacrifice labels: next three sacrifices, finished room, Sanguine Bond')

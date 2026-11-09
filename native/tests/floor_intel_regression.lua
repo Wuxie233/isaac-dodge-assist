@@ -556,3 +556,48 @@ assert(listed and listed.prizes and listed.features.goldenPoop==1,'room list mis
 Isaac.GetPlayer=onePlayer;level.GetStage=nil;room.GetType=nil;game.GetRoom=gameRoom
 room.GetGridEntity,room.GetGridSize=grid2,size2
 print('PASS feature drops: golden poop and beggar in the room (labels, logs), in a layout not entered (loot, first prize)')
+-- 0.26.0 sacrifice rooms. B78YY60D's 13.4 (room SpawnSeed 3222472336,
+-- spikes = layout spawn 1): not entered, its notable sacrifices are prizes
+-- in the room list; standing in it with two sacrifices made, the spikes
+-- show the next three and log them.
+local SF=include('sacrifice_forecast')
+Isaac.GetPlayer=function()return ctxPlayer end
+ctxPlayer.HasGoldenKey=function()return false end;ctxPlayer.HasGoldenBomb=function()return false end
+ctxPlayer.GetNumBombs=function()return 3 end
+game.GetRoom=function()return room end;level.GetStage=function()return 2 end;level.GetStageType=function()return 0 end
+game.GetDevilRoomDeals=function()return 0 end;game.GetStateFlag=function()return false end;game.Challenge=0
+local sacType=13
+room.GetType=function()return RoomType.ROOM_DEFAULT end;room.GetBackdropType=function()return 1 end
+rooms={desc(0,6*13+6,1,RoomType.ROOM_DEFAULT,true),desc(1,6*13+7,1,sacType,false,{spawn({{5,0,0,1}}),spawn({{1930,0,0,1}})})}
+rooms[2].SpawnSeed=3222472336
+byIndex={};for _,d in ipairs(rooms)do byIndex[d.SafeGridIndex]=d end
+current=rooms[1];logs={}
+local sf=FloorIntel.startRun(FloorIntel.new(),game,false)
+FloorIntel.update(sf,game,room,function()return {}end,1)
+local want=SF.forLayout(3222472336,1,{resolve=false,devilDeals=0,stage=2},12)
+local notable={}
+for _,o in ipairs(want)do if (o.kind=='angelTeleport' or o.kind=='angelItem' or o.kind=='redemption' or o.kind=='darkRoom') and #notable<2 then notable[#notable+1]=o end end
+local got=sf.slotPrizes[1]
+assert(#notable>0 and got and #got==#notable and got[1].key=='sacrifice' and got[1].nth==notable[1].n,
+ 'sacrifice room prizes: '..tostring(got and got[1] and got[1].nth)..' vs '..tostring(notable[1] and notable[1].n))
+local listedSac;for _,r in ipairs(sf.score.roomList)do if r.index==1 then listedSac=r end end
+assert(listedSac and listedSac.prizes and listedSac.prizes[1].nth==notable[1].n,'sacrifice prizes not in the room list')
+-- In the room, two sacrifices made: the spike's live RNG is the layout's after two.
+local spikeGrid={Position={X=320,Y=280},State=0,VarData=2,GetType=function()return 8 end,GetVariant=function()return 1 end,
+ GetRNG=function()return {GetSeed=function()return want[2].rng end}end,GetSaveState=function()return {SpawnSeed=0,VarData=2,VariableSeed=want[2].rng}end}
+room.GetType=function()return sacType end
+room.GetGridSize=function()return 135 end
+room.GetGridEntity=function(_,i)if i==67 then return spikeGrid end return nil end
+rooms[2].VisitedCount=1;current=rooms[2];logs={}
+FloorIntel.newRoom(sf,game);sf.scanAt=-100
+FloorIntel.update(sf,game,room,function()return {}end,2)
+local sacLabel;for _,c in ipairs(sf.containers)do if c.sacrifice then sacLabel=c end end
+assert(sacLabel and #sacLabel.sacrifice==3 and sacLabel.sacrifice[1].n==3 and sacLabel.sacrifice[3].n==5,'spike label: '..table.concat(logs,' // '))
+local sacLog;for _,l in ipairs(logs)do if l:find('^IAD FEAT sacrifice g=67 v=1 count=2 ') then sacLog=l end end
+assert(sacLog and sacLog:find('next='..want[3].kind..','..want[4].kind..','..want[5].kind,1,true),'sacrifice log: '..tostring(sacLog))
+-- The room list keeps the seen room's coming payouts.
+local seenSac;for _,r in ipairs(sf.score.roomList)do if r.index==1 then seenSac=r end end
+assert(seenSac and seenSac.visited and seenSac.prizes and seenSac.prizes[1].key=='sacrifice','seen sacrifice room prizes')
+Isaac.GetPlayer=onePlayer;level.GetStage=nil;room.GetType=nil;game.GetRoom=gameRoom
+room.GetGridEntity,room.GetGridSize=grid2,size2
+print('PASS sacrifice rooms: notable payouts of a room not entered, the next three on the spikes, kept after leaving')

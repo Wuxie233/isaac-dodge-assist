@@ -147,7 +147,7 @@ function M.evaluate(rooms, items, loot, predicted, access)
         if name ~= "ROOM_DEFAULT" or #here > 0 or (unseenHere or 0) > 0 or valuable or notable then
             roomList[#roomList+1] = {index = room.index, type = room.type, visited = room.visited, colour = room.colour,
                 need = need, reach = reach, items = here, unseen = unseenHere or 0, loot = counts or {},
-                features = features, prizes = not room.visited and room.slotPrizes or nil,
+                features = features, prizes = (not room.visited or room.keepPrizes) and room.slotPrizes or nil,
                 points = itemPoints + lootPoints - before}
         end
     end
