@@ -129,6 +129,12 @@ local scored=FloorScore.evaluate({us,shop},{[2]={{id=3,quality=3,price=15}}},{},
 assert(scored.entries[1].id==3 and scored.entries[1].need=='coins' and scored.entries[2].need=='redLocked' and scored.entries[2].factor==0,'access entries')
 assert(math.abs(scored.items-FloorScore.ITEM[3]*FloorScore.SHOP_SHORT)<1e-9,'unreachable item counted: '..scored.items)
 print('PASS floor score access: red-door tools, bombs, keys from floor 2, coins, unreachable items last')
+-- Run B78YY60D (0.25.7): an item forecast inside a layout chest (kind
+-- "chest") stopped the floor intel for the rest of the run.
+local secret={index=3,type=RoomType.ROOM_SECRET,visited=false,cells={},layout={pedestals=1,shop=0,loot={}}}
+local withChest=FloorScore.evaluate({secret},{},{},{[3]={{id=182,quality=4,kind='pedestal',predicted=true},{id=3,quality=3,kind='chest',predicted=true}}})
+assert(math.abs(withChest.items-FloorScore.ITEM[4]-FloorScore.ITEM[3])<1e-9 and withChest.unseen==0,'chest item: '..withChest.items)
+print('PASS floor score: an item inside a chest counts, the layout pedestal is still the forecast one')
 
 -- Through FloorIntel.update: the current room's items and loot are kept,
 -- reward rocks are listed while unbroken.
@@ -296,6 +302,12 @@ local solo=setmetatable({GetNumPlayers=function()return 1 end},{__index=coop})
 local alone=FloorIntel.startRun(FloorIntel.new(),solo,false)
 FloorIntel.update(alone,solo,room,function()return {}end,1)
 assert(#alone.predicted[1]==1 and alone.predicted[1][1].id==196,'solo boss forecast')
+-- A partner who is a co-op ghost gets no item (B78YY60D, Wormwood).
+people[2].IsCoopGhost=function()return true end
+local haunted=FloorIntel.startRun(FloorIntel.new(),coop,false)
+FloorIntel.update(haunted,coop,room,function()return {}end,1)
+assert(#haunted.predicted[1]==1,'ghost counted for a boss item')
+people[2].IsCoopGhost=nil
 -- Entering logs what was promised for the room.
 current=rooms[2];rooms[2].VisitedCount=1
 logs={}

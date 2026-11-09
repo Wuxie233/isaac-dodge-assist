@@ -7,7 +7,7 @@ function M.new(room,player,directions)
     local sx,sy=right.X-origin.X,below.Y-origin.Y
     local offsets,radius={},max(2,player.Size-1)
     for i,d in ipairs(directions) do offsets[i]={d.X*radius,d.Y*radius} end
-    return {room=room,width=width,size=size,sx=sx,sy=sy,offsets=offsets,
+    return {room=room,width=width,size=size,sx=sx,sy=sy,ox=origin.X,oy=origin.Y,offsets=offsets,
         cells={},radius=radius,flying=player.CanFly,point=Vector(0,0),queries=0,nativeCalls=6}
 end
 local function cell(ctx,index)
@@ -45,9 +45,19 @@ end
 function M.safe(ctx,x,y)
     ctx.queries=ctx.queries+1
     local point,room=ctx.point,ctx.room
-    point.X,point.Y=x,y
-    local index=room:GetGridIndex(point)
-    ctx.nativeCalls=ctx.nativeCalls+1
+    -- The cell from the grid pitch, in Lua: one GetGridIndex per query was
+    -- about 1000 engine calls an update (B78YY60D, median 987 calls).
+    local index
+    if ctx.sx>0 and ctx.sy>0 then
+        local column=floor((x-ctx.ox)/ctx.sx+0.5)
+        local row=floor((y-ctx.oy)/ctx.sy+0.5)
+        if column<0 or column>=ctx.width or row<0 then return false end
+        index=column+row*ctx.width
+    else
+        point.X,point.Y=x,y
+        index=room:GetGridIndex(point)
+        ctx.nativeCalls=ctx.nativeCalls+1
+    end
     if index<0 or index>=ctx.size then return false end
     local center=cell(ctx,index)
     if not center.pass then return false end

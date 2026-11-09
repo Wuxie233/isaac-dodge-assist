@@ -16,7 +16,7 @@ function M.new()
 end
 
 -- Movement input currently entering the queue, normalized to <= 1.
-function M.polled(player)
+function M.polled(player, mirror)
     if not (Input and Input.GetActionValue and ButtonAction) then return nil end
     local index = player.ControllerIndex or 0
     local ok, l, r, u, d = pcall(function()
@@ -24,7 +24,9 @@ function M.polled(player)
             Input.GetActionValue(ButtonAction.ACTION_UP, index), Input.GetActionValue(ButtonAction.ACTION_DOWN, index)
     end)
     if not ok or type(l) ~= "number" then return nil end
+    -- In world terms: the mirror world walks the left key to the right.
     local x, y = r - l, d - u
+    if mirror then x = -x end
     local length = sqrt(x*x + y*y)
     if length > 1 then x, y = x/length, y/length end
     return {X = x, Y = y}

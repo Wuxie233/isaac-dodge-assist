@@ -65,6 +65,14 @@ function M.decode(word)
     local move = (word >> 2) & 15
     return word & 3, move ~= NO_MOVE and move or nil, (word >> 6) & 7, (word & 512) ~= 0
 end
+-- The word with left and right swapped (mirror world: the game flips
+-- horizontal input, so the keys for a world direction are the other side's).
+local MIRROR_MOVE = {[0] = 0, 2, 1, 3, 4, 6, 5, 8, 7}
+local MIRROR_SHOOT = {[0] = 0, 2, 1, 3, 4}
+function M.mirror(word)
+    local mode, move, shoot, hold = M.decode(word)
+    return M.word(mode, move and MIRROR_MOVE[move], MIRROR_SHOOT[shoot] or shoot, hold)
+end
 
 local function has(player, method, enum, names)
     if not enum then return false end
@@ -742,17 +750,25 @@ local function chooseMove(state, ctx, costs)
         for i = 1, 9 do if open(i) and scores[i] == least then return i end end
     end
     local best, bestCost
+    -- Keeping the last direction while threats are about: B78YY60D (Stone
+    -- Head barrage) switched between L, RD and idle over six safe packets,
+    -- and with about two updates of input delay the player stood still.
+    -- About one step of cost then; a nudge otherwise.
+    local threatened = false
+    if scores then for i = 1, 9 do if scores[i] ~= 0 then threatened = true; break end end end
+    local stick = threatened and 40 or 6
     for i = 1, 9 do
         local score = scores and scores[i] or 0
         if open(i) and score <= limit then
             local cost = costs[i]
             if score < 0 then cost = cost + (score + SCALE) / 1024 * 0.1 end
-            if i == state.lastMove then cost = cost - 6 end
+            if i == state.lastMove then cost = cost - stick end
             if not bestCost or cost < bestCost then best, bestCost = i, cost end
         end
     end
     return best
 end
+M.chooseMove = chooseMove
 
 -- Taking damage drops a charge in progress: 2026-11-05, every release after
 -- a hit during the charge (3 of 3) produced nothing at the usual hold.

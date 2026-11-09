@@ -66,6 +66,10 @@ local STRINGS = {
         fl_haemolacria = "Haemolacria", fl_trisagion = "Trisagion", fl_sword = "Sword", fl_fetus = "Fetus shots",
         fl_charged = "charged attack", fl_oneEye = "one eye only", fl_random = "random stats", fl_character = "varies by character",
         horse = " (horse)", nextItem = "Then: %s", orWord = "or",
+        form_guppy = "Guppy", form_fly = "Beelzebub", form_mushroom = "Fun Guy", form_angel = "Seraphim",
+        form_bob = "Bob", form_syringe = "Spun", form_mom = "Yes Mother?", form_baby = "Conjoined",
+        form_devil = "Leviathan", form_poop = "Oh Crap", form_book = "Book Worm", form_spider = "Spider Baby",
+        formDone = "done", spindown = "Spindown:", spinNone = "nothing", spinBattery = "(Car Battery)",
     },
     zh = {
         dodge = "躲避", dodgeOff = "躲避已关闭（F6）", paused = "已暂停（`）", standby = "躲避",
@@ -116,6 +120,10 @@ local STRINGS = {
         fl_haemolacria = "血泪", fl_trisagion = "三圣颂", fl_sword = "圣剑", fl_fetus = "胎儿",
         fl_charged = "需蓄力", fl_oneEye = "只对单眼", fl_random = "随机属性", fl_character = "因角色而异",
         horse = "（大）", nextItem = "拿走后出：%s", orWord = "或",
+        form_guppy = "嗝屁猫", form_fly = "别西卜", form_mushroom = "蘑菇头", form_angel = "撒拉弗",
+        form_bob = "鲍勃", form_syringe = "嗑药", form_mom = "好的妈妈？", form_baby = "连体",
+        form_devil = "利维坦", form_poop = "拉了", form_book = "书虫", form_spider = "蜘蛛宝宝",
+        formDone = "已变身", spindown = "计数二十面骰：", spinNone = "空", spinBattery = "（车载电池）",
     },
 }
 M.STRINGS = STRINGS

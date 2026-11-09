@@ -58,6 +58,22 @@ local function nearestSquared(lines,ax,ay,bx,by)
     return best
 end
 
+-- A beam that follows a moving enemy (Vis, Gluttony) sweeps sideways as
+-- its owner speeds up; the snapshot only carries the owner's velocity now.
+-- B78YY60D: a Vis beam came 22 units sideways onto the player with two
+-- updates of warning. A band 24 wider on each side, as a warning.
+local FOLLOW_BAND = 24
+function M.followBand(laser, shape)
+    if not shape or shape.ring or shape.warning then return nil end
+    local parent = laser.Parent
+    if not parent or laser.DisableFollowParent or not parent:ToNPC() then return nil end
+    local band = {}
+    for k, v in pairs(shape) do band[k] = v end
+    -- width is measured from the beam's centre line, like a radius.
+    band.width, band.warning = shape.width + FOLLOW_BAND, true
+    return band
+end
+
 function M.snapshot(laser)
     -- Both native laser update paths skip collision damage when Entity._dead
     -- is set, while leaving the entity around to draw its disappearance.
@@ -98,7 +114,8 @@ end
 -- first update the beam existed, so a beam-only detector cannot react.
 -- The beam is committed once the wind-up starts: predict it as a hit.
 -- Double Vis fires its pair from "Attack02<dir>": the beams appeared on
--- frame 32 and hit on 34 (2026-11-04).
+-- frame 32 and hit on 34 (2026-11-04). Super Gluttony (49.1) fires its
+-- pair the same way (B78YY60D: hit on Attack02Horiz frame 34).
 local brimstoneAngles = {Horiz={0,180}, Left={180}, Right={0}, Down={90}, Up={270}}
 local BRIMSTONE_FRAME, DOUBLE_VIS_FRAME = 27, 31
 local function appendBrimstone(npc, room, shapes)
@@ -108,7 +125,7 @@ local function appendBrimstone(npc, room, shapes)
     local sprite = npc:GetSprite()
     local animation = sprite:GetAnimation()
     local side, frame = animation:match("^Attack01(%a+)$"), BRIMSTONE_FRAME
-    if not side and npc.Type == EntityType.ENTITY_VIS and npc.Variant == 1 then
+    if not side and npc.Variant == 1 then
         side, frame = animation:match("^Attack02(%a+)$"), DOUBLE_VIS_FRAME
     end
     local angles = side and brimstoneAngles[side]

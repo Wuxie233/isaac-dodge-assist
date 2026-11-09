@@ -174,8 +174,43 @@ end
 -- Tooltip over the collectible pedestal nearest the player (within reach):
 -- name, quality and stat changes, and in a co-op boss room the item the
 -- next pedestal will hold once this one is taken (with Tainted Isaac, both
--- of its items). pedestal = {x, y, id, price, next, nextOr}.
+-- of its items). Then the notes (item_notes.lua): each transformation the
+-- item counts toward with every player's progress ("Guppy P1 2/3 P2 0/3"),
+-- and what the next Spindown Dice uses turn it into.
+-- pedestal = {x, y, id, price, next, nextOr, notes}.
 local REACH = 70
+function M.noteLines(notes)
+    local lines = {}
+    if not notes then return lines end
+    for _, f in ipairs(notes.forms or {}) do
+        local words = {{UI.t("form_" .. f.key), UI.TEXT}}
+        for _, c in ipairs(f.counts) do
+            local done = c[3]
+            local text = (#f.counts > 1 and ("P" .. c[1] .. " ") or "") ..
+                (done and UI.t("formDone") or (math.min(c[2], 3) .. "/3"))
+            -- One more makes it: worth knowing who should take the item.
+            local colour = done and UI.MUTED or (c[2] >= 2 and UI.GOOD or UI.DIM)
+            words[#words+1] = {text, colour}
+        end
+        lines[#lines+1] = words
+    end
+    if notes.spin then
+        local words = {{UI.t("spindown"), UI.MUTED}}
+        for i, id in ipairs(notes.spin.ids) do
+            local quality = id > 0 and UI.quality(id) or nil
+            local text = id > 0 and (UI.itemName(id) .. " Q" .. tostring(quality or "?")) or UI.t("spinNone")
+            words[#words+1] = {(i > 1 and "> " or "") .. text, UI.QUALITY[quality or 1] or UI.TEXT}
+        end
+        if notes.spin.carBattery then words[#words+1] = {UI.t("spinBattery"), UI.DIM} end
+        lines[#lines+1] = words
+    end
+    return lines
+end
+local function wordsWidth(words)
+    local w = 0
+    for i, word in ipairs(words) do w = w + UI.width(word[1]) + (i > 1 and UI.width(" ")*2 or 0) end
+    return w
+end
 function M.renderTooltip(pedestals, player)
     local best, bestD
     for _, p in ipairs(pedestals) do
@@ -198,17 +233,18 @@ function M.renderTooltip(pedestals, player)
         end
         after = UI.t("nextItem", named) .. "  Q" .. tostring(afterQuality or "?")
     end
-    local w = math.max(UI.width(title), after and UI.width(after) or 0)
-    local statsW = 0
-    for _, word in ipairs(words) do statsW = statsW + UI.width(word[1]) + UI.width(" ")*2 end
-    w = math.max(w, statsW)
-    local lines = 1 + (#words > 0 and 1 or 0) + (after and 1 or 0)
+    local notes = M.noteLines(best.notes)
+    local w = math.max(UI.width(title), after and UI.width(after) or 0, wordsWidth(words))
+    for _, n in ipairs(notes) do w = math.max(w, wordsWidth(n)) end
+    local lines = 1 + (#words > 0 and 1 or 0) + (after and 1 or 0) + #notes
     local point = Isaac.WorldToScreen(Vector(best.x, best.y))
     local x, y = point.X - w/2, point.Y - 46 - (lines - 1)*lh
     UI.rect(x - 4, y - 2, w + 8, lh*lines + 4, {0, 0, 0}, 0.6)
     UI.text(title, x, y, UI.QUALITY[quality or 1] or UI.TEXT, 1)
-    if #words > 0 then line(words, x, y + lh, x + w + 1, 1) end
-    if after then UI.text(after, x, y + (lines - 1)*lh, UI.QUALITY[afterQuality or 1] or UI.TEXT, 1) end
+    local row = 1
+    if #words > 0 then line(words, x, y + lh, x + w + 1, 1); row = 2 end
+    if after then UI.text(after, x, y + row*lh, UI.QUALITY[afterQuality or 1] or UI.TEXT, 1); row = row + 1 end
+    for _, n in ipairs(notes) do line(n, x, y + row*lh, x + w + 1, 1); row = row + 1 end
 end
 
 -- Cards, runes and soul stones on the floor (shop ones too): a tarot card

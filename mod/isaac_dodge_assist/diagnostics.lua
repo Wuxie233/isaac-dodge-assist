@@ -65,11 +65,30 @@ function M.bombs(frame, bombs)
             bomb.Velocity.X, bomb.Velocity.Y, s:GetAnimation(), s:GetFrame(), bomb.RadiusMultiplier or 1))
     end
 end
+-- First sight of each enemy shot near the player (IAD SHOT): its age and
+-- distance when the sensor first saw it within SHOT_NEAR, and whether the
+-- field took it. B78YY60D had five hits 1-4 updates after the shot showed
+-- up; this tells a point-blank spawn from a filter that dropped it. At most
+-- SHOT_CAP a room.
+local SHOT_NEAR, SHOT_CAP = 150, 40
+local shots, shotCount = {}, 0
+function M.shot(frame, projectile, player, included)
+    if shotCount >= SHOT_CAP or shots[projectile.InitSeed] then return end
+    local distance = projectile.Position:Distance(player.Position)
+    if distance >= SHOT_NEAR then return end
+    shots[projectile.InitSeed], shotCount = true, shotCount + 1
+    safe(function()
+        Isaac.DebugString(string.format("IAD SHOT: frame=%d age=%s dist=%.0f %s spawnerType=%s included=%s",
+            frame, tostring(projectile.FrameCount), distance, entity(projectile), tostring(projectile.SpawnerType),
+            tostring(included)))
+    end)
+end
 function M.reset(reason)
     M.flushPerformance(reason or "reset")
     history,decision,lastDump,warned={},"none",-1000,false
     planner="none"
     trace={}
+    shots,shotCount={},0
 end
 -- One aggregate every 90 active updates, not a second per-frame log stream.
 function M.performance(frame,total,scan,field,plan,calls)
@@ -142,6 +161,7 @@ function M.hit(frame,player,source,amount,flags,entities)
         local e=source and source.Entity
         Isaac.DebugString("IAD DIAG HIT: frame="..frame.." source="..(e and entity(e) or "none")..
             " parent="..id(e and e.Parent).." spawner="..id(e and e.SpawnerEntity)..
+            " spawnerType="..tostring(e and e.SpawnerType)..
             " amount="..amount.." flags="..tostring(flags).." player="..xy(player.Position))
         Isaac.DebugString("IAD DIAG DECISION: "..decision.." (sensor scores; not native movement receipt)")
         if frame-lastDump<15 then return end

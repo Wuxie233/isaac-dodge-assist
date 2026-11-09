@@ -107,7 +107,8 @@ function M.evaluate(rooms, items, loot, predicted, access)
             choice.factor = math.max(choice.factor or 0, factor)
             choice.id = choice.id or item.id
             choice.predicted = choice.predicted or item.predicted
-            if item.kind and not item.altOf then found[item.kind] = found[item.kind] + 1 end
+            -- Chest items ("chest") count toward no layout slot.
+            if found[item.kind] and not item.altOf then found[item.kind] = found[item.kind] + 1 end
             entries[#entries+1] = {id = item.id, quality = q, name = item.name, roomType = room.type, altOf = item.altOf,
                 predicted = item.predicted, price = item.price or 0, devil = item.devil, need = itemNeed, factor = factor,
                 choice = choice}

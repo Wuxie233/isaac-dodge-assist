@@ -112,10 +112,14 @@ end
 function M.players(game)
     local seen, n = {}, 0
     for i = 0, game:GetNumPlayers() - 1 do
-        local controller = Isaac.GetPlayer(i).ControllerIndex or i
-        if not seen[controller] then seen[controller], n = true, n + 1 end
+        local player = Isaac.GetPlayer(i)
+        local controller = player.ControllerIndex or i
+        -- A co-op ghost gets no item (B78YY60D: Wormwood dropped one with
+        -- our player dead, the second forecast item never came).
+        local ghost = player.IsCoopGhost and player:IsCoopGhost()
+        if not seen[controller] and not ghost then seen[controller], n = true, n + 1 end
     end
-    return n
+    return math.max(1, n)
 end
 
 local VOID = 12

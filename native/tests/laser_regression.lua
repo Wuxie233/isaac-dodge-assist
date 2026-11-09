@@ -73,7 +73,20 @@ beams={};L.appendWarnings(windUp(49,0,'Walk',10),room,beams);assert(#beams==0,'w
 beams={};L.appendWarnings(windUp(39,1,'Attack02Horiz',21),room,beams)
 assert(#beams==2 and beams[1].activeFrom==10 and L.clearanceXY(beams[2],100,182,100,182,10,10)<0,'double vis pair missed')
 beams={};L.appendWarnings(windUp(39,0,'Attack02Horiz',21),room,beams);assert(#beams==0,'plain vis Attack02 fired')
-print('PASS brimstone wind-up: Gluttony horizontal pair, Vis down, Double Vis pair, timing, Chubber/walk exclusions')
+-- Super Gluttony (49.1) fires its pair the same way (B78YY60D, frame 34).
+beams={};L.appendWarnings(windUp(49,1,'Attack02Horiz',25),room,beams)
+assert(#beams==2 and beams[1].activeFrom==6,'super gluttony pair missed')
+beams={};L.appendWarnings(windUp(49,0,'Attack02Horiz',25),room,beams);assert(#beams==0,'plain gluttony Attack02 fired')
+print('PASS brimstone wind-up: Gluttony horizontal pair, Vis down, Double Vis and Super Gluttony pairs, timing, Chubber/walk exclusions')
+-- A beam following a moving enemy also warns 24 to each side (B78YY60D Vis).
+local vis={ToNPC=function(self)return self end}
+local beamShape={origin=Vector(300,180),velocity=Vector(0,0),ring=false,width=22,points={Vector(0,0),Vector(400,0)},reach=400,angularSpeed=0,delay=0}
+local band=L.followBand({Parent=vis},beamShape)
+assert(band and band.warning and band.width==46 and beamShape.width==22 and not beamShape.warning,'follow band')
+assert(L.clearanceXY(band,320,180+50,320,180+50,0,10)<0 and L.clearanceXY(beamShape,320,180+50,320,180+50,0,10)>0,'band covers the side')
+assert(L.followBand({Parent=vis,DisableFollowParent=true},beamShape)==nil and L.followBand({},beamShape)==nil and
+ L.followBand({Parent={ToNPC=function()return nil end}},beamShape)==nil,'band only for beams that follow an enemy')
+print('PASS follow band: a beam riding a moving enemy warns to both sides')
 -- Rage Creep fires from its wall into the room (room 40..560 x 40..320).
 EntityType.ENTITY_RAGE_CREEP=241
 local function creep(x,y,animation,frame)

@@ -273,4 +273,26 @@ local rolling=fused(240,280,48);rolling.Velocity=Vector(3,0);mark=#logs
 replay(Vector(360,345),Vector(0,0),{rolling})
 assert(bombLines(mark)>=1,'rolling bomb not recorded')
 print('PASS chain knockback: pushed blasts swept along the push, chained in order, limits and replay')
+-- B78YY60D (0.25.9): Wormwood surfacing (Attack2, collides from frame 8),
+-- Satan's foot (Stomp frame 26, 78 from centre) and Mom's arm tip (63
+-- inward, 37 aside) are hits in the right updates.
+EntityType.ENTITY_PIN,EntityType.ENTITY_SATAN,EntityType.ENTITY_MOM=EntityType.ENTITY_PIN or 62,EntityType.ENTITY_SATAN or 84,EntityType.ENTITY_MOM or 45
+local function areasOf(fn,npc)local out={};fn(npc,out);return out end
+local worm=entity(EntityType.ENTITY_PIN,3,'Attack2',3);worm.Position,worm.Size=Vector(480,320),13
+local a=areasOf(NpcHazards.wormwood,worm)
+assert(#a==1 and a[1].from==4 and a[1].to==6 and a[1].radius==16 and not a[1].warning,'wormwood surfacing')
+worm=entity(EntityType.ENTITY_PIN,3,'Attack2',9);assert(#areasOf(NpcHazards.wormwood,worm)==0,'wormwood after surfacing')
+worm=entity(EntityType.ENTITY_PIN,0,'Attack2',3);assert(#areasOf(NpcHazards.wormwood,worm)==0,'pin is not wormwood')
+local foot=entity(EntityType.ENTITY_SATAN,10,'Stomp',20);foot.Position,foot.Size=Vector(135.8,193.2),55
+a=areasOf(NpcHazards.satanStomp,foot)
+assert(#a==1 and a[1].from==4 and a[1].to==8 and a[1].radius==70,'satan stomp')
+assert(a[1].position:Distance(Vector(70.4,150.6))<a[1].radius+10,'logged hit inside the stomp')
+foot=entity(EntityType.ENTITY_SATAN,10,'Stomp',28);assert(#areasOf(NpcHazards.satanStomp,foot)==0,'stomp over')
+local mom=entity(EntityType.ENTITY_MOM,0,'ArmOpen',5);mom.Position=Vector(320,135)
+local roomStub={GetCenterPos=function()return Vector(320,280)end}
+a={};NpcHazards.momArm(mom,roomStub,a)
+local covered=false
+for _,area in ipairs(a)do if area.position:Distance(Vector(282.7,198.5))<=area.radius+10 then covered=true end end
+assert(#a==3 and covered,'mom arm tip misses the B78YY60D hit')
+print('PASS npc hazards: Wormwood surfacing, Satan stomp, Mom arm tip')
 for _,line in ipairs(logs)do assert(not line:find('IAD LOADER: core error',1,true),line)end

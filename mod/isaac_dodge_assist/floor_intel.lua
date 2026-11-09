@@ -9,6 +9,7 @@ local PillInfo = include("pill_info")
 local ChestForecast = include("chest_forecast")
 local DropForecast = include("drop_forecast")
 local RoomFeatures = include("room_features")
+local ItemNotes = include("item_notes")
 local M = {}
 
 function M.new()
@@ -321,14 +322,21 @@ local function scanRoom(state, game, index, entities, rocks, player)
     local first = state.firstOnPedestal[index] or {}
     state.firstOnPedestal[index] = first
     local loot = {}
+    -- Who could take a pedestal's item, for its transformation and
+    -- Spindown notes.
+    local okPeople, people = pcall(ItemNotes.players, game)
+    people = okPeople and people or nil
     for _, e in ipairs(entities) do
         local pickup = e.Type == EntityType.ENTITY_PICKUP and e.ToPickup and e:ToPickup()
         if pickup then
             if PickupVariant and pickup.Variant == PickupVariant.PICKUP_COLLECTIBLE then
                 if pickup.SubType > 0 then
                     ItemForecast.seen(forecast, pickup.SubType)
+                    local okNotes, notes = false, nil
+                    if people then okNotes, notes = pcall(ItemNotes.notes, pickup.SubType, game, people) end
                     pedestals[#pedestals+1] = {x = pickup.Position.X, y = pickup.Position.Y, id = pickup.SubType,
-                        price = pickup.Price or 0, seed = pickup.InitSeed and pickup.InitSeed & 0xFFFFFFFF}
+                        price = pickup.Price or 0, seed = pickup.InitSeed and pickup.InitSeed & 0xFFFFFFFF,
+                        notes = okNotes and notes or nil}
                 end
                 local seed = pickup.InitSeed and pickup.InitSeed & 0xFFFFFFFF
                 if pickup.SubType > 0 and not seen[pickup.SubType] then

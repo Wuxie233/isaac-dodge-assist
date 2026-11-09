@@ -9,9 +9,10 @@ local M = {}
 -- frame 7, 12-76 units inward from the door and up to 26 to the side. Three
 -- circles along the arm ({inward, radius}, plus the player's own size added
 -- by the field) cover every recorded point by >=8 units without sealing the
--- whole doorway, so an escape stays reachable.
+-- whole doorway, so an escape stays reachable. B78YY60D added a hit 63
+-- inward and 37 to the side: the tip circle widened from 20 to 30.
 local ARM_HIT, ARM_LAST = 7, 12
-local ARM = {{15, 24}, {40, 24}, {62, 20}}
+local ARM = {{15, 24}, {40, 24}, {62, 30}}
 function M.momArm(npc, room, out)
     if npc.Type ~= EntityType.ENTITY_MOM or npc.Variant ~= 0 then return end
     local sprite = npc:GetSprite()
@@ -25,6 +26,35 @@ function M.momArm(npc, room, out)
         out[#out+1] = {position=npc.Position + inward*part[1], velocity=Vector(0,0),
             radius=part[2], from=math.max(0, ARM_HIT-1-f), to=ARM_LAST-f}
     end
+end
+
+-- Wormwood (62.3) surfaces with "Attack2" at a fixed spot (a grid centre)
+-- and collides from frame 8 on; underground its collision class is 0, so
+-- the contact model cannot see it coming. B78YY60D: both hits on frame 8,
+-- the player 21-22 units from its centre. A hit at its body (the field adds
+-- the player's size) for the updates around the surfacing.
+local WORMWOOD, SURFACE_FRAME = 3, 8
+function M.wormwood(npc, out)
+    if npc.Type ~= EntityType.ENTITY_PIN or npc.Variant ~= WORMWOOD then return end
+    local sprite = npc:GetSprite()
+    if sprite:GetAnimation() ~= "Attack2" then return end
+    local f = sprite:GetFrame()
+    if f > SURFACE_FRAME then return end
+    out[#out+1] = {position=npc.Position, velocity=Vector(0,0), radius=npc.Size+3,
+        from=math.max(0, SURFACE_FRAME-1-f), to=SURFACE_FRAME+1-f}
+end
+-- Satan's foot (84.10) comes down with "Stomp": B78YY60D took 2 hearts on
+-- frame 26 at 78 units centre to centre, the edge of the landing warning
+-- (Size + 23). A hit of Size + 15 (plus the player's size) for frames 25-27.
+local SATAN_FOOT, STOMP_FROM, STOMP_TO = 10, 25, 27
+function M.satanStomp(npc, out)
+    if npc.Type ~= EntityType.ENTITY_SATAN or npc.Variant ~= SATAN_FOOT then return end
+    local sprite = npc:GetSprite()
+    if sprite:GetAnimation() ~= "Stomp" then return end
+    local f = sprite:GetFrame()
+    if f > STOMP_TO then return end
+    out[#out+1] = {position=npc.Position, velocity=Vector(0,0), radius=npc.Size+15,
+        from=math.max(0, STOMP_FROM-1-f), to=STOMP_TO+1-f}
 end
 
 -- Every bomb blast in the 0.12.4-0.12.6 logs (normal and troll bombs) landed

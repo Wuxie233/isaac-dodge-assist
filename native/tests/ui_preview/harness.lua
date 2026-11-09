@@ -87,7 +87,9 @@ if scene == "page" then
     ItemView.renderPage(score)
 elseif scene == "room" then
     Hud.render(Hud.new(), {state = "MONITOR / HELPER", combatMode = 2, score = score}, 48, 50)
-    ItemView.renderTooltip({{x = 240, y = 150, id = 118, price = 0, next = 182, nextOr = 34}}, Vector(240, 175))
+    ItemView.renderTooltip({{x = 240, y = 150, id = 118, price = 0, next = 182, nextOr = 34,
+        notes = {forms = {{key = "devil", counts = {{1, 2, false}, {2, 3, true}}}}, spin = {ids = {117, 116, 115}}}}},
+        Vector(240, 175))
     ItemView.renderPills({{x = 150, y = 200, effect = 1}, {x = 330, y = 200, effect = 8, horse = true}})
     -- Shop cards: names over each, the nearest one's effect too.
     ItemView.renderCards({{x = 90, y = 230, id = 1}, {x = 170, y = 230, id = 46}, {x = 400, y = 230, id = 81}}, Vector(90, 250))

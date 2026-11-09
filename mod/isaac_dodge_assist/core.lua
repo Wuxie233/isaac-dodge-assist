@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.25.8"
+local VERSION = "0.25.9"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
@@ -31,9 +31,18 @@ local kinematics = PlayerMotion.new()
 local inputs = InputQueue.new()
 local combat, combatWord = Combat.new(), 0
 -- Floor map, seen items and loot, floor score (F5 shows the map).
-local intel, intelFailed = FloorIntel.new(), false
+local intel = FloorIntel.new()
 -- On-screen status, score line and key-press toasts (hud.lua).
-local hud, hudFailed = Hud.new(), false
+local hud = Hud.new()
+-- Intel and HUD errors never stop the dodging. Each distinct one is logged
+-- once (a single flag hid a second fault behind the first), up to 10.
+local extraErrors, extraErrorCount = {}, 0
+local function extraError(what, err)
+    local text = what .. ": error " .. tostring(err)
+    if extraErrors[text] or extraErrorCount >= 10 then return end
+    extraErrors[text], extraErrorCount = true, extraErrorCount + 1
+    Isaac.DebugString("IAD " .. text)
+end
 -- Slot evidence for "which player does this keyboard drive" (see player_binding).
 local binding = PlayerBinding.new()
 local manualUntil = -1
@@ -54,6 +63,29 @@ local runEnded = false
 local directions = {Vector(0,0), Vector(-1,0), Vector(1,0), Vector(0,-1), Vector(0,1),
     Vector(-1,-1):Normalized(), Vector(1,-1):Normalized(), Vector(-1,1):Normalized(), Vector(1,1):Normalized()}
 local zeroScores = "0,0,0,0,0,0,0,0,0"
+-- The mirror world (Downpour/Dross II) flips horizontal input: the left key
+-- walks world-right and shoots that way. Candidates are scored in world
+-- directions and the host matches keys, so left and right swap on the way
+-- out (B78YY60D: every directional trace there read in=RU q=LU, and
+-- Wraith hits went unanswered). Polled keys turn back into world terms.
+local mirror = false
+local MIRROR = {1, 3, 2, 4, 5, 7, 6, 9, 8}
+local function mirrorWorld()
+    local ok, m = pcall(function() local room = game:GetRoom(); return room.IsMirrorWorld and room:IsMirrorWorld() end)
+    return ok and m == true
+end
+local function mirrorScores(scores)
+    local out = {}
+    for i = 1, #scores do out[i] = scores[MIRROR[i]] end
+    return out
+end
+local function mirrorBlocked(blocked)
+    local out = 0
+    for i = 1, 9 do
+        if blocked & (1 << (i-1)) ~= 0 then out = out | (1 << (MIRROR[i]-1)) end
+    end
+    return out
+end
 local function emit(active, scores, blocked)
     Diagnostics.decision(frame,active,state,selected,horizons[horizonIndex],scores,blocked)
     if state ~= loggedState then
@@ -63,7 +95,8 @@ local function emit(active, scores, blocked)
     -- Publish movement risks; the native host overrides local keyboard sampling.
     -- The combat word precedes its IAD1 packet and carries that sequence;
     -- hosts before 0.4 ignore it.
-    if active and combatWord ~= 0 then Isaac.DebugString("IAD2|" .. (sequence + 1) .. "|" .. combatWord) end
+    local word = mirror and combatWord ~= 0 and Combat.mirror(combatWord) or combatWord
+    if active and word ~= 0 then Isaac.DebugString("IAD2|" .. (sequence + 1) .. "|" .. word) end
     sequence = sequence + 1
     Isaac.DebugString("IAD1|" .. sequence .. "|" .. math.floor(Isaac.GetTime()) .. "|" ..
         (active and "1" or "0") .. "|" .. selected .. "|" .. horizons[horizonIndex] .. "|" .. (scores or zeroScores) .. "|" .. (blocked or 0))
@@ -452,12 +485,13 @@ mod:AddCallback(ModCallbacks.MC_PRE_GAME_EXIT, function(_, shouldSave)
 end)
 mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     frame = frame + 1
+    mirror = mirrorWorld()
     -- Floor intel and reward rocks run whatever the dodge state. They are
     -- extras: an error there is logged once and never stops the dodging.
     local bound = selected >= 0 and selected < game:GetNumPlayers() and Isaac.GetPlayer(selected) or Isaac.GetPlayer(0)
     local ok, rocks = pcall(FloorIntel.update, intel, game, game:GetRoom(), Isaac.GetRoomEntities, frame, bound)
     if ok then Overlay.rewards(rocks)
-    elseif not intelFailed then intelFailed = true; Isaac.DebugString("IAD INTEL: error " .. tostring(rocks)) end
+    else extraError("INTEL", rocks) end
     local count = game:GetNumPlayers()
     if count ~= previousCount then
         -- A co-op partner joining or leaving, or a re-hosted online lobby,
@@ -473,7 +507,7 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     for index = 0, count-1 do
         local candidate = Isaac.GetPlayer(index)
         if candidate and not candidate:IsCoopGhost() then
-            PlayerBinding.observe(binding, index, InputQueue.polled(candidate), PlayerMotion.input(candidate))
+            PlayerBinding.observe(binding, index, InputQueue.polled(candidate, mirror), PlayerMotion.input(candidate))
         end
     end
     if selected < 0 or selected >= count then
@@ -505,7 +539,7 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     if reason then motion = {}; state = reason; Overlay.clear(); emit(false); return end
     local input = PlayerMotion.input(p)
     PlayerMotion.observe(kinematics,p,input,frame)
-    local polled = InputQueue.polled(p)
+    local polled = InputQueue.polled(p, mirror)
     InputQueue.observe(inputs,frame,polled,input)
     local pending = InputQueue.pending(inputs)
     terrain = nil
@@ -547,6 +581,8 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
             if npc and not npc:IsDead() and not playerOwned(npc) then
                 LaserHazards.appendWarnings(npc,game:GetRoom(),lasers,p.Position)
                 NpcHazards.momArm(npc,game:GetRoom(),areas)
+                NpcHazards.wormwood(npc,areas)
+                NpcHazards.satanStomp(npc,areas)
                 if NpcHazards.exploder(npc) then exploders[#exploders+1] = npc end
             end
             if entity.Type == EntityType.ENTITY_TEAR and not entity:IsDead() and playerOwned(entity) then
@@ -565,7 +601,9 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
             end
             local laser = entity:ToLaser()
             if laser and not playerOwned(laser) then
-                lasers[#lasers+1] = LaserHazards.snapshot(laser)
+                local shape = LaserHazards.snapshot(laser)
+                lasers[#lasers+1] = shape
+                lasers[#lasers+1] = LaserHazards.followBand(laser, shape)
             elseif laser then
                 if not laser:IsDead() and not laser:IsCircleLaser() then beams[#beams+1] = laser end
             elseif entity.Type == EntityType.ENTITY_KNIFE and not playerOwned(entity) and not entity:IsDead() then
@@ -597,6 +635,9 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
                 npc.Position:Distance(p.Position) < reach+npc.Size+32+MotionPrediction.reach(motion,npc,steps) then
                 areas[#areas+1] = {position=npc.Position,velocity=npc.Velocity,
                     radius=npc.Size+23,warning=true}
+            end
+            if projectile and not projectile:IsDead() then
+                Diagnostics.shot(frame, projectile, p, bullets[#bullets] == projectile)
             end
         end
     end
@@ -718,7 +759,7 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     Diagnostics.trace(frame,p,input,scores,blocked,polled)
     engage(p,room,entities,scores,blocked)
     state = danger and "THREAT / HELPER" or "MONITOR / HELPER"
-    emit(true, table.concat(scores, ","), blocked)
+    emit(true, table.concat(mirror and mirrorScores(scores) or scores, ","), mirror and mirrorBlocked(blocked) or blocked)
 end)
 -- Every entity: our player's hits are recorded, and damage our attacks deal
 -- to enemies feeds the AUTO stats.
@@ -830,7 +871,7 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
         if page > 0 and frameNow - shaderSeenAt <= 2 then pendingPage = page
         else drawPanel(page) end
     end)
-    if not ok and not hudFailed then hudFailed = true; Isaac.DebugString("IAD HUD: error " .. tostring(err)) end
+    if not ok then extraError("HUD", err) end
 end)
 -- Rendering from here sits above the HUD (StageAPI's RenderAboveHUD way):
 -- the game asks each shader for its parameters after drawing the HUD.
@@ -841,7 +882,7 @@ mod:AddCallback(ModCallbacks.MC_GET_SHADER_PARAMS, function(_, name)
     pendingPage = 0
     if page > 0 then
         local ok, err = pcall(drawPanel, page)
-        if not ok and not hudFailed then hudFailed = true; Isaac.DebugString("IAD HUD: error " .. tostring(err)) end
+        if not ok then extraError("HUD", err) end
     end
 end)
 Isaac.DebugString("IAD: sensor " .. VERSION .. (build and (" build " .. build) or "") .. (saved and " reloaded" or " loaded"))

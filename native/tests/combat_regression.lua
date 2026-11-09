@@ -566,3 +566,12 @@ assert(mv~=2,'walked right over the pedestal')
 local _,free=update(s,{enemy(460,180)},{stride=20})
 assert(free==2,'open path not taken: '..tostring(free))
 print('PASS 0.20 combat: hit restarts a Brimstone charge, beam follows its enemy, pedestals avoided')
+-- 0.25.9 (B78YY60D Stone Head barrage): with threats about, AUTO keeps its
+-- last safe direction over one a little cheaper; in a quiet room only the
+-- small nudge applies.
+local costs={50,30,22,60,60,60,60,60,60}
+local st={lastMove=2}
+assert(Combat.chooseMove(st,{scores={0,-1048576,-1048576,5*1048576,0,0,0,0,0},blocked=0},costs)==2,'threatened: last direction kept')
+assert(Combat.chooseMove(st,{scores={0,0,0,0,0,0,0,0,0},blocked=0},costs)==3,'quiet: cheaper direction taken')
+assert(Combat.chooseMove(st,{scores={0,-1048576,-1048576,5*1048576,0,0,0,0,0},blocked=2},costs)==3,'blocked last direction not kept')
+print('PASS 0.25.9 combat: AUTO keeps its direction while threatened')

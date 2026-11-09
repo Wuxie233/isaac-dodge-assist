@@ -114,6 +114,11 @@ bullet.Height=-20;bullet.FallingSpeed=0;bullet.FallingAccel=-0.1
 bullet.Position=Vector(540,480);bullet.Velocity=Vector(-12,0);bullet.Size=4
 scene={bullet};tick();values=packet()
 assert(values[1]>0,'main integration missed approaching projectile')
+-- 0.25.9: each enemy shot first seen near the player is recorded once.
+local shotLines=0
+for _,line in ipairs(logs)do if line:find('^IAD SHOT: ') then shotLines=shotLines+1
+ assert(line:find('dist=60 ',1,true) and line:find('included=true',1,true),'shot record: '..line) end end
+assert(shotLines==1,'shot recorded '..shotLines..' times')
 local npc=entity(EntityType.ENTITY_NPC,0)
 function npc:ToNPC()return self end;function npc:IsBoss()return false end
 function npc:IsActiveEnemy()return true end
@@ -161,6 +166,17 @@ roomType=1;scene={};tick();scene={tear(opponent)};tick();values=packet()
 for _,s in ipairs(values)do assert(s==0,'co-op: partner tear treated as a threat')end
 RoomType=nil;room.GetType=nil;scene={};tick()
 print('PASS Deathmatch: opponent tears dodged, own tears and co-op partner tears not')
+-- 0.25.9 mirror world: the left key walks world-right there, so the packet
+-- swaps left and right (scores and blocked bits).
+paused=false;callbacks[ModCallbacks.MC_POST_GAME_STARTED]()
+scene={};for _=1,4 do tick() end
+bullet.Position=Vector(540,470);scene={bullet};tick();values=packet()
+room.IsMirrorWorld=function()return true end
+tick();local flipped=packet()
+room.IsMirrorWorld=nil;bullet.Position=Vector(540,480);scene={};tick()
+assert(values[2]~=values[3],'mirror test needs a sided threat')
+for i,j in ipairs({1,3,2,4,5,7,6,9,8})do assert(flipped[i]==values[j],'mirror world: scores not swapped at '..i)end
+print('PASS mirror world: left and right swapped in the packet')
 -- An explosive projectile can hurt from outside its small body hitbox and
 -- when its current height/collision class prevents direct body collision.
 paused=false;scene={}

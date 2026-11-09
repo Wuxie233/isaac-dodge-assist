@@ -151,3 +151,33 @@ local page=table.concat(texts,'|')
 assert(page:find('Take all reachable',1,true) and page:find('Tears+0.7',1,true) and page:find('out of reach',1,true),'page: '..page)
 UI.setLang(nil)
 print('PASS item view: stat words and colours, totals, pill read (pure, hook-aware), tooltip (with the next co-op boss item), card labels, pill labels, F5 stats page')
+
+-- Pedestal notes (0.25.9): transformation progress per player, and the
+-- Spindown Dice chain (ids below that are missing, hidden, locked or not
+-- allowed are skipped; Car Battery turns two steps per use).
+local ItemNotes=include('item_notes')
+local configs={[1]={Tags=1<<5},[2]={Hidden=true},[3]={Tags=0,IsAvailable=function()return false end},
+ [4]={Tags=0},[6]={Tags=1<<5|1<<10},[7]={Tags=0},[8]={Tags=0}}
+Isaac.GetItemConfig=function()return {GetCollectible=function(_,id)local c=configs[id];if c then c.Quality=c.Quality or 2 end;return c end}end
+local game={GetNumPlayers=function()return 3 end}
+local function player(controller,counters,items)
+ return {ControllerIndex=controller,GetPlayerFormCounter=function(_,f)return counters[f] or 0 end,
+  HasPlayerForm=function(_,f)return (counters[f] or 0)>=3 end,HasCollectible=function(_,id)return items[id] or false end}
+end
+local list={player(0,{[0]=2},{}),player(0,{},{}),player(1,{[3]=3},{[723]=true})}
+Isaac.GetPlayer=function(i)return list[i+1]end
+local people=ItemNotes.players(game)
+assert(#people==2 and people[2].number==3,'one entry per controller')
+local notes=ItemNotes.notes(6,game,people)
+assert(#notes.forms==2 and notes.forms[1].key=='guppy' and notes.forms[1].counts[1][2]==2 and notes.forms[2].counts[2][3]==true,'forms')
+assert(table.concat(notes.spin.ids,',')=='4,1,0','spindown skips hidden and locked: '..table.concat(notes.spin.ids,','))
+list[3]=player(1,{},{[723]=true,[356]=true})
+people=ItemNotes.players(game)
+local spin=ItemNotes.spindown(8,game,people)
+assert(table.concat(spin.ids,',')=='6,1,0' and spin.carBattery,'car battery: '..table.concat(spin.ids,','))
+assert(ItemNotes.spindown(668,game,people)==nil and ItemNotes.notes(7,game,{people[1]})==nil,'Dad\'s Note, nothing to say')
+UI.setLang('en');texts={};ItemView.renderTooltip({{x=0,y=0,id=118,notes=notes}},Vector(30,0))
+local tip=table.concat(texts,'|')
+UI.setLang(nil)
+assert(tip:find('Guppy|P1 2/3|P3 0/3',1,true) and tip:find('Seraphim|P1 0/3|P3 done',1,true) and tip:find('Spindown:|',1,true),'notes: '..tip)
+print('PASS pedestal notes: transformation progress per player, Spindown chain (skips, Car Battery, Dad\'s Note)')
