@@ -241,7 +241,7 @@ function M.containerItems(state, game, items, roomPool, sameRoom, devilSacrifice
     local picks, seconds = {}, {}
     for _, it in ipairs(items) do
         picks[#picks+1] = {it.pool, it.pickSeed, exclude = it.excludeDevilSacrifice}
-        if cycles then picks[#picks+1] = {roomPool, it.cycleSeed}; seconds[#picks] = true end
+        if cycles and it.cycleSeed then picks[#picks+1] = {roomPool, it.cycleSeed}; seconds[#picks] = true end
     end
     -- The Dark Room's start-room red chests refuse the devil-sacrifice
     -- items: one pick at a time, each with its own availability.
@@ -255,7 +255,7 @@ function M.containerItems(state, game, items, roomPool, sameRoom, devilSacrifice
                 return not devilSacrifice[id] and opts.isAvailable(id)
             end}
         end
-        local id = sim:predict(pick[1], pick[2], pickOpts)
+        local id = pick[1] and sim:predict(pick[1], pick[2], pickOpts) or nil
         if id then sim:recordPick(pick[1], id) end
         if not seconds[i] then
             main = id

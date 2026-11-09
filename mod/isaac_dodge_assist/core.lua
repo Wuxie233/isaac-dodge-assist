@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.25.7"
+local VERSION = "0.25.8"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
@@ -25,7 +25,7 @@ local MapView = include("map_view")
 local Hud = include("hud")
 local UI = include("ui")
 local ItemView = include("item_view")
-Hud.use(UI); MapView.use(UI); ItemView.use(UI)
+Hud.use(UI); MapView.use(UI, ItemView); ItemView.use(UI)
 local terrain
 local kinematics = PlayerMotion.new()
 local inputs = InputQueue.new()

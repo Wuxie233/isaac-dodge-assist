@@ -43,8 +43,8 @@ Isaac = {GetScreenWidth = function() return 480 end, GetScreenHeight = function(
     GetFrameCount = function() return 0 end, WorldToScreen = function(v) return v end}
 local UI = include('ui')
 local Hud = include('hud'); Hud.use(UI)
-local MapView = include('map_view'); MapView.use(UI)
 local ItemView = include('item_view'); ItemView.use(UI)
+local MapView = include('map_view'); MapView.use(UI, ItemView)
 Isaac.GetItemConfig = function() return {GetCollectible = function(_, id) return {Quality = id == 118 and 4 or 3} end} end
 local FloorMap = include('floor_map')
 local FloorScore = include('floor_score')
@@ -63,7 +63,8 @@ local rooms = {
     room(0, 6, 6, 1, 1, true), room(1, 7, 6, 6, 1, true), room(2, 5, 6, 1, 4, true),
     room(3, 6, 5, 4, 1, true), room(4, 9, 6, 1, 2, true), room(5, 6, 4, 1, 1, false),
     room(6, 6, 3, 1, 5, false), room(7, 5, 5, 1, 7, false, {layout = {pedestals = 0, shop = 0, loot = {pill = 3}}}),
-    room(8, 8, 5, 1, 8, false, {layout = {pedestals = 1, shop = 0, loot = {}, features = {slot4 = 1, blackPoop = 1}}}),
+    room(8, 8, 5, 1, 8, false, {layout = {pedestals = 1, shop = 0, loot = {}, features = {slot4 = 1, blackPoop = 1}},
+        slotPrizes = {{key = "slot4", nth = 6, loot = {}, items = {{id = 12}}, extras = {}}}}),
     room(9, 5, 7, 1, 24, false), room(10, 7, 7, 9, 1, false), room(11, 4, 6, 1, 10, false),
     room(12, 7, 4, 1, 12, false), room(13, 8, 7, 1, 13, false), room(14, 9, 5, 1, 29, false),
     room(15, 4, 7, 1, 1, false, {layout = {pedestals = 0, shop = 0, loot = {pill = 1, alt = 4}, features = {goldenPoop = 1, slot1 = 1}}}),
@@ -93,7 +94,9 @@ elseif scene == "room" then
     -- A golden chest near the player (all it holds), a far one, an urn.
     ItemView.renderContainers({{x = 250, y = 120, loot = {coin = 2, nickel = 1, key = 1}, items = {{id = 118}}, extras = {}},
         {x = 380, y = 120, loot = {bomb = 2, heart = 1}, items = {}, extras = {}},
-        {x = 330, y = 160, rock = true, loot = {}, items = {}, extras = {}, bad = "spiders"}}, Vector(250, 140))
+        {x = 330, y = 160, rock = true, loot = {}, items = {}, extras = {}, bad = "spiders"},
+        {x = 120, y = 170, rock = true, loot = {coin = 6}, items = {}, extras = {}},
+        {x = 430, y = 175, nth = 6, loot = {}, items = {{id = 12}}, extras = {}}}, Vector(250, 140))
 elseif scene == "panel" then
     Hud.render(Hud.new(), {state = "MONITOR / HELPER", combatMode = 2, score = score, hidden = true}, 48, 50)
     MapView.render(floorMap, extras, score, readouts)

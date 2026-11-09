@@ -183,7 +183,7 @@ print('PASS floor intel: room items kept once seen, priced pickups excluded from
 -- legend and the score panel are worded in the game's language.
 local MapView=include('map_view')
 local UI=include('ui')
-MapView.use(UI)
+MapView.use(UI, include('item_view'))
 local rects,texts=0,{}
 function Vector(x,y)return {X=x,Y=y}end
 function Color(r,g,b,a)return {r,g,b,a}end
@@ -493,3 +493,54 @@ local seen2=RF.scan(room2,{ent(6,4),ent(6,1,'Broken'),ent(33,0,'Idle',10),ent(33
 assert(seen2.slot4==1 and seen2.slot1==nil and seen2.fire==1 and seen2.goldenPoop==1 and seen2.poop==nil and seen2.rewardPlate==1,
  'room scan features')
 print('PASS room features: layout codes, words, ordinary rooms listed for a beggar, scan of standing features')
+
+-- 0.25.8 feature drops: a golden poop and a beggar standing in the room,
+-- and the same in the layout of a room not entered yet.
+local DF=include('drop_forecast')
+Isaac.GetPlayer=function()return ctxPlayer end
+ctxPlayer.HasGoldenKey=function()return false end;ctxPlayer.HasGoldenBomb=function()return false end
+ctxPlayer.GetTrinketRNG=function()return {GetSeed=function()return 1 end}end
+ctxPlayer.GetCollectibleRNG=ctxPlayer.GetTrinketRNG
+game.GetRoom=function()return room end;level.GetStage=function()return 2 end
+room.GetType=function()return RoomType.ROOM_DEFAULT end;room.GetBackdropType=function()return 1 end
+local poopSeed=3000000001
+local poopGrid={Position={X=200,Y=200},State=0,GetType=function()return 14 end,GetVariant=function()return 3 end,
+ GetSaveState=function()return {SpawnSeed=poopSeed,VarData=0}end}
+local grid2=room.GetGridEntity;local size2=room.GetGridSize
+room.GetGridSize=function()return 20 end
+room.GetGridEntity=function(_,i)if i==7 then return poopGrid end return nil end
+room.GetGridCollision=function()return 0 end
+local beggar={Type=6,Variant=4,SubType=0,InitSeed=77777,HitPoints=10,Position={X=300,Y=200},IsDead=function()return false end,
+ GetDropRNG=function()return {GetSeed=function()return 77777 end}end,GetSprite=function()return {GetAnimation=function()return 'Idle' end}end}
+rooms={desc(0,6*13+6,1,RoomType.ROOM_DEFAULT,true),desc(1,6*13+7,1,RoomType.ROOM_DEFAULT,false,{spawn({{1496,0,0,1}}),spawn({{6,4,0,1}})})}
+rooms[2].SpawnSeed=424242
+byIndex={};for _,d in ipairs(rooms)do byIndex[d.SafeGridIndex]=d end
+current=rooms[1];logs={}
+local f=FloorIntel.startRun(FloorIntel.new(),game,false)
+FloorIntel.update(f,game,room,function()return {beggar}end,1)
+local dctx=DF.readContext(game,function()return false end)
+local poopR=DF.poop(3,poopSeed,dctx,0)
+local coins=0;for _,g in ipairs(poopR.groups)do if g.variant==20 then coins=coins+g.count end end
+assert(coins>0,'golden poop forecast has no coins')
+local poopLabel,beggarLabel
+for _,c in ipairs(f.containers)do if c.x==200 then poopLabel=c elseif c.x==300 then beggarLabel=c end end
+local labelled=0;for k,n in pairs(poopLabel and poopLabel.loot or {})do if k=='coin' or k=='nickel' or k=='dime' then labelled=labelled+n end end
+assert(labelled==coins,'golden poop label: '..labelled..' vs '..coins)
+assert(beggarLabel and (beggarLabel.nth or beggarLabel.none),'beggar label missing')
+local feat=0;for _,l in ipairs(logs)do if l:find('^IAD FEAT ') then feat=feat+1 end end
+assert(feat==2,'feature log lines: '..feat)
+-- The poop breaks: one change line.
+poopGrid.State=1000;f.scanAt=-100;logs={}
+FloorIntel.update(f,game,room,function()return {beggar}end,2)
+assert(#logs>0 and logs[1]:find('^IAD FEATX g=7 t=14 v=3 st=1000'),'feature change log: '..tostring(logs[1]))
+-- The unvisited room: its golden poop's coins in the room loot, the beggar's first prize.
+local layoutPoop=DF.forLayout(1496,0,424242,0,dctx)
+local expectCoins=0;for _,g in ipairs(layoutPoop.groups)do if g.variant==20 then expectCoins=expectCoins+g.count end end
+local got=0;for k,n in pairs(f.contentLoot[1] or {})do if k=='coin' or k=='nickel' or k=='dime' then got=got+n end end
+assert(got==expectCoins and expectCoins>0,'layout golden poop coins: '..got..' vs '..expectCoins)
+assert(f.slotPrizes[1] and f.slotPrizes[1][1].key=='slot4','layout beggar prize')
+local listed;for _,r in ipairs(f.score.roomList)do if r.index==1 then listed=r end end
+assert(listed and listed.prizes and listed.features.goldenPoop==1,'room list misses the features')
+Isaac.GetPlayer=onePlayer;level.GetStage=nil;room.GetType=nil;game.GetRoom=gameRoom
+room.GetGridEntity,room.GetGridSize=grid2,size2
+print('PASS feature drops: golden poop and beggar in the room (labels, logs), in a layout not entered (loot, first prize)')

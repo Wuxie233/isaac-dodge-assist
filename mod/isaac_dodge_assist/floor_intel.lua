@@ -7,6 +7,7 @@ local RoomRewards = include("room_rewards")
 local ItemForecast = include("item_forecast")
 local PillInfo = include("pill_info")
 local ChestForecast = include("chest_forecast")
+local DropForecast = include("drop_forecast")
 local RoomFeatures = include("room_features")
 local M = {}
 
@@ -40,6 +41,7 @@ end
 function M.newRoom(state, game)
     state.scanAt = -100
     state.pedestals, state.pills, state.cards, state.containers, state.bossNext = {}, {}, {}, {}, nil
+    state.featLog = nil
     -- What the forecast promised for the room just entered, to be checked
     -- against the pedestals the log shows next (and the boss reward later).
     -- On a new floor this runs before newLevel, while the old floor's
@@ -128,12 +130,22 @@ local function unlocked()
     end)
     return function(id) return id == 415 and red end
 end
+-- One context for chests, sacks, alt rocks and room features (poops,
+-- fireplaces, shopkeepers, reward plates, slots); player opens and pays.
 local function contentsContext(game, player)
-    local ok, ctx = pcall(ChestForecast.readContext, game, player, unlocked())
-    return ok and ctx or nil
+    local ok, ctx = pcall(DropForecast.readContext, game, unlocked())
+    if not ok then return nil end
+    if player then
+        pcall(function()
+            ctx.leftHand = player:GetTrinketMultiplier(61)
+            ctx.payer = DropForecast.payerContext(player)
+        end)
+    end
+    return ctx
 end
 -- What is not loot: {string key, bad}.
 local EXTRAS = {["3.43"] = {"blueFlies"}, ["3.73"] = {"blueSpiders"}, ["4.4"] = {"trollBomb", true},
+    ["4.3"] = {"trollBomb", true},
     ["18.0"] = {"attackFlies", true}, ["85.0"] = {"spiders", true}, ["0.1"] = {"teleport"}}
 -- chest_forecast groups -> loot {kind = count} and extras {{key, count, bad}}.
 local function contentsOf(groups)
@@ -165,12 +177,126 @@ end
 local function addLoot(into, from)
     for kind, n in pairs(from) do into[kind] = (into[kind] or 0) + n end
 end
+-- A room feature's outcome (drop_forecast result) as contents: {loot,
+-- extras, items, trinket, words = {{key, bad}}}; nil when it gives nothing.
+local EFFECT_WORDS = {heal = {"fx_heal"}, trapdoor = {"fx_trapdoor"}, charge = {"fx_charge"},
+    fart = {"fx_fart", true}, fly = {"fx_fly", true}, ["pretty fly"] = {"fx_prettyFly"},
+    ["blue flies"] = {"fx_blueFlies"}, ["blue spiders"] = {"fx_blueSpiders"}}
+local BAD_WORDS = {ambush = "fx_ambush", greed = "fx_greed", breaks = "fx_breaks", spiders = "rock_spiders"}
+local function dropContents(state, game, r, roomPool, sameRoom)
+    if not r or r.nothing then return nil end
+    local loot, extras = contentsOf(r.groups)
+    local words = {}
+    if r.effect and EFFECT_WORDS[r.effect] then words[#words+1] = EFFECT_WORDS[r.effect] end
+    if r.bad and BAD_WORDS[r.bad] then words[#words+1] = {BAD_WORDS[r.bad], true} end
+    local picks = {}
+    for _, it in ipairs(r.items or {}) do picks[#picks+1] = {pool = it.pool or roomPool, pickSeed = it.pickSeed} end
+    local items = {}
+    if r.fixedItem then items[#items+1] = {id = r.fixedItem} end
+    if #picks > 0 and state.forecast and not state.forecastError then
+        local ok, list = pcall(ItemForecast.containerItems, state.forecast, game, picks, nil, sameRoom)
+        if ok then for _, it in ipairs(list) do items[#items+1] = it end end
+    end
+    -- A reward plate can give a golden poop or a chest: what they hold.
+    if r.poop and not r.poop.nothing then addLoot(loot, (contentsOf(r.poop.groups))) end
+    for _, chest in ipairs(r.chests or {}) do
+        if chest.contents then addLoot(loot, (contentsOf(chest.contents.groups))) end
+    end
+    return {loot = loot, extras = extras, items = items, trinket = r.trinket, words = words}
+end
+-- A slot or beggar: which payment first pays out, and with what.
+local SLOT_LOOK = 12
+local function slotPrize(state, game, r, roomPool, sameRoom)
+    if not r or r.unsupported or not r.firstPrize then return r and not r.unsupported and {none = true} or nil end
+    local c = dropContents(state, game, r.payments[r.firstPrize], roomPool, sameRoom) or {loot = {}, extras = {}, items = {}, words = {}}
+    c.nth = r.firstPrize
+    return c
+end
+
 -- Item infos for the room's list, from a container's {id, altOf}.
 local function chestItems(list, into)
     for _, item in ipairs(list) do
         local info = itemInfo(item.id)
         info.kind, info.predicted, info.altOf, info.price = "chest", true, item.altOf, 0
         into[#into+1] = info
+    end
+end
+
+-- Room features still standing in the room the players are in: what each
+-- gives (labels {x, y, ...contents, prefix}), the loot of those that drop
+-- something when broken or put out, and their items. Also logs each one on
+-- the first scan of a room (IAD FEAT) and every change after (IAD FEATX),
+-- for checking the forecasts against the drops.
+local POOP_GRID, PLATE_GRID = 14, 20
+local function u32(n) return n and n & 0xFFFFFFFF or -1 end
+local function featureScan(state, game, room, entities, ctx, roomPool, labels, loot, items)
+    state.featLog = state.featLog or {}
+    local logged = state.featLog
+    local function log(key, sig, line)
+        if logged[key] == sig then return end
+        Isaac.DebugString((logged[key] == nil and "IAD FEAT " or "IAD FEATX ") .. line)
+        logged[key] = sig
+    end
+    local function place(x, y, c, extra)
+        if not c then return end
+        c.x, c.y = x, y
+        for k, v in pairs(extra or {}) do c[k] = v end
+        labels[#labels+1] = c
+    end
+    local function take(c)
+        if not c then return end
+        addLoot(loot, c.loot)
+        chestItems(c.items, items)
+    end
+    local poop = GridEntityType and GridEntityType.GRID_POOP or POOP_GRID
+    local plate = GridEntityType and GridEntityType.GRID_PRESSURE_PLATE or PLATE_GRID
+    for i = 0, room:GetGridSize() - 1 do
+        local g = room:GetGridEntity(i)
+        local t = g and g:GetType()
+        if t == poop or (t == plate and g:GetVariant() == 1) then
+            local d = g:GetSaveState()
+            local v, st = g:GetVariant(), g.State
+            log("g" .. i, st, string.format("g=%d t=%d v=%d st=%d ss=%d vd=%d", i, t, v, st, u32(d.SpawnSeed), d.VarData or 0))
+            local r
+            if t == poop and st < 1000 then
+                if v == 9 then r = DropForecast.gigaPoop(d.SpawnSeed, st, ctx, d.VarData)
+                elseif v < 7 or v > 10 then r = DropForecast.poop(v, d.SpawnSeed, ctx, d.VarData) end
+            elseif t == plate and st == 0 then
+                r = DropForecast.rewardPlate(d.SpawnSeed, ctx)
+            end
+            local c = r and dropContents(state, game, r, roomPool, true)
+            take(c)
+            place(g.Position.X, g.Position.Y, c, {rock = true})
+        end
+    end
+    for _, e in ipairs(entities) do
+        if e.Type == 33 or e.Type == 17 or e.Type == 6 then
+            local okSeed, seed = pcall(function() return e:GetDropRNG():GetSeed() end)
+            seed = okSeed and seed or e.InitSeed
+            local alive = not e:IsDead() and (e.Type ~= 33 or e.HitPoints > 1)
+            log("e" .. u32(e.InitSeed), tostring(alive) .. u32(seed), string.format("e=%d t=%d v=%d d=%d hp=%.1f",
+                u32(e.InitSeed), e.Type, e.Variant, u32(seed), e.HitPoints))
+            if alive then
+                if e.Type == 6 then
+                    local animation = e:GetSprite():GetAnimation()
+                    if animation ~= "Broken" and animation ~= "Death" then
+                        local payer = ctx.payer and setmetatable({}, {__index = ctx.payer}) or {}
+                        payer.counter = DropForecast.slotCounter(e.Variant, e.InitSeed, seed, ctx)
+                        local sctx = setmetatable({payer = payer}, {__index = ctx})
+                        local r = DropForecast.slot(e.Variant, seed, sctx, SLOT_LOOK)
+                        place(e.Position.X, e.Position.Y, slotPrize(state, game, r, roomPool, true))
+                    end
+                else
+                    local noReward = false
+                    pcall(function() noReward = e:HasEntityFlags(1 << 42) end)
+                    local r = e.Type == 33 and DropForecast.fireplace(e.Variant, seed, ctx, noReward)
+                        or DropForecast.shopkeeper(e.Variant, seed, ctx, noReward)
+                    local c = dropContents(state, game, r, roomPool, true)
+                    take(c)
+                    place(e.Position.X, e.Position.Y, c)
+                end
+            end
+        end
     end
 end
 
@@ -265,6 +391,13 @@ local function scanRoom(state, game, index, entities, rocks, player)
             end
         end
     end
+    if ctx then
+        local ok, err = pcall(featureScan, state, game, room, entities, ctx, roomPool, containers, loot, contents)
+        if not ok and not state.featureErrorLogged then
+            state.featureErrorLogged = true
+            Isaac.DebugString("IAD INTEL: features " .. tostring(err))
+        end
+    end
     state.items[index], state.loot[index], state.rocks[index] = items, loot, #rocks
     state.features = state.features or {}
     local okFeatures, features = pcall(RoomFeatures.scan, room, entities)
@@ -334,7 +467,7 @@ local function forecastRooms(state, game)
     local key = forecast.version .. ":" .. #state.map.rooms
     if key ~= state.forecastKey then
         state.forecastKey = key
-        state.predicted, state.contentLoot = {}, {}
+        state.predicted, state.contentLoot, state.slotPrizes = {}, {}, {}
         local ctx
         for _, room in ipairs(state.map.rooms) do
             if not room.visited then
@@ -355,10 +488,36 @@ local function forecastRooms(state, game)
                 -- A chest or sack the layout always places: its InitSeed
                 -- (as a pedestal's) decides its kind and what it holds.
                 local layout = room.layout
-                if layout and layout.containers and #layout.containers > 0 then
+                local hasFeatures = layout and layout.featureSpawns and #layout.featureSpawns > 0
+                if layout and ((layout.containers and #layout.containers > 0) or hasFeatures) then
                     ctx = ctx or contentsContext(game, nil)
                     local loot = {}
                     for kind, n in pairs(layout.loot) do loot[kind] = n end
+                    -- Poops, fireplaces, shopkeepers and reward plates the
+                    -- layout surely places: what breaking them gives; a
+                    -- slot or beggar: its first prize (counter at 0).
+                    for _, f in ipairs(ctx and layout.featureSpawns or {}) do
+                        pcall(function()
+                            local r = DropForecast.forLayout(f.type, f.variant, room.spawnSeed, f.index, ctx)
+                            if not r then return end
+                            local pool = ItemForecast.roomPool(room.type)
+                            if r.payments then
+                                local prize = slotPrize(state, game, r, pool, false)
+                                if prize then
+                                    prize.key = RoomFeatures.fromLayout(6, r.variant or f.variant, 0) or f.key
+                                    local prizes = state.slotPrizes[room.index] or {}
+                                    prizes[#prizes+1] = prize
+                                    state.slotPrizes[room.index] = prizes
+                                end
+                            else
+                                local c = dropContents(state, game, r, pool, false)
+                                if c then
+                                    addLoot(loot, c.loot)
+                                    chestItems(c.items, list)
+                                end
+                            end
+                        end)
+                    end
                     for _, c in ipairs(ctx and layout.containers or {}) do
                         pcall(function()
                             local init = ItemForecast.layoutInitSeed(room.spawnSeed, c.index)
@@ -480,6 +639,7 @@ function M.update(state, game, room, entities, frame, player)
     -- a visited room's features as last seen standing.
     for _, r in ipairs(state.map.rooms) do
         if not r.visited and state.contentLoot then r.contentLoot = state.contentLoot[r.index] end
+        if not r.visited and state.slotPrizes then r.slotPrizes = state.slotPrizes[r.index] end
         if r.visited and state.features then r.features = state.features[r.index] end
     end
     state.score = FloorScore.evaluate(state.map.rooms, items, state.loot, state.predicted, okAccess and access or nil)

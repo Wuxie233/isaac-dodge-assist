@@ -6,7 +6,9 @@
 -- line in the room list. Read only.
 local M = {}
 
--- key -> {en, zh, value, notable}
+-- key -> {en, zh, value, notable}. What breaking a poop, putting out a
+-- fire, killing a shopkeeper or pressing a reward plate gives is forecast
+-- (drop_forecast.lua) and counted as loot, so those carry no value here.
 M.KINDS = {
     slot1 = {"slot machine", "老虎机", 1, true}, slot2 = {"blood donation", "献血机", 1, true},
     slot3 = {"fortune teller", "算命机", 0.5, true}, slot4 = {"beggar", "乞丐", 1.5, true},
@@ -17,16 +19,16 @@ M.KINDS = {
     slot13 = {"battery bum", "电池乞丐", 1.5, true}, slot15 = {"hell game", "地狱游戏", 1, true},
     slot16 = {"crane game", "抓娃娃机", 1.5, true}, slot17 = {"confessional", "忏悔室", 1, true},
     slot18 = {"rotten beggar", "腐烂乞丐", 1.5, true},
-    shopkeeper = {"shopkeeper", "店主", 0.5, false},
-    fire = {"fireplace", "火堆", 0.3, false}, redFire = {"red fireplace", "红火堆", 0.3, false},
-    blueFire = {"blue fireplace", "蓝火堆", 0.5, false}, purpleFire = {"purple fireplace", "紫火堆", 0.5, false},
+    shopkeeper = {"shopkeeper", "店主", 0, false},
+    fire = {"fireplace", "火堆", 0, false}, redFire = {"red fireplace", "红火堆", 0, false},
+    blueFire = {"blue fireplace", "蓝火堆", 0, false}, purpleFire = {"purple fireplace", "紫火堆", 0, false},
     whiteFire = {"white fireplace", "白火堆", 1, true},
-    poop = {"poop", "便便", 0.2, false}, redPoop = {"red poop", "红便便", 0, false},
-    cornyPoop = {"corny poop", "玉米便便", 0, false}, goldenPoop = {"golden poop", "金便便", 3, true},
+    poop = {"poop", "便便", 0, false}, redPoop = {"red poop", "红便便", 0, false},
+    cornyPoop = {"corny poop", "玉米便便", 0, false}, goldenPoop = {"golden poop", "金便便", 0, true},
     rainbowPoop = {"rainbow poop", "彩虹便便", 1, true}, blackPoop = {"black poop", "黑便便", 0.5, true},
-    whitePoop = {"white poop", "白便便", 1, true}, gigaPoop = {"giga poop", "巨型便便", 1, true},
+    whitePoop = {"white poop", "白便便", 0, true}, gigaPoop = {"giga poop", "巨型便便", 1, true},
     charmingPoop = {"charming poop", "魅惑便便", 0.5, true},
-    rewardPlate = {"reward plate", "奖励按钮", 1.5, true},
+    rewardPlate = {"reward plate", "奖励按钮", 0, true},
 }
 -- Order the words come in.
 M.ORDER = {"slot4", "slot5", "slot7", "slot9", "slot13", "slot18", "slot1", "slot2", "slot3", "slot6",

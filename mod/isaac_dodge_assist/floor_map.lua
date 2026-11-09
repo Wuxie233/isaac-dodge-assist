@@ -86,7 +86,7 @@ local PICKUP = 5
 local CONTAINERS = {[50] = true, [51] = true, [52] = true, [53] = true, [54] = true, [55] = true, [56] = true,
     [57] = true, [58] = true, [60] = true, [69] = true, [360] = true, [390] = true}
 function M.layout(desc, lootKind)
-    local loot, pedestals, shop, slots, containers, features = {}, 0, 0, {}, {}, {}
+    local loot, pedestals, shop, slots, containers, features, featureSpawns = {}, 0, 0, {}, {}, {}, {}
     local spawns = desc.Data.Spawns
     for i = 0, spawns.Size - 1 do
         local spawn = spawns:Get(i)
@@ -114,13 +114,20 @@ function M.layout(desc, lootKind)
                 else
                     kind = LAYOUT_ROCKS[entry.Type]
                     local feature = RoomFeatures.fromLayout(entry.Type, entry.Variant, entry.Subtype)
-                    if feature then features[feature] = (features[feature] or 0) + share end
+                    if feature then
+                        features[feature] = (features[feature] or 0) + share
+                        -- Surely there: its drops follow from the spawn's seed.
+                        if spawn.EntryCount == 1 then
+                            featureSpawns[#featureSpawns+1] = {index = i, type = entry.Type, variant = entry.Variant, key = feature}
+                        end
+                    end
                 end
                 if kind then loot[kind] = (loot[kind] or 0) + share end
             end
         end
     end
-    return {loot = loot, pedestals = pedestals, shop = shop, slots = slots, containers = containers, features = features}
+    return {loot = loot, pedestals = pedestals, shop = shop, slots = slots, containers = containers, features = features,
+        featureSpawns = featureSpawns}
 end
 
 -- One snapshot of the floor in the current dimension: {rooms={...},

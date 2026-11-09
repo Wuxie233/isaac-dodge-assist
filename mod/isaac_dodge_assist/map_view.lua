@@ -8,7 +8,9 @@ local RoomFeatures = include("room_features")
 local M = {}
 -- include() gives every caller its own copy of ui.lua; the core hands over
 -- the one it uses, so language and fonts are decided in one place.
-function M.use(ui) UI = ui end
+-- itemView: the core's item_view, for the words of what a beggar pays.
+local ItemView
+function M.use(ui, itemView) UI, ItemView = ui, itemView end
 local floor, max, min = math.floor, math.max, math.min
 
 local PANEL, UNSEEN, SEEN, WHITE = {0.02, 0.02, 0.04}, {0.32, 0.32, 0.36}, {0.62, 0.62, 0.66}, {1, 1, 1}
@@ -127,6 +129,18 @@ local function roomWords(room)
     end
     if room.unseen > 0 then words[#words+1] = {UI.t("unseenItems", floor(room.unseen + 0.5)), PREDICTED} end
     for _, word in ipairs(RoomFeatures.words(room.features, UI.lang())) do words[#words+1] = {word, FEATURE} end
+    -- Each beggar or machine: on which payment it first pays, and what.
+    for _, prize in ipairs(ItemView and room.prizes or {}) do
+        local kind = RoomFeatures.KINDS[prize.key]
+        local name = kind and (UI.lang() == "zh" and kind[2] or kind[1]) or "?"
+        if prize.none then
+            words[#words+1] = {name .. " " .. UI.t("noPrize"), UI.MUTED}
+        else
+            words[#words+1] = {UI.t("prize", name, prize.nth), FEATURE}
+            local plain = setmetatable({nth = false}, {__index = prize})
+            for _, w in ipairs(ItemView.contentWords(plain)) do words[#words+1] = w end
+        end
+    end
     for _, word in ipairs(lootWords(room.loot)) do words[#words+1] = {word, UI.DIM} end
     return words
 end

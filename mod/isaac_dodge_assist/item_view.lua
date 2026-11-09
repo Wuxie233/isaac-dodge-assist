@@ -249,6 +249,9 @@ local LOOT_WORDS = {{"keys", {"key"}}, {"bombs", {"bomb"}}, {"hearts", {"heart"}
     {"sacks", {"sack"}}, {"chests", {"chest", "gold"}}}
 function M.contentWords(c)
     local words = {}
+    -- A slot or beggar: which payment pays out first, then what.
+    if c.none then return {{UI.t("noPrize"), UI.MUTED}} end
+    if c.nth then words[1] = {UI.t("nthPay", c.nth), UI.MUTED} end
     for _, item in ipairs(c.items or {}) do
         local quality = UI.quality(item.id)
         words[#words+1] = {(item.altOf and (UI.t("orWord") .. " ") or "") .. UI.itemName(item.id) ..
@@ -268,7 +271,8 @@ function M.contentWords(c)
         words[#words+1] = {UI.t(extra[1], extra[2]), extra[3] and UI.BAD or UI.DIM}
     end
     if c.bad then words[#words+1] = {UI.t("rock_" .. c.bad), UI.BAD} end
-    if #words == 0 then words[1] = {UI.t("emptyChest"), UI.DIM} end
+    for _, w in ipairs(c.words or {}) do words[#words+1] = {UI.t(w[1]), w[2] and UI.BAD or UI.TEXT} end
+    if #words == 0 or (c.nth and #words == 1) then words[#words+1] = {UI.t("emptyChest"), UI.DIM} end
     return words
 end
 -- Over each one its first words; the one nearest the player all of them.
@@ -283,7 +287,9 @@ function M.renderContainers(list, player)
     for _, c in ipairs(list) do
         local words = M.contentWords(c)
         local point = Isaac.WorldToScreen(Vector(c.x, c.y))
-        local maxW = c == near and 170 or 90
+        -- A beggar's prize always shows in full: it is short and the point.
+        local full = c == near or c.nth ~= nil
+        local maxW = full and 170 or 90
         -- Lay the words out in at most two lines (one for the far ones).
         local lines, line, width = {}, {}, 0
         for _, w in ipairs(words) do
@@ -295,7 +301,7 @@ function M.renderContainers(list, player)
             width = width + (#line > 1 and gap or 0) + ww
         end
         if #line > 0 then lines[#lines+1] = line end
-        local limit = c == near and 2 or 1
+        local limit = full and 2 or 1
         local cut = #lines > limit
         while #lines > limit do table.remove(lines) end
         if cut then local last = lines[#lines]; last[#last+1] = {"..", UI.DIM} end
