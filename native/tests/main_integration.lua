@@ -162,10 +162,24 @@ scene={tear(opponent)};tick();values=packet()
 assert(values[1]>0,'Deathmatch: opponent tear not dodged')
 scene={};tick();scene={tear(p)};tick();values=packet()
 for _,s in ipairs(values)do assert(s==0,'Deathmatch: own tear treated as a threat')end
+local function creep(owner)
+ local c=entity(EntityType.ENTITY_EFFECT,EffectVariant.PLAYER_CREEP_RED)
+ c.InitSeed=owner.InitSeed*10+2;c.Position=Vector(510,480);c.Size=60
+ c.SpawnerType=EntityType.ENTITY_PLAYER;c.SpawnerEntity=owner;c.Parent=owner
+ c.SpriteScale=Vector(1,1);c.CollisionDamage=2.0;c.IsDead=function()return false end
+ function c:ToEffect()return c end
+ return c
+end
+scene={creep(opponent)};tick();values=packet()
+assert(values[1]>0,'Deathmatch: opponent player creep not dodged')
+scene={};tick();scene={creep(p)};tick();values=packet()
+for _,s in ipairs(values)do assert(s==0,'Deathmatch: own player creep treated as a threat')end
 roomType=1;scene={};tick();scene={tear(opponent)};tick();values=packet()
 for _,s in ipairs(values)do assert(s==0,'co-op: partner tear treated as a threat')end
+scene={creep(opponent)};tick();values=packet()
+for _,s in ipairs(values)do assert(s==0,'co-op: partner player creep treated as a threat')end
 RoomType=nil;room.GetType=nil;scene={};tick()
-print('PASS Deathmatch: opponent tears dodged, own tears and co-op partner tears not')
+print('PASS Deathmatch: opponent tears and creep dodged, own and co-op partner not')
 -- 0.25.9 mirror world: the left key walks world-right there, so the packet
 -- swaps left and right (scores and blocked bits).
 paused=false;callbacks[ModCallbacks.MC_POST_GAME_STARTED]()

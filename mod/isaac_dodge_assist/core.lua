@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.26.0"
+local VERSION = "0.26.1"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
@@ -247,16 +247,23 @@ local groundEffects = {
     [EffectVariant.CREEP_YELLOW]=true,
     [EffectVariant.CREEP_STATIC]=true, [EffectVariant.CREEP_LIQUID_POOP]=true
 }
--- Effects that never hurt the player: player creep (it hurts enemies) and
--- puffs, splats and particles. A familiar's creep trail can be dozens.
-local harmlessEffects = {}
+-- Effects that never hurt the player in ordinary rooms: player creep (it
+-- hurts enemies) and puffs, splats and particles. In Deathmatch, an opponent's
+-- creep hurts our player: only the purely visual particles remain harmless.
+local playerCreepEffects = {}
 for _, name in ipairs({"PLAYER_CREEP_LEMON_MISHAP", "PLAYER_CREEP_HOLYWATER", "PLAYER_CREEP_WHITE",
     "PLAYER_CREEP_BLACK", "PLAYER_CREEP_RED", "PLAYER_CREEP_GREEN", "PLAYER_CREEP_HOLYWATER_TRAIL",
-    "PLAYER_CREEP_LEMON_PARTY", "PLAYER_CREEP_PUDDLE_MILK", "PLAYER_CREEP_BLACKPOWDER", "PLAYER_CREEP_YELLOW",
-    "BLOOD_PARTICLE", "BLOOD_SPLAT", "BLOOD_DROP", "BULLET_POOF", "TEAR_POOF_A", "TEAR_POOF_B",
-    "TEAR_POOF_SMALL", "TEAR_POOF_VERYSMALL", "POOF01", "POOF02", "POOF04", "ROCK_POOF"}) do
-    if EffectVariant[name] then harmlessEffects[EffectVariant[name]] = true end
+    "PLAYER_CREEP_LEMON_PARTY", "PLAYER_CREEP_PUDDLE_MILK", "PLAYER_CREEP_BLACKPOWDER", "PLAYER_CREEP_YELLOW"}) do
+    if EffectVariant[name] then playerCreepEffects[EffectVariant[name]] = true end
 end
+local visualEffects = {}
+for _, name in ipairs({"BLOOD_PARTICLE", "BLOOD_SPLAT", "BLOOD_DROP", "BULLET_POOF", "TEAR_POOF_A", "TEAR_POOF_B",
+    "TEAR_POOF_SMALL", "TEAR_POOF_VERYSMALL", "POOF01", "POOF02", "POOF04", "ROCK_POOF"}) do
+    if EffectVariant[name] then visualEffects[EffectVariant[name]] = true end
+end
+local harmlessEffects = {}
+for k, v in pairs(playerCreepEffects) do harmlessEffects[k] = v end
+for k, v in pairs(visualEffects) do harmlessEffects[k] = v end
 -- Native effect update separates these movement modifiers from player damage.
 local slowingEffects = {
     [EffectVariant.CREEP_WHITE]=true, [EffectVariant.CREEP_BLACK]=true,
@@ -280,7 +287,7 @@ local areaEffects = {
 -- exploding grids supply the predictive envelope, never the lingering smoke.
 local function effectEnvelope(effect, p)
     if effect.Variant == EffectVariant.BOMB_EXPLOSION or slowingEffects[effect.Variant] then return nil end
-    local ground = groundEffects[effect.Variant]
+    local ground = groundEffects[effect.Variant] or (deathmatch and playerCreepEffects[effect.Variant])
     -- Native creep stops damage at _dead, before its visual fade completes.
     -- Timeout zero alone is not a safe indication: some effects renew it.
     local nativeCreep = ground and effect.Variant ~= EffectVariant.CREEP_LIQUID_POOP
@@ -564,8 +571,11 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
         if entity.Type == EntityType.ENTITY_EFFECT then
             -- Effects are most of a busy room (a familiar's creep trail is
             -- dozens) and nothing below applies to them; player creep and
-            -- puffs never hurt us, so they are not even looked at.
-            local effect = not harmlessEffects[entity.Variant] and entity:ToEffect()
+            -- puffs never hurt us in ordinary rooms, so they are not even looked at.
+            -- In Deathmatch, opponent player creep hurts and is resolved.
+            local skip = harmlessEffects[entity.Variant]
+            if deathmatch and playerCreepEffects[entity.Variant] then skip = false end
+            local effect = not skip and entity:ToEffect()
             if effect then
                 local envelope = effectEnvelope(effect,p)
                 local swirl = effect.Variant == EffectVariant.ENEMY_BRIMSTONE_SWIRL
