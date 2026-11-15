@@ -576,7 +576,7 @@ local sf=FloorIntel.startRun(FloorIntel.new(),game,false)
 FloorIntel.update(sf,game,room,function()return {}end,1)
 local want=SF.forLayout(3222472336,1,{resolve=false,devilDeals=0,stage=2},12)
 local notable={}
-for _,o in ipairs(want)do if (o.kind=='angelTeleport' or o.kind=='angelItem' or o.kind=='redemption' or o.kind=='darkRoom') and #notable<2 then notable[#notable+1]=o end end
+for _,o in ipairs(want)do if o.kind=='angelTeleport' or o.kind=='angelItem' or o.kind=='redemption' or o.kind=='darkRoom' then notable[#notable+1]=o end end
 local got=sf.slotPrizes[1]
 assert(#notable>0 and got and #got==#notable and got[1].key=='sacrifice' and got[1].nth==notable[1].n,
  'sacrifice room prizes: '..tostring(got and got[1] and got[1].nth)..' vs '..tostring(notable[1] and notable[1].n))
@@ -592,7 +592,7 @@ rooms[2].VisitedCount=1;current=rooms[2];logs={}
 FloorIntel.newRoom(sf,game);sf.scanAt=-100
 FloorIntel.update(sf,game,room,function()return {}end,2)
 local sacLabel;for _,c in ipairs(sf.containers)do if c.sacrifice then sacLabel=c end end
-assert(sacLabel and #sacLabel.sacrifice==3 and sacLabel.sacrifice[1].n==3 and sacLabel.sacrifice[3].n==5,'spike label: '..table.concat(logs,' // '))
+assert(sacLabel and #sacLabel.sacrifice==10 and sacLabel.sacrifice[1].n==3 and sacLabel.sacrifice[10].n==12,'spike label: '..table.concat(logs,' // '))
 local sacLog;for _,l in ipairs(logs)do if l:find('^IAD FEAT sacrifice g=67 v=1 count=2 ') then sacLog=l end end
 assert(sacLog and sacLog:find('next='..want[3].kind..','..want[4].kind..','..want[5].kind,1,true),'sacrifice log: '..tostring(sacLog))
 -- The room list keeps the seen room's coming payouts.

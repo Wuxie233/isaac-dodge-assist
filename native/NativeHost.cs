@@ -189,7 +189,7 @@ internal static class NativeHost
                         lock(sync){
                             status=view.ReadInt32(104);
                             string[] modes={"关","自动瞄准","自动战斗","?"};
-                            text=String.Format("{0}\nHook状态 {1} · 收到 {2} 帧 · 拒收 {3}\n{4}\n移动输入读取 {5} 次 · 返回替代输入 {6} 次 · 射击替代 {7} 次\n战斗模式（游戏内 F10）：{8}\n{9}\n关闭窗口或在游戏内按左 Shift 暂停接管；计数不代表角色实际位移。",
+                            text=String.Format("{0}\nHook状态 {1} · 收到 {2} 帧 · 拒收 {3}\n{4}\n移动输入读取 {5} 次 · 返回替代输入 {6} 次 · 射击替代 {7} 次\n战斗模式（游戏内 F10）：{8}\n{9}\n关闭窗口或在游戏内按 ` 键（Esc 下方）暂停接管；计数不代表角色实际位移。",
                                 note,status,packets,rejected,DelaySummary(),view.ReadInt32(108),view.ReadInt32(112),view.ReadInt32(120),modes[lastCombat&3],archiveNote);
                         }
                         label.Text=text;

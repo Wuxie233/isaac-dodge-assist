@@ -139,7 +139,7 @@ end
 -- current=listIndex}. Each room: index (ListIndex), safe, shape, type,
 -- cells, visited, clear, label, colour; layout (unvisited rooms only, via
 -- layoutOf(listIndex, desc), which may cache).
-function M.scan(level, layoutOf)
+function M.scan(level, layoutOf, mirror)
     local floor = {rooms = {}, current = nil}
     local list = level:GetRooms()
     local hash = GetPtrHash
@@ -161,10 +161,14 @@ function M.scan(level, layoutOf)
         if ours[i] ~= nil and (ours[i] or not any) then
             local kind = kindOf(data.Type)
             local visited = (desc.VisitedCount or 0) > 0
+            local cells = M.cells(desc.SafeGridIndex, data.Shape)
+            if mirror then
+                for k = 1, #cells do cells[k] = {12 - cells[k][1], cells[k][2]} end
+            end
             floor.rooms[#floor.rooms+1] = {index = desc.ListIndex, safe = desc.SafeGridIndex, shape = data.Shape,
                 type = data.Type, variant = data.Variant, subtype = data.Subtype, flags = desc.Flags,
                 spawnSeed = desc.SpawnSeed, awardSeed = desc.AwardSeed,
-                cells = M.cells(desc.SafeGridIndex, data.Shape), visited = visited,
+                cells = cells, visited = visited,
                 clear = desc.Clear, label = kind and kind[1], colour = kind and kind[2],
                 layout = not visited and layoutOf and layoutOf(desc.ListIndex, desc) or nil}
         end

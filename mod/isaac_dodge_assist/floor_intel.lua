@@ -259,15 +259,14 @@ local function sacrificeContext(state, game, ctx, inRoom)
     end
     return sctx
 end
--- The sacrifices worth a line in the room list, up to the 12th (at least
--- three ahead): an angel room teleport, an angel item or Redemption, the
--- Dark Room. At most two, first come first.
+-- Notable sacrifices up to #12 (angel teleports, angel items / Redemption,
+-- and the Dark Room warp), kept in order for the room summary.
 local SAC_NOTABLE = {angelTeleport = true, angelItem = true, redemption = true, darkRoom = true}
 local function sacrificePrizes(state, game, seed, count, ctx, roomPool, sameRoom)
     local out = {}
     local list = SacrificeForecast.forecast(seed, count, ctx, math.max(3, 12 - count))
     for _, o in ipairs(list) do
-        if SAC_NOTABLE[o.kind] and #out < 2 then
+        if SAC_NOTABLE[o.kind] then
             local c = sacrificeContents(state, game, o, ctx, roomPool, sameRoom)
             c.key, c.nth = "sacrifice", o.n
             out[#out+1] = c
@@ -339,7 +338,7 @@ local function featureScan(state, game, room, entities, ctx, roomPool, labels, l
                 else c.words[1] = {SANGUINE_WORDS[o.kind] or "sac_nothing"} end
                 label = {sacrifice = {c}}
             else
-                local list = SacrificeForecast.forecast(seed, count, sctx, 3)
+                local list = SacrificeForecast.forecast(seed, count, sctx, math.max(1, 12 - count))
                 local kinds = {}
                 for _, o in ipairs(list) do kinds[#kinds+1] = o.kind end
                 log("s" .. i, count .. ":" .. u32(seed), string.format("sacrifice g=%d v=%d count=%d seed=%d done=%s next=%s",
@@ -518,8 +517,8 @@ local function scanRoom(state, game, index, entities, rocks, player)
 end
 
 -- Every update: reward rocks for the overlay; room and floor rescans every
--- RESCAN updates (and right after entering a room).
-local RESCAN = 15
+-- RESCAN updates (and immediately on room entry) to avoid online frame hitches.
+local RESCAN = 30
 -- Floor readouts the game's own HUD also shows: deal and planetarium
 -- chances, and the time gates for Boss Rush (20:00) and Hush (30:00).
 -- {deal, planetarium (percent), seconds}; a field the game did not give
@@ -673,7 +672,7 @@ end
 
 -- entities: a function returning the room's entities (called only to scan).
 -- player: the bound player (pills read as that player would take them).
-function M.update(state, game, room, entities, frame, player)
+function M.update(state, game, room, entities, frame, player, mirror)
     local rocks = RoomRewards.update(state.rewards, room, frame)
     if frame - state.scanAt < RESCAN and frame >= state.scanAt then return rocks end
     state.scanAt = frame
@@ -686,7 +685,7 @@ function M.update(state, game, room, entities, frame, player)
         end
         return state.layout[index] or nil
     end
-    state.map = FloorMap.scan(level, layoutOf)
+    state.map = FloorMap.scan(level, layoutOf, mirror)
     -- How many items each boss room drops (one per person; none after a
     -- chapter's last boss), for the score's estimate of what is unseen.
     for _, r in ipairs(state.map.rooms) do
@@ -778,14 +777,41 @@ end
 
 function M.extras(state)
     local extras = {}
-    for index, items in pairs(state.items) do extras[index] = {items = #items} end
-    for index, items in pairs(state.predicted or {}) do
-        extras[index] = extras[index] or {}
-        extras[index].forecast = #items
+    local function slot(index)
+        local e = extras[index]
+        if not e then e = {}; extras[index] = e end
+        return e
     end
-    for index, n in pairs(state.rocks) do
-        extras[index] = extras[index] or {}
-        extras[index].rocks = n
+    for index, items in pairs(state.items or {}) do
+        local e = slot(index)
+        e.items = #items
+        for _, it in ipairs(items) do
+            if it.quality and (not e.bestQ or it.quality > e.bestQ) then e.bestQ = it.quality end
+        end
+    end
+    for index, items in pairs(state.predicted or {}) do
+        local e = slot(index)
+        e.forecast = #items
+        for _, it in ipairs(items) do
+            if it.quality and (not e.bestQ or it.quality > e.bestQ) then
+                e.bestQ = it.quality
+                if (e.items or 0) == 0 then e.forecastOnly = true end
+            end
+        end
+    end
+    for index, n in pairs(state.rocks or {}) do
+        if n > 0 then slot(index).rocks = n end
+    end
+    if state.map and state.map.rooms then
+        for _, r in ipairs(state.map.rooms) do
+            local c = r.visited and state.loot[r.index] or (r.contentLoot or (r.layout and r.layout.loot))
+            if c and next(c) then slot(r.index).loot = c end
+        end
+    end
+    if state.score and state.score.roomList then
+        for _, r in ipairs(state.score.roomList) do
+            if r.need then slot(r.index).need = r.need end
+        end
     end
     return extras
 end

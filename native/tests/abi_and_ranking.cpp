@@ -32,8 +32,9 @@ int main(){
     d=decide(safe,0,0,leftOnly,-1);assert(d.move==-1); // Manual left is preserved without combat.
     double threat[9]={100,0,90,100,100,100,100,100,100};
     d=decide(threat,0,2|(3<<2)|(4<<6)|512,keys,-1);assert(d.move==1); // ...still dodged.
-    keys[7]=1;d=decide(safe,0,1|(15<<2)|(1<<6),keys,-1);assert(d.move==-1 && d.fire==1); // AIM redirects a held shot.
-    d=decide(safe,0,1|(15<<2)|(1<<6),idle,-1);assert(d.fire==-1); // AIM never fires on its own.
+    d=decide(safe,0,1024,keys,-1);assert(d.move==0); // Manual pitfall soft-brake stops safe movement.
+    d=decide(safe,1u,1024,keys,-1);assert(d.move==-1); // Do not brake onto a blocked idle cell.
+    d=decide(threat,0,1024,keys,-1);assert(d.move==1); // Real threat dodge overrides soft-brake.
     d=decide(safe,0,2|(15<<2),idle,-1);assert(d.move==-1 && d.fire==-1); // AUTO without target.
     // Raw values and pressed edges must be frozen together. A later query in
     // the same short window must not observe changed physical input, even

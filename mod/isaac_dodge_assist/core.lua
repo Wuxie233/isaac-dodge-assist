@@ -33,7 +33,7 @@ local combat, combatWord = Combat.new(), 0
 -- Floor map, seen items and loot, floor score (F5 shows the map).
 local intel = FloorIntel.new()
 -- On-screen status, score line and key-press toasts (hud.lua).
-local hud = Hud.new()
+-- hud instance is declared above so MC_POST_UPDATE can raise toasts too.
 -- Intel and HUD errors never stop the dodging. Each distinct one is logged
 -- once (a single flag hid a second fault behind the first), up to 10.
 local extraErrors, extraErrorCount = {}, 0
@@ -42,6 +42,11 @@ local function extraError(what, err)
     if extraErrors[text] or extraErrorCount >= 10 then return end
     extraErrors[text], extraErrorCount = true, extraErrorCount + 1
     Isaac.DebugString("IAD " .. text)
+end
+local hud = Hud.new()
+local function toast(key, ...)
+    local args = {...}
+    pcall(function() Hud.toast(hud, UI.t(key, table.unpack(args))) end)
 end
 -- Slot evidence for "which player does this keyboard drive" (see player_binding).
 local binding = PlayerBinding.new()
@@ -59,6 +64,15 @@ local frame, sequence, previousCount = 0, 0, -1
 local state = "WAITING"
 local loggedState = nil
 local runEnded = false
+local pitfallBrake, brakeKey, brakeWindowUntil = false, nil, -1
+local brakeBypassKey, brakeBypassUntil = nil, -1
+local brakeHintUntil, lastBrakeToastKey, lastBrakeToastAt = -1, nil, -999
+local manualMoveStreak, lastPolledDir = 0, nil
+local function clearBrakeState()
+    pitfallBrake, brakeKey, brakeWindowUntil = false, nil, -1
+    brakeBypassKey, brakeBypassUntil, brakeHintUntil = nil, -1, -1
+    manualMoveStreak, lastPolledDir = 0, nil
+end
 -- Candidate order is part of the IAD1 protocol: idle, L, R, U, D, LU, RU, LD, RD.
 local directions = {Vector(0,0), Vector(-1,0), Vector(1,0), Vector(0,-1), Vector(0,1),
     Vector(-1,-1):Normalized(), Vector(1,-1):Normalized(), Vector(-1,1):Normalized(), Vector(1,1):Normalized()}
@@ -95,7 +109,9 @@ local function emit(active, scores, blocked)
     -- Publish movement risks; the native host overrides local keyboard sampling.
     -- The combat word precedes its IAD1 packet and carries that sequence;
     -- hosts before 0.4 ignore it.
+    if not active then pitfallBrake = false end
     local word = mirror and combatWord ~= 0 and Combat.mirror(combatWord) or combatWord
+    if active and pitfallBrake then word = word | 1024 end
     if active and word ~= 0 then Isaac.DebugString("IAD2|" .. (sequence + 1) .. "|" .. word) end
     sequence = sequence + 1
     Isaac.DebugString("IAD1|" .. sequence .. "|" .. math.floor(Isaac.GetTime()) .. "|" ..
@@ -114,6 +130,7 @@ if saved then
     for _, key in ipairs({"mode", "bias", "hint", "weapon", "provenAuto", "autoFireAt", "aimLogs"}) do
         if saved.combat[key] ~= nil then combat[key] = saved.combat[key] end
     end
+    if combat.mode == 1 then combat.mode = 2 end
 end
 local function snapshot()
     return {enabled=enabled, paused=paused, horizonIndex=horizonIndex,
@@ -129,12 +146,12 @@ local function reset()
     selected, boundSeed, previousCount = -1, nil, -1
     motion = {}
     frame, state = 0, "WAITING"
+    clearBrakeState()
     emit(false)
 end
 local function unsupported(p)
     local t = p:GetPlayerType()
     return p:GetSubPlayer() ~= nil or p:IsSubPlayer() or
-        t == PlayerType.PLAYER_JACOB or t == PlayerType.PLAYER_ESAU or
         t == PlayerType.PLAYER_JACOB_B or t == PlayerType.PLAYER_LAZARUS_B or
         t == PlayerType.PLAYER_LAZARUS2_B or t == PlayerType.PLAYER_THEFORGOTTEN or
         t == PlayerType.PLAYER_THEFORGOTTEN_B or t == PlayerType.PLAYER_THESOUL or
@@ -239,7 +256,9 @@ end
 local function tearAsBullet(tear)
     return {InitSeed = tear.InitSeed, Position = tear.Position, Velocity = tear.Velocity, Size = tear.Size,
         Height = tear.Height, FallingSpeed = tear.FallingSpeed, FallingAccel = tear.FallingAcceleration or 0,
-        HasProjectileFlags = function() return true end}
+        HasProjectileFlags = function(_, flag)
+            return ProjectileFlags ~= nil and flag == ProjectileFlags.ANY_HEIGHT_ENTITY_HIT
+        end}
 end
 -- API effect families whose damage is not always exposed as CollisionDamage.
 local groundEffects = {
@@ -283,6 +302,25 @@ local areaEffects = {
     [EffectVariant.BIG_HORN_HAND]=45, [EffectVariant.SPIKE]=20,
     [EffectVariant.BRIMSTONE_BALL]=40
 }
+local warningEffects = {}
+if EffectVariant and EffectVariant.DIRT_PILE then
+    areaEffects[EffectVariant.DIRT_PILE] = 35
+    warningEffects[EffectVariant.DIRT_PILE] = true
+end
+local curveFlags = {}
+if ProjectileFlags then
+    for _, name in ipairs({"CURVE_LEFT", "CURVE_RIGHT", "ACCELERATE", "CHANGE_VELOCITY_AFTER_SPAWN", "SMART", "WIGGLE"}) do
+        local f = ProjectileFlags[name]
+        if f then curveFlags[#curveFlags + 1] = f end
+    end
+end
+local function curvingBullet(bullet)
+    if not (#curveFlags > 0 and bullet.HasProjectileFlags) then return false end
+    for _, f in ipairs(curveFlags) do
+        if bullet:HasProjectileFlags(f) then return true end
+    end
+    return false
+end
 -- Explosion graphics outlive their instantaneous damage. Live bombs and
 -- exploding grids supply the predictive envelope, never the lingering smoke.
 local function effectEnvelope(effect, p)
@@ -365,11 +403,12 @@ local function buildField(p,steps,bullets,contacts,bombs,areas,lasers)
         end
         for _,bullet in ipairs(bullets) do
             if ThreatField.heightIntersects(bullet,t) then
-                ThreatField.add(field,t,forecast(bullet,previous),forecast(bullet,t),bullet.Size+3)
+                local r = bullet.Size + 3 + (curvingBullet(bullet) and 6 or 0)
+                ThreatField.add(field,t,forecast(bullet,previous),forecast(bullet,t),r)
                 local sample=motion[bullet.InitSeed]
                 if sample and sample.acceleration:LengthSquared()>0.01 then
                     ThreatField.add(field,t,bullet.Position+bullet.Velocity*previous,
-                        bullet.Position+bullet.Velocity*t,bullet.Size+3)
+                        bullet.Position+bullet.Velocity*t,r)
                 end
             end
         end
@@ -395,17 +434,91 @@ end
 -- so a retracting spike or a spent TNT is never stale; only a hazard that
 -- appears mid-room waits for the next rescan.
 local GRID_RESCAN = 6
-local gridCells, gridRoom, gridScanAt = {}, nil, -GRID_RESCAN
+local gridCells, doorCells, gridRoom, gridScanAt = {}, {}, nil, -GRID_RESCAN
 local function gridHazard(kind)
     return kind == GridEntityType.GRID_SPIKES or kind == GridEntityType.GRID_SPIKES_ONOFF or
         kind == GridEntityType.GRID_POOP or kind == GridEntityType.GRID_TNT or
         kind == GridEntityType.GRID_ROCK_BOMB or kind == GridEntityType.GRID_ROCK_SPIKED
 end
 local function rescanGrid(room, frame)
-    gridCells, gridRoom, gridScanAt = {}, room, frame
+    gridCells, doorCells, gridRoom, gridScanAt = {}, {}, room, frame
     for index = 0, room:GetGridSize()-1 do
         local grid = room:GetGridEntity(index)
-        if grid and gridHazard(grid:GetType()) then gridCells[#gridCells+1] = index end
+        if grid then
+            local kind = grid:GetType()
+            if gridHazard(kind) then gridCells[#gridCells+1] = index
+            elseif kind == GridEntityType.GRID_DOOR then doorCells[#doorCells+1] = index end
+        end
+    end
+end
+local function updatePitfallBrake(p, polled, stride, pitfalls)
+    local px, py = polled and polled.X or 0, polled and polled.Y or 0
+    local magSq = px*px + py*py
+    local moving = magSq > 0.04
+    if moving then
+        if lastPolledDir and math.abs(lastPolledDir.X - px) < 0.3 and math.abs(lastPolledDir.Y - py) < 0.3 then
+            manualMoveStreak = manualMoveStreak + 1
+        else
+            manualMoveStreak = 1
+            lastPolledDir = {X = px, Y = py}
+        end
+    else
+        manualMoveStreak = 0
+        lastPolledDir = nil
+    end
+    local hit
+    if moving and #pitfalls > 0 then
+        local len = math.sqrt(magSq)
+        local dx, dy = px / len, py / len
+        local ps, bestD = p.Size or 13, math.huge
+        for _, pf in ipairs(pitfalls) do
+            if pf.always or manualMoveStreak <= 6 then
+                local vx, vy = pf.x - p.Position.X, pf.y - p.Position.Y
+                local proj = vx*dx + vy*dy
+                local reachD = ps + pf.r + math.max(18, stride * 3.5)
+                local d2 = vx*vx + vy*vy
+                local lat = math.abs(vx*dy - vy*dx)
+                if proj > -4 and d2 <= reachD*reachD and lat <= ps + pf.r + 6 and d2 < bestD then
+                    hit, bestD = pf, d2
+                end
+            end
+        end
+    end
+    if brakeWindowUntil >= frame then
+        pitfallBrake = true
+        brakeHintUntil = frame + 30
+        return
+    end
+    if brakeWindowUntil >= 0 and frame <= brakeWindowUntil + 4 then
+        pitfallBrake = false
+        if hit and hit.key == brakeKey then
+            brakeBypassKey = hit.key
+            brakeBypassUntil = frame + 45
+            brakeWindowUntil = -1
+            return
+        elseif moving or frame == brakeWindowUntil + 4 then
+            brakeKey, brakeWindowUntil = nil, -1
+        else
+            return
+        end
+    end
+    if hit then
+        if brakeBypassKey == hit.key and frame <= brakeBypassUntil then
+            brakeBypassUntil = frame + 15
+            pitfallBrake = false
+            return
+        end
+        brakeKey = hit.key
+        brakeWindowUntil = frame + 8
+        pitfallBrake = true
+        brakeHintUntil = frame + 35
+        if lastBrakeToastKey ~= hit.key or frame > lastBrakeToastAt + 90 then
+            toast("toastSoftBrake")
+            lastBrakeToastKey, lastBrakeToastAt = hit.key, frame
+        end
+    else
+        pitfallBrake = false
+        if frame > brakeBypassUntil then brakeBypassKey = nil end
     end
 end
 -- One line per room with every listed grid hazard, so the next session can
@@ -464,7 +577,7 @@ local function flushKinematics(reason)
 end
 -- The update counter restarts with every room: so does the grid rescan
 -- clock (a new room must never wait out the last room's long timer).
-mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); Combat.flushStats(combat, "room"); frame = 0; gridRoom, gridScanAt = nil, -GRID_RESCAN; motion = {}; deathAt = {}; gridLogged = false; Diagnostics.reset("room"); pcall(FloorIntel.newRoom, intel, game); calibrationRoom(); emit(false) end)
+mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); Combat.flushStats(combat, "room"); frame = 0; gridRoom, gridScanAt = nil, -GRID_RESCAN; motion = {}; deathAt = {}; gridLogged = false; clearBrakeState(); Diagnostics.reset("room"); pcall(FloorIntel.newRoom, intel, game); calibrationRoom(); emit(false) end)
 mod:AddCallback(ModCallbacks.MC_POST_NEW_LEVEL, function() FloorIntel.newLevel(intel) end)
 -- Calibration for predicting unvisited rooms' items (see
 -- native/research/api-map-items.md 3.6): the room seeds (calibrationRoom)
@@ -496,7 +609,7 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     -- Floor intel and reward rocks run whatever the dodge state. They are
     -- extras: an error there is logged once and never stops the dodging.
     local bound = selected >= 0 and selected < game:GetNumPlayers() and Isaac.GetPlayer(selected) or Isaac.GetPlayer(0)
-    local ok, rocks = pcall(FloorIntel.update, intel, game, game:GetRoom(), Isaac.GetRoomEntities, frame, bound)
+    local ok, rocks = pcall(FloorIntel.update, intel, game, game:GetRoom(), Isaac.GetRoomEntities, frame, bound, mirror)
     if ok then Overlay.rewards(rocks)
     else extraError("INTEL", rocks) end
     local count = game:GetNumPlayers()
@@ -511,9 +624,20 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
         local keep = selected >= 0 and selected < count and selected or findBound(count)
         if keep then bind(keep) else bind(-1) end
     end
+    local hasJacob = false
+    if count > 1 and PlayerType and PlayerType.PLAYER_JACOB then
+        for index = 0, count - 1 do
+            local c = Isaac.GetPlayer(index)
+            if c and c.GetPlayerType and c:GetPlayerType() == PlayerType.PLAYER_JACOB then
+                hasJacob = true; break
+            end
+        end
+    end
     for index = 0, count-1 do
         local candidate = Isaac.GetPlayer(index)
-        if candidate and not candidate:IsCoopGhost() then
+        if candidate and not candidate:IsCoopGhost() and
+            not (hasJacob and PlayerType and PlayerType.PLAYER_ESAU and candidate.GetPlayerType and
+                candidate:GetPlayerType() == PlayerType.PLAYER_ESAU) then
             PlayerBinding.observe(binding, index, InputQueue.polled(candidate, mirror), PlayerMotion.input(candidate))
         end
     end
@@ -581,7 +705,8 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
                 local swirl = effect.Variant == EffectVariant.ENEMY_BRIMSTONE_SWIRL
                 if (envelope or swirl) and not playerOwned(effect) then
                     if envelope then
-                        areas[#areas+1] = {position=effect.Position,velocity=effect.Velocity,radius=envelope}
+                        areas[#areas+1] = {position=effect.Position,velocity=effect.Velocity,radius=envelope,
+                            warning=warningEffects[effect.Variant]}
                     end
                     if swirl then LaserHazards.appendEffectWarnings(effect,game:GetRoom(),lasers) end
                 end
@@ -589,10 +714,14 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
         else
             local npc = entity:ToNPC()
             if npc and not npc:IsDead() and not playerOwned(npc) then
-                LaserHazards.appendWarnings(npc,game:GetRoom(),lasers,p.Position)
-                NpcHazards.momArm(npc,game:GetRoom(),areas)
+                local npcRoom = game:GetRoom()
+                LaserHazards.appendWarnings(npc,npcRoom,lasers,p.Position)
+                NpcHazards.momArm(npc,npcRoom,areas)
                 NpcHazards.wormwood(npc,areas)
                 NpcHazards.satanStomp(npc,areas)
+                NpcHazards.grudge(npc,npcRoom,lasers)
+                NpcHazards.pon(npc,areas)
+                NpcHazards.mother(npc,npcRoom,areas)
                 if NpcHazards.exploder(npc) then exploders[#exploders+1] = npc end
             end
             if entity.Type == EntityType.ENTITY_TEAR and not entity:IsDead() and playerOwned(entity) then
@@ -646,7 +775,7 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
                 areas[#areas+1] = {position=npc.Position,velocity=npc.Velocity,
                     radius=npc.Size+23,warning=true}
             end
-            if projectile and not projectile:IsDead() then
+            if projectile and not projectile:IsDead() and ((projectile.FrameCount or 0) <= 6 or bullets[#bullets] ~= projectile) then
                 Diagnostics.shot(frame, projectile, p, bullets[#bullets] == projectile)
             end
         end
@@ -668,16 +797,18 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
         logGrid(room)
     end
     hazardCells = {}
+    local pitfalls = {}
     -- Sacrifice Room spikes hurt flying characters too (Azazel walked AUTO
     -- over them). They stay out of the dodge field: stepping on them is a
-    -- choice, and the helper must not fight it; AUTO just never does.
+    -- choice, and the helper stops once at the edge until held through.
     local sacrifice = RoomType and room:GetType() == RoomType.ROOM_SACRIFICE
     for _, index in ipairs(gridCells) do
         local grid = room:GetGridEntity(index)
         if grid then
             local kind = grid:GetType()
-            if p.CanFly and sacrifice and spikesActive(grid, kind) then
+            if sacrifice and spikesActive(grid, kind) then
                 hazardCells[index] = true
+                pitfalls[#pitfalls+1] = {key="sac:"..index, x=grid.Position.X, y=grid.Position.Y, r=20, always=true}
             elseif not p.CanFly and spikesActive(grid, kind) then
                 areas[#areas+1] = {position=grid.Position,velocity=Vector(0,0),radius=20}
                 hazardCells[index] = true
@@ -687,10 +818,9 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
                 -- the 0.10.0 session. Solid 40-unit cell: half size + margin.
                 areas[#areas+1] = {position=grid.Position,velocity=Vector(0,0),radius=26}
                 hazardCells[index] = true
-            elseif kind == GridEntityType.GRID_ROCK_SPIKED and not p.CanFly and
+            elseif kind == GridEntityType.GRID_ROCK_SPIKED and
                 room:GetGridCollision(index) ~= GridCollisionClass.COLLISION_NONE then
-                -- Spiked rocks hurt on touch: a 2026-11-02 sourceless hit
-                -- (flags 0) had one 36 units away. Solid cell + margin.
+                -- Spiked rocks hurt walkers and flyers alike on contact.
                 areas[#areas+1] = {position=grid.Position,velocity=Vector(0,0),radius=26}
                 hazardCells[index] = true
             elseif kind == GridEntityType.GRID_ROCK_BOMB and grid.State == 3 then
@@ -704,18 +834,43 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
             end
         end
     end
-    -- AUTO never walks over an item: in co-op it would take it from the
-    -- partner, and a shop or devil deal costs.
+    -- AUTO never walks over an item or closed spiked/mimic chest; manual play
+    -- also soft-brakes at them and at open doors when accidents are costly.
     if PickupVariant then
+        local spikedChest = PickupVariant.PICKUP_SPIKEDCHEST or 52
+        local mimicChest = PickupVariant.PICKUP_MIMICCHEST or 54
         for _, entity in ipairs(entities) do
             local pickup = entity.Type == EntityType.ENTITY_PICKUP and entity.ToPickup and entity:ToPickup()
-            if pickup and ((pickup.Variant == PickupVariant.PICKUP_COLLECTIBLE and pickup.SubType ~= 0) or
-                (pickup.Price or 0) ~= 0) then
-                local index = room:GetGridIndex(pickup.Position)
-                if index >= 0 then hazardCells[index] = true end
+            if pickup then
+                local v = pickup.Variant
+                if (v == PickupVariant.PICKUP_COLLECTIBLE and pickup.SubType ~= 0) or (pickup.Price or 0) ~= 0 then
+                    local index = room:GetGridIndex(pickup.Position)
+                    if index >= 0 then hazardCells[index] = true end
+                    pitfalls[#pitfalls+1] = {key="item:"..tostring(pickup.InitSeed or index),
+                        x=pickup.Position.X, y=pickup.Position.Y, r=18, always=true}
+                elseif (v == spikedChest or v == mimicChest) and pickup.SubType ~= 0 then
+                    local index = room:GetGridIndex(pickup.Position)
+                    if index >= 0 then hazardCells[index] = true end
+                    pitfalls[#pitfalls+1] = {key="chest:"..tostring(pickup.InitSeed or index),
+                        x=pickup.Position.X, y=pickup.Position.Y, r=20, always=true}
+                end
             end
         end
     end
+    local roomHasLoot = #pitfalls > 0
+    for _, dindex in ipairs(doorCells) do
+        local grid = room:GetGridEntity(dindex)
+        local door = grid and grid.ToDoor and grid:ToDoor()
+        if door and door.IsOpen and door:IsOpen() then
+            local tr = door.TargetRoomType
+            local riskyDoor = roomHasLoot or frame < 45 or (RoomType ~= nil and (
+                tr == RoomType.ROOM_CURSE or tr == RoomType.ROOM_SACRIFICE or
+                tr == RoomType.ROOM_DEVIL or tr == RoomType.ROOM_ANGEL or
+                tr == RoomType.ROOM_CHALLENGE or tr == RoomType.ROOM_BOSSRUSH))
+            pitfalls[#pitfalls+1] = {key="door:"..dindex, x=grid.Position.X, y=grid.Position.Y, r=26, always=riskyDoor}
+        end
+    end
+    updatePitfallBrake(p, polled, stride, pitfalls)
     if #bullets == 0 and #contacts == 0 and #bombs == 0 and #areas == 0 and #lasers == 0 then
         Diagnostics.trace(frame,p,input,nil,nil,polled)
         Overlay.clear()
@@ -754,7 +909,7 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     local built=Isaac.GetTime()
     local space
     local function spaceCost(endpoint)
-        if not space then space=EscapeSpace.build(room,p,contacts,steps,forecast,gridSafe) end
+        if not space then space=EscapeSpace.build(room,p,contacts,steps,forecast,gridSafeXY,true) end
         return EscapeSpace.cost(space,endpoint)
     end
     local scores,blocked,danger,paths,inside=Planner.solve({player=p,room=room,
@@ -805,11 +960,32 @@ mod:AddCallback(ModCallbacks.MC_POST_NPC_DEATH, function(_, npc)
         npc.Type, npc.Variant, npc.SubType, at.X, at.Y, player.X, player.Y, at:Distance(player),
         predicted and tostring(frame - predicted) or "none", npc.HitPoints))
 end)
-local function toast(key, ...)
-    local args = {...}
-    pcall(function() Hud.toast(hud, UI.t(key, table.unpack(args))) end)
+local COMBAT_TOASTS = {[0] = "combatOff", [2] = "auto"}
+local function readCurseHp(p)
+    if not p then return nil end
+    local okLvl, level = pcall(function() return game:GetLevel() end)
+    if not okLvl or not level or not level.GetCurses then return nil end
+    local unknown = LevelCurse and LevelCurse.CURSE_OF_THE_UNKNOWN or 8
+    if (level:GetCurses() & unknown) == 0 then return nil end
+    local rotten = p.GetRottenHearts and p:GetRottenHearts() or 0
+    local rawRed = p.GetHearts and p:GetHearts() or 0
+    local red = math.max(0, rawRed - rotten * 2)
+    local maxRed = p.GetMaxHearts and p:GetMaxHearts() or 0
+    local soulTotal = p.GetSoulHearts and p:GetSoulHearts() or 0
+    local blackMask = p.GetBlackHearts and p:GetBlackHearts() or 0
+    local soul, black = 0, 0
+    local slots = math.ceil(soulTotal / 2)
+    for i = 0, slots - 1 do
+        local half = (i == slots - 1 and soulTotal % 2 == 1) and 1 or 2
+        if (blackMask & (1 << i)) ~= 0 then black = black + half
+        else soul = soul + half end
+    end
+    local bone = p.GetBoneHearts and p:GetBoneHearts() or 0
+    local eternal = p.GetEternalHearts and p:GetEternalHearts() or 0
+    local broken = p.GetBrokenHearts and p:GetBrokenHearts() or 0
+    return {red=red, maxRed=maxRed, soul=soul, black=black, bone=bone,
+        rotten=rotten, eternal=eternal, broken=broken}
 end
-local COMBAT_TOASTS = {[0] = "combatOff", "aim", "auto"}
 -- The floor panel (1) and the items-and-stats page (2).
 local PANEL_SHADER = "IAD-RenderAboveHUD"
 local shaderSeenAt, pendingPage = -100, 0
@@ -865,15 +1041,17 @@ mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
         if page == 0 then
             -- In the room: the effect over each pill and card, what each chest,
             -- sack and alt rock holds, the nearest pedestal's stats.
-            ItemView.renderPills(intel.pills or {})
-            ItemView.renderCards(intel.cards or {}, bound and bound.Position)
-            ItemView.renderContainers(intel.containers or {}, bound and bound.Position)
-            if bound then ItemView.renderTooltip(intel.pedestals or {}, bound.Position) end
+            ItemView.beginFrame()
+            ItemView.renderPills(intel.pills or {}, mirror)
+            ItemView.renderCards(intel.cards or {}, bound and bound.Position, mirror)
+            ItemView.renderContainers(intel.containers or {}, bound and bound.Position, mirror)
+            if bound then ItemView.renderTooltip(intel.pedestals or {}, bound.Position, mirror) end
         end
         -- The open panel covers the HUD block; toasts still show.
         Hud.render(hud, {state = enabled and state or "OFF", combatMode = combat.mode, preview = Overlay.enabled(),
-            player = coop and selected + 1 or nil, score = intel.score, hidden = page > 0}, 48, 50)
-        if coop then Hud.playerLabel(bound.Position, selected + 1) end
+            player = coop and selected + 1 or nil, score = intel.score, hidden = page > 0,
+            hp = readCurseHp(bound), brake = pitfallBrake or frame <= brakeHintUntil}, 48, 50)
+        if coop then Hud.playerLabel(bound.Position, selected + 1, mirror) end
         -- With content/shaders.xml loaded (a game restart after install),
         -- the panel waits for the shader callback, which comes after the HUD
         -- and the game's map: drawn there it covers them. Without it, here.

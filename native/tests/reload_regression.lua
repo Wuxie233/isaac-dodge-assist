@@ -60,7 +60,7 @@ callbacks[ModCallbacks.MC_POST_GAME_STARTED]()
 for _=1,6 do tick()end
 assert(loader.build()=='A' and logged(' build A loaded'),'cold start')
 press(Keyboard.KEY_F8)   -- 450 -> 600
-press(Keyboard.KEY_F10)  -- OFF -> AIM
+press(Keyboard.KEY_F10)  -- OFF -> AUTO
 press(Keyboard.KEY_GRAVE_ACCENT) -- pause
 tick()
 local before=lastPacket()
@@ -80,8 +80,13 @@ assert(after[6]=='600' and after[4]=='0','settings lost across reload: '..table.
 local shown=false;for _,label in ipairs(labels)do if label:find('v'..'%d.*%+B') then shown=true end end
 assert(shown,'no toast for the new build')
 press(Keyboard.KEY_GRAVE_ACCENT);tick()  -- resume
-press(Keyboard.KEY_F10)                 -- AIM -> AUTO: combat mode survived
-assert(logs[#logs]=='IAD COMBAT: AUTO','combat mode lost across reload: '..logs[#logs])
+-- Combat mode AUTO survived reload, and a single F10 returns it to OFF.
+local w;for i=#logs,1,-1 do if logs[i]:sub(1,5)=='IAD2|' then w=logs[i];break end end
+assert(w and tonumber(w:match('|(%d+)$'))&3==2 or logs[#logs]:find('IAD1|'), 'sensor active after reload')
+press(Keyboard.KEY_F10)                 -- AUTO -> OFF
+assert(logs[#logs]=='IAD COMBAT: OFF','combat mode did not survive reload: '..logs[#logs])
+press(Keyboard.KEY_F10)                 -- OFF -> AUTO
+assert(logs[#logs]=='IAD COMBAT: AUTO','re-enable AUTO failed: '..logs[#logs])
 press(Keyboard.KEY_F10)                 -- back to OFF
 print('PASS hot reload: build swap, settings, pause, combat mode and IAD1 sequence carried over')
 

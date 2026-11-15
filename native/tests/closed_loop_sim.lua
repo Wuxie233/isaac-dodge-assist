@@ -124,7 +124,7 @@ local function press(key,times)
 end
 press(Keyboard.KEY_F8,tonumber(os.getenv('SIM_F8') or 0))
 local auto=os.getenv('SIM_COMBAT')=='auto'
-if auto then press(Keyboard.KEY_F10,2) end
+if auto then press(Keyboard.KEY_F10,1) end
 -- Native rank(), ported from dodge_native.cpp (indices 1-based here).
 local dx,dy={0,-1,1,0,0,-1,1,-1,1},{0,0,0,-1,1,-1,-1,1,1}
 local function rank(risk,blocked,manual,x,y,previous)

@@ -32,7 +32,7 @@ function M.path(ctx,dir,model)
     local p,steps,ticks=ctx.player,ctx.steps,ctx.ticks or 2
     local position,velocity=p.Position,p.Velocity
     local x,y,vx,vy=position.X,position.Y,velocity.X,velocity.Y
-    local firstHit,lastHit,hits,exposure,warning,preference=steps+1,0,0,0,0,0
+    local firstHit,lastHit,hits,exposure,peakHard,warning,preference=steps+1,0,0,0,0,0,0
     local moved=false
     local terminalDepth,clearance=0,24
     local terminal=model.k*p.MoveSpeed
@@ -69,32 +69,40 @@ function M.path(ctx,dir,model)
         if hard>0 then
             firstHit=min(firstHit,t);lastHit=t;hits=hits+1
             exposure=exposure+min(100,hard)
+            if hard>peakHard then peakHard=hard end
         end
         warning=warning+min(100,soft)*(steps-t+1)
         preference=preference+pref
         terminalDepth,clearance=hard,gap
     end
-    local score=0
+    local score,exitTie=0,0
     if hits>0 then
         if ctx.inside then
             -- Inside a hazard, shared first-frame contact is unavoidable.
-            -- Rank a sustained exit ahead of staying put or re-entering later.
-            -- If no exit is reachable, make progress toward its boundary.
+            -- Keep the primary risk tier strictly on exit frame (lastHit) so
+            -- small exposure changes keep the same SCALE tier and native
+            -- hysteresis holds a steady exit direction without L<->R thrashing.
             if lastHit<steps then
-                score=1000000+lastHit*20000+hits*500+min(499,exposure)
+                score=1000000+lastHit
+                exitTie=min(499,floor(hits*8+min(200,exposure*0.5)))
             else
-                score=2000000+min(999,floor(terminalDepth*10))*1000+
+                score=2000000+min(999,floor(terminalDepth*2.5))*1000+
                     hits*20+min(19,exposure/100)
             end
         else
-            score=(steps-firstHit+1)*1000000+hits*20000+min(19999,floor(exposure*20))
+            -- When paths share firstHit (especially t=1 against a fast oncoming
+            -- crawler), rank sustained exit and shallower peak contact ahead of
+            -- raw overlap count so sidestepping beats charging head-on through.
+            local trapped=(lastHit==steps) and 200000 or 0
+            local sub=min(999999,trapped+floor(peakHard*4000+exposure*100+hits*200))
+            score=(steps-firstHit+1)*1000000+sub
         end
     end
     -- Bomb/landing warnings can trigger earlier, but cannot outweigh a real
     -- collision. Duplicate/overlapping effects contribute only the worst depth.
     score=floor(score)+min(9999,floor(warning))
     return {risk=score,blocked=dir:LengthSquared()>0 and not moved,endpoint=Vector(x,y),
-        firstHit=firstHit,lastHit=lastHit,hits=hits,depth=terminalDepth,
+        firstHit=firstHit,lastHit=lastHit,hits=hits,depth=terminalDepth,exitTie=exitTie,
         clearance=clearance,preference=min(999,floor(preference))}
 end
 function M.solve(ctx,directions,spaceCost)
@@ -117,12 +125,13 @@ function M.solve(ctx,directions,spaceCost)
         -- Space can only break a tie within the minimum integer risk tier.
         -- Native hysteresis also cannot retain an input in a worse risk tier.
         if danger and item.risk==bestRisk and not (a.blocked and b.blocked) then
-            cost=max(spaceCost(a.endpoint),spaceCost(b.endpoint))
+            cost=spaceCost and max(spaceCost(a.endpoint),spaceCost(b.endpoint)) or 0
             -- Combine terminal clearance with the reachable endpoint space.
             local gap=min(a.clearance,b.clearance)
             cost=min(999,floor(cost*0.6+max(0,24-gap)*8))
         end
-        local tie=cost*1024+max(a.preference,b.preference)
+        local exitSub=max(a.exitTie or 0,b.exitTie or 0)
+        local tie=min(1023,cost)*1024+min(1023,max(a.preference,b.preference)+exitSub)
         scores[i]=item.risk==0 and (danger and tie-SCALE or 0) or item.risk*SCALE+tie
     end
     return scores,blocked,danger,paths,ctx.inside

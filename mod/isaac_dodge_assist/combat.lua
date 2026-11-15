@@ -1,5 +1,4 @@
--- Combat assist (F10 cycles OFF -> AIM -> AUTO).
--- AIM: shots you fire go toward the chosen target, with lead.
+-- Combat assist (F10 toggles OFF <-> AUTO).
 -- AUTO: while the room has enemies and your hands are off the keys, the
 -- native host also walks and shoots; the dodge scores always come first.
 -- Aim lead and the tear-lane rule follow isaac-jev (MIT,
@@ -11,7 +10,7 @@
 local M = {}
 local abs, floor, max, min, sqrt = math.abs, math.floor, math.max, math.min, math.sqrt
 local SCALE, HARD = 1048576, 1000000*1048576
-M.MODES = {[0]="OFF", "AIM", "AUTO"}
+M.MODES = {[0]="OFF", [2]="AUTO"}
 local NO_MOVE = 15
 -- Updates of full-speed walking used to compare directions against the goal.
 local LOOK = 5
@@ -51,27 +50,28 @@ function M.forget(state)
     state.bias, state.provenAuto, state.autoFireAt, state.hintTick = 0, false, nil, -100
 end
 function M.cycle(state)
-    state.mode = (state.mode + 1) % 3
+    state.mode = state.mode == 0 and 2 or 0
     clearAction(state)
     return state.mode
 end
 
--- IAD2 word: bits 0-1 mode, 2-5 move (0-8 = IAD1 candidate index, 15 none),
--- 6-8 shoot (0 none, 1 left, 2 right, 3 up, 4 down), 9 hold fire.
-function M.word(mode, move, shoot, hold)
-    return mode | ((move or NO_MOVE) << 2) | ((shoot or 0) << 6) | (hold and 512 or 0)
+-- IAD2 word: bits 0-1 mode (0 off, 2 auto), 2-5 move (0-8 = IAD1 candidate
+-- index, 15 none), 6-8 shoot (0 none, 1 left, 2 right, 3 up, 4 down),
+-- 9 hold fire, 10 soft-brake manual pitfall guard.
+function M.word(mode, move, shoot, hold, brake)
+    return mode | ((move or NO_MOVE) << 2) | ((shoot or 0) << 6) | (hold and 512 or 0) | (brake and 1024 or 0)
 end
 function M.decode(word)
     local move = (word >> 2) & 15
-    return word & 3, move ~= NO_MOVE and move or nil, (word >> 6) & 7, (word & 512) ~= 0
+    return word & 3, move ~= NO_MOVE and move or nil, (word >> 6) & 7, (word & 512) ~= 0, (word & 1024) ~= 0
 end
 -- The word with left and right swapped (mirror world: the game flips
 -- horizontal input, so the keys for a world direction are the other side's).
 local MIRROR_MOVE = {[0] = 0, 2, 1, 3, 4, 6, 5, 8, 7}
 local MIRROR_SHOOT = {[0] = 0, 2, 1, 3, 4}
 function M.mirror(word)
-    local mode, move, shoot, hold = M.decode(word)
-    return M.word(mode, move and MIRROR_MOVE[move], MIRROR_SHOOT[shoot] or shoot, hold)
+    local mode, move, shoot, hold, brake = M.decode(word)
+    return M.word(mode, move and MIRROR_MOVE[move], MIRROR_SHOOT[shoot] or shoot, hold, brake)
 end
 
 local function has(player, method, enum, names)
@@ -85,13 +85,21 @@ local function has(player, method, enum, names)
     end
     return false
 end
+local function hasCollectible(player, name, fallbackId)
+    if has(player, "HasCollectible", CollectibleType, {name}) then return true end
+    if fallbackId and (not CollectibleType or not CollectibleType._next) and player.HasCollectible then
+        local ok, present = pcall(player.HasCollectible, player, fallbackId)
+        return ok and present == true
+    end
+    return false
+end
 -- Items that turn held tears into a charge. Neptunus is not one: held fire
 -- shoots normally and it only charges while you are not firing.
 local CHARGE_ITEMS = {"COLLECTIBLE_CHOCOLATE_MILK", "COLLECTIBLE_CURSED_EYE"}
 -- "charge": hold to charge, release to fire. "tap": a held button never
--- attacks (Spirit Sword charges its spin). Everything else fires while held.
+-- attacks (Spirit Sword charges spin, Forgotten club charges throw).
 local function weaponKind(player)
-    if has(player, "HasWeaponType", WeaponType, {"WEAPON_SPIRIT_SWORD"}) then return "tap" end
+    if has(player, "HasWeaponType", WeaponType, {"WEAPON_SPIRIT_SWORD", "WEAPON_BONE"}) then return "tap" end
     if has(player, "HasWeaponType", WeaponType, {"WEAPON_BRIMSTONE", "WEAPON_KNIFE", "WEAPON_MONSTROS_LUNGS", "WEAPON_TECH_X"}) or
         has(player, "HasCollectible", CollectibleType, CHARGE_ITEMS) then
         return "charge"
@@ -105,6 +113,21 @@ end
 local function instantBeam(player)
     return has(player, "HasWeaponType", WeaponType, {"WEAPON_BRIMSTONE", "WEAPON_LASER"})
 end
+local function meleeWeapon(player)
+    return has(player, "HasWeaponType", WeaponType, {"WEAPON_SPIRIT_SWORD", "WEAPON_BONE"})
+end
+local function bombWeapon(player)
+    return has(player, "HasWeaponType", WeaponType, {"WEAPON_BOMBS"})
+end
+local function rocketWeapon(player)
+    return has(player, "HasWeaponType", WeaponType, {"WEAPON_ROCKETS"})
+end
+local function knifeWeapon(player)
+    return has(player, "HasWeaponType", WeaponType, {"WEAPON_KNIFE"})
+end
+local function haemolacriaWeapon(player)
+    return hasCollectible(player, "COLLECTIBLE_HAEMOLACRIA", 531)
+end
 local function spectral(player)
     if not (TearFlags and TearFlags.TEAR_SPECTRAL) then return false end
     local ok, result = pcall(function()
@@ -112,7 +135,27 @@ local function spectral(player)
     return ok and result == true
 end
 
-local function hostile(entity, playerOwned)
+local function same(a, b)
+    if not (a and b) then return false end
+    if a == b then return true end
+    if GetPtrHash then
+        local ok, equal = pcall(function() return GetPtrHash(a) == GetPtrHash(b) end)
+        if ok then return equal end
+    end
+    return a.Index ~= nil and a.Index == b.Index and
+        (a.ControllerIndex == nil or b.ControllerIndex == nil or a.ControllerIndex == b.ControllerIndex)
+end
+
+local function hostile(entity, playerOwned, deathmatch, selfPlayer)
+    if deathmatch and entity.Type == EntityType.ENTITY_PLAYER then
+        local pl = (entity.ToPlayer and entity:ToPlayer()) or entity
+        if same(pl, selfPlayer) or same(entity, selfPlayer) or
+            (selfPlayer and selfPlayer.InitSeed and entity.InitSeed == selfPlayer.InitSeed) then return nil end
+        if (pl.IsDead and pl:IsDead()) or (pl.IsCoopGhost and pl:IsCoopGhost()) then return nil end
+        if entity.EntityCollisionClass == EntityCollisionClass.ENTCOLL_NONE then return nil end
+        if playerOwned(entity) then return nil end
+        return pl
+    end
     local npc = entity:ToNPC()
     if not npc or npc:IsDead() or (entity.HitPoints or 1) <= 0 then return nil end
     if entity.Type == EntityType.ENTITY_FIREPLACE then return nil end
@@ -120,16 +163,6 @@ local function hostile(entity, playerOwned)
     if entity.EntityCollisionClass == EntityCollisionClass.ENTCOLL_NONE then return nil end
     if entity:HasEntityFlags(EntityFlag.FLAG_FRIENDLY) or playerOwned(entity) then return nil end
     return npc
-end
-
-local function same(a, b)
-    if not (a and b) then return false end
-    if GetPtrHash then
-        local ok, equal = pcall(function() return GetPtrHash(a) == GetPtrHash(b) end)
-        if ok then return equal end
-    end
-    return a.Index == b.Index and
-        (a.ControllerIndex == nil or b.ControllerIndex == nil or a.ControllerIndex == b.ControllerIndex)
 end
 local function ownedBy(e, player)
     -- Online co-op babies (player variant 9) may have both a spawner and a
@@ -327,7 +360,8 @@ local function fireControl(state, ctx, p, aligned, safe)
             if state.brimstone then hold = false end
         else
             state.held = state.held + 1
-            if state.held >= need and aligned and safe then
+            local readyNeed = ctx.partialNeed or need
+            if state.held >= readyNeed and aligned and safe then
                 -- Two updates released, so a 60Hz poll cannot miss it.
                 hold, state.releaseLeft = false, 1
                 state.releasedAt, state.checkAt, state.checkHeld, state.held = state.tick, state.tick, state.held, 0
@@ -427,25 +461,51 @@ end
 -- online input queue, from where the queued command will actually fire, and
 -- measure how far the drifting tear passes from it. Pick the closest pass.
 -- beam = {reach=...} aims a beam instead.
-local function aim(player, target, queueDelay, beam)
+local function findRocketTarget(entities, player)
+    local targetVar = (EffectVariant and EffectVariant.TARGET) or 30
+    for _, e in ipairs(entities or {}) do
+        if e.Type == EntityType.ENTITY_EFFECT and e.Variant == targetVar and not e:IsDead() and ownedBy(e, player) then
+            return e
+        end
+    end
+    return nil
+end
+local function aimRocket(crosshair, target, delay)
+    local t, v = target.Position, target.Velocity or ZERO
+    local lead = min(10, 4 + delay)
+    local dx, dy = (t.X + v.X*lead) - crosshair.Position.X, (t.Y + v.Y*lead) - crosshair.Position.Y
+    local shoot
+    if abs(dx) >= abs(dy) then shoot = dx >= 0 and 2 or 1 else shoot = dy >= 0 and 4 or 3 end
+    return shoot, true, t.X + v.X*lead, t.Y + v.Y*lead
+end
+local function aim(player, target, queueDelay, beam, opts)
     local delay = queueDelay or 0
     if beam then return aimBeam(player, target, delay, beam) end
+    if opts and opts.crosshair then return aimRocket(opts.crosshair, target, delay) end
     local p, t, v = player.Position, target.Position, target.Velocity
     local pv = player.Velocity or Vector(0, 0)
     local ox, oy = p.X + pv.X*delay, p.Y + pv.Y*delay
-    local tearSpeed = max(1, (player.ShotSpeed or 1) * 10)
+    local baseSpeed = max(1, (player.ShotSpeed or 1) * 10)
+    local haemo = opts and opts.haemo
+    local bomb = opts and opts.bomb
+    local melee = opts and opts.melee
+    local knife = opts and opts.knife
+    local tearSpeed = haemo and baseSpeed*0.72 or bomb and baseSpeed*0.85 or knife and baseSpeed*1.35 or baseSpeed
+    local maxTime = haemo and 16 or 12
+    local inheritScale = melee and 0 or (bomb and 0.8 or INHERIT)
+    local tol = melee and 46 or bomb and 18 or haemo and 12 or 6
     local best, bestMiss, bestX, bestY
     for shoot, axis in ipairs(AXES) do
         local ax, ay = axis[1], axis[2]
         local along = pv.X*ax + pv.Y*ay
-        local speed = tearSpeed + INHERIT*max(0, along)
-        local driftX, driftY = (pv.X - along*ax)*INHERIT, (pv.Y - along*ay)*INHERIT
-        local time = min(12, max(1.5, t:Distance(Vector(ox, oy)) / speed))
+        local speed = tearSpeed + inheritScale*max(0, along)
+        local driftX, driftY = (pv.X - along*ax)*inheritScale, (pv.Y - along*ay)*inheritScale
+        local time = melee and 0 or min(maxTime, max(1.5, t:Distance(Vector(ox, oy)) / speed))
         local px, py, forward
         for _ = 1, 2 do
             px, py = t.X + v.X*(time + delay), t.Y + v.Y*(time + delay)
             forward = (px - ox)*ax + (py - oy)*ay
-            time = min(12, max(1.5, forward / speed))
+            time = melee and 0 or min(maxTime, max(1.5, forward / speed))
         end
         if forward > 0 then
             -- Sideways offset of the target from the tear when it arrives.
@@ -459,7 +519,11 @@ local function aim(player, target, queueDelay, beam)
         if abs(dx) >= abs(dy) then best = dx >= 0 and 2 or 1 else best = dy >= 0 and 4 or 3 end
         bestMiss, bestX, bestY = math.huge, t.X, t.Y
     end
-    return best, bestMiss <= target.Size + 6, bestX, bestY
+    if melee then
+        local d = t:Distance(Vector(ox, oy))
+        return best, bestMiss <= target.Size + tol and d <= (opts.meleeReach or 88) + target.Size, bestX, bestY
+    end
+    return best, bestMiss <= target.Size + tol, bestX, bestY
 end
 M.aim = aim -- exposed for tests
 
@@ -470,21 +534,30 @@ M.aim = aim -- exposed for tests
 local DWELL = 30
 -- A chasing exploder is best shot while it is still far away.
 local CHASER_EARLY = 150
-local function targetCost(state, player, e, g, room, ignoreRocks, chaser)
+local function entityHp(e)
+    return e.Type ~= EntityType.ENTITY_PLAYER and (e.HitPoints or 99) or 99
+end
+local function targetCost(state, player, e, g, room, ignoreRocks, chaser, haemo, enemies)
     local p, t = player.Position, e.Position
     local cost = t:Distance(p)
-    local range = player.TearRange or 260
+    local range = meleeWeapon(player) and 95 or (instantBeam(player) and not state.laserReach and 600) or (player.TearRange or 260)
     if cost > range then cost = cost + (cost - range)*2 end
     if g and not laneClear(room, g, p.X, p.Y, t.X, t.Y, ignoreRocks) then cost = cost + 150 end
-    if (e.HitPoints or 99) <= max(3.5, (player.Damage or 3.5)*2) then cost = cost - 60 end
+    if entityHp(e) <= max(3.5, (player.Damage or 3.5)*2) then cost = cost - 60 end
     if chaser and chaser(e) and t:Distance(p) >= CHASER_EARLY then cost = cost - 40 end
+    if haemo and enemies then
+        for _, other in ipairs(enemies) do
+            if other ~= e and other.Position:Distance(t) <= 85 then cost = cost - 18 end
+        end
+    end
     return cost
 end
 local function pickTarget(state, player, enemies, g, room, chaser)
-    local ignoreRocks = spectral(player) or laserWeapon(player)
+    local haemo = haemolacriaWeapon(player)
+    local ignoreRocks = spectral(player) or laserWeapon(player) or knifeWeapon(player) or rocketWeapon(player) or haemo
     local best, bestCost, current, currentCost
     for _, e in ipairs(enemies) do
-        local cost = targetCost(state, player, e, g, room, ignoreRocks, chaser)
+        local cost = targetCost(state, player, e, g, room, ignoreRocks, chaser, haemo, enemies)
         if e.InitSeed == state.targetSeed then current, currentCost = e, cost end
         if not bestCost or cost < bestCost then best, bestCost = e, cost end
     end
@@ -496,18 +569,39 @@ local function pickTarget(state, player, enemies, g, room, chaser)
     return best
 end
 
--- Our reach: Azazel's laser stops at MaxDistance.
+-- Effective reach of current weapon. Infinite beams (Full Brimstone / Tech)
+-- have no MaxDistance cap, while Azazel stops at laserReach and Spirit Sword
+-- / Bone swing in true melee (~82).
 local function attackRange(state, p)
-    return state.laserReach and min(state.laserReach, p.TearRange or 260) or p.TearRange or 260
+    if meleeWeapon(p) then return 82 end
+    if rocketWeapon(p) then return 440 end
+    if instantBeam(p) then return state.laserReach or max(440, p.TearRange or 260) end
+    return p.TearRange or 260
 end
 -- Death explosions hit 36-82 units from the exploder (logs 10-26..11-02).
--- A shot that would kill one must not land while it is that close: compare
--- where it and we will be when the tear arrives (a beam arrives at once).
--- A short beam (Azazel) cannot keep 110; it keeps what its reach allows.
+-- Dr. Fetus bombs blast ~90px, and close solid walls bounce bombs back!
 local BURST_KEEP = 110
-local function blastsUs(state, ctx, p, target)
+local function blastsUs(state, ctx, p, target, shoot)
+    if bombWeapon(p) then
+        if target.Position:Distance(p.Position) < 115 then return true end
+        local ax = shoot and AXES[shoot]
+        if ax and ctx.room then
+            local g = grid(state, ctx.room, p, ctx.frame or 0)
+            for step = 20, 60, 20 do
+                local sx, sy = p.Position.X + ax[1]*step, p.Position.Y + ax[2]*step
+                local cell = cellOf(ctx.room, g, sx, sy)
+                if not cell or not g.shot[cell] or
+                    (ctx.gridSafeXY and not ctx.gridSafeXY(ctx.room, p, sx, sy)) then
+                    return true
+                end
+            end
+        end
+    end
+    if rocketWeapon(p) and ctx.crosshair and ctx.crosshair.Position:Distance(p.Position) < 90 then
+        return true
+    end
     if not (ctx.exploder and ctx.exploder(target)) then return false end
-    if (target.HitPoints or 99) > max(3.5, (p.Damage or 3.5)*2) then return false end
+    if entityHp(target) > max(3.5, (p.Damage or 3.5)*2) then return false end
     local keep = min(BURST_KEEP, attackRange(state, p) - 10)
     local pv, tv = p.Velocity or Vector(0, 0), target.Velocity or Vector(0, 0)
     local time = 0
@@ -597,21 +691,43 @@ end
 -- charge lets us walk back in (up to STANDOFF), so we close in only for the
 -- release: 2026-11-05 took 5 of 6 hits standing 60 from the target.
 local STANDOFF, APPROACH = 130, 0.7
-local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
-    local p, room = ctx.player, ctx.room
+local function preferredDistance(state, p, target, ctx)
     local range = attackRange(state, p)
-    -- Closed-loop sim (8-tick queue): 0.8 of the range halved hits against
-    -- 0.45 (5.8 -> 2.9 per minute) at about the same kill rate.
-    -- 0.14: at least 120 away (90 put the player next to chasers).
-    local preferred = min(240, max(120, range*0.8), max(60, range-20))
-    -- Exploders (boom flies etc.) blew up 57-83 units from the player after
-    -- being shot: kill them from outside the blast whenever range allows.
+    local preferred
+    if meleeWeapon(p) then
+        preferred = 58
+    elseif rocketWeapon(p) then
+        preferred = 240
+    elseif bombWeapon(p) then
+        preferred = min(300, max(165, range*0.8), max(130, range-20))
+    elseif instantBeam(p) and not state.laserReach then
+        -- Infinite beam (Brimstone/Tech): engage safely at long standoff rather
+        -- than needlessly walking up close when range is unrestricted.
+        preferred = min(300, max(210, range*0.5))
+    elseif state.laserReach then
+        -- Azazel / capped short beam: keep 0.8 of capped reach.
+        preferred = min(240, max(120, range*0.8), max(60, range-20))
+    elseif haemolacriaWeapon(p) then
+        preferred = min(340, max(160, range*0.75), max(80, range-20))
+    else
+        -- Tears: keep proven ~195-210 at base range, scale up when range is huge.
+        preferred = min(360, max(120, range*0.78), max(60, range-20))
+    end
     local exploder = ctx.exploder or function() return false end
-    -- Outside BURST_KEEP, so the killing shot is allowed from the goal; a
-    -- chaser closes in while the shot flies, so engage it from further out.
     local chaser = ctx.chaser or function() return false end
     if exploder(target) then preferred = max(preferred, min(chaser(target) and 150 or 130, range-5)) end
-    local ignoreRocks = spectral(p) or laserWeapon(p)
+    if bombWeapon(p) then preferred = max(preferred, 165) end
+    return range, preferred
+end
+local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
+    local p, room = ctx.player, ctx.room
+    local range, preferred = preferredDistance(state, p, target, ctx)
+    local chaser = ctx.chaser or function() return false end
+    local exploder = ctx.exploder or function() return false end
+    local haemo = haemolacriaWeapon(p)
+    local melee = meleeWeapon(p)
+    local bomb = bombWeapon(p)
+    local ignoreRocks = spectral(p) or laserWeapon(p) or knifeWeapon(p) or rocketWeapon(p) or haemo
     local beam = state.beamGoals
     if beam and (not state.spotValues or state.spotRoom ~= room) then state.spotValues, state.spotRoom = {}, room end
     local anchors = {target}
@@ -627,6 +743,9 @@ local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
     if beam and preferred < STANDOFF then
         extra = min(STANDOFF - preferred, APPROACH*(ctx.stride or 4)*max(0, releaseIn - 3))
     end
+    local distChoices = melee and {preferred, 40, 75} or
+        (instantBeam(p) and not state.laserReach) and {preferred, min(range-20, preferred*1.25), max(165, preferred*0.75), 125} or
+        {preferred, preferred*0.75, min(preferred*1.3, range-20)}
     local best, bestCost, bx, by, bestSide
     for pass = 1, 2 do
       for a, anchor in ipairs(anchors) do
@@ -636,7 +755,7 @@ local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
             local v = anchor.Velocity or ZERO
             tx, ty = tx + v.X*releaseIn, ty + v.Y*releaseIn
         end
-        for _, d in ipairs({preferred, preferred*0.75, min(preferred*1.3, range-20)}) do
+        for _, d in ipairs(distChoices) do
             for side, o in ipairs({{1,0}, {-1,0}, {0,1}, {0,-1}}) do
                 side = side + (a-1)*4
                 -- The strike spot (x,y) and, while charging, the waiting
@@ -673,9 +792,16 @@ local function pickGoal(state, ctx, g, target, enemies, fromPlayer)
                         if e ~= target then
                             local gap = e.Position:Distance(Vector(wx, wy)) - e.Size
                             -- Mulliboom and leeches run at us: more room.
-                            local keep = chaser(e) and 150 or exploder(e) and 130 or 110
+                            local keep = chaser(e) and 150 or exploder(e) and 130 or (bomb and 140) or 110
                             if gap < keep then cost = cost + (keep-gap)*5 end
+                        elseif not melee then
+                            local gap = e.Position:Distance(Vector(wx, wy)) - e.Size
+                            if gap < 85 then cost = cost + (85 - gap)*4 end
                         end
+                    end
+                    if ctx.crosshair then
+                        local blastGap = ctx.crosshair.Position:Distance(Vector(wx, wy))
+                        if blastGap < 120 then cost = cost + (120 - blastGap)*8 end
                     end
                     if state.goalX and abs(state.goalX-wx) + abs(state.goalY-wy) < 30 then cost = cost - 50 end
                     -- Circling to the other side of the same target is what
@@ -709,7 +835,8 @@ local function trackBeam(state, ctx, enemies)
         local miss = abs((x - p.X)*axis[2] - (y - p.Y)*axis[1])
         if forward > 0 and forward <= reach + e.Size and miss <= e.Size + BEAM_HALF + 40 and
             (not bestMiss or miss < bestMiss) then
-            local keep = max(20, min(forward, reach*0.8))
+            local safeMin = reach > 400 and 85 or 20
+            local keep = max(safeMin, min(forward, reach*0.8))
             best, bestMiss, bx, by = e, miss, x - axis[1]*keep, y - axis[2]*keep
         end
     end
@@ -814,8 +941,9 @@ function M.update(state, ctx)
     if state.mode == 0 then return 0 end
     local p, room = ctx.player, ctx.room
     local enemies = {}
+    local dm = ctx.deathmatch == true
     for _, e in ipairs(ctx.entities) do
-        local npc = hostile(e, ctx.playerOwned)
+        local npc = hostile(e, ctx.playerOwned, dm, p)
         if npc then enemies[#enemies+1] = npc end
     end
     local g = grid(state, room, p, ctx.frame)
@@ -841,17 +969,34 @@ function M.update(state, ctx)
     state.targetSeed = target.InitSeed
     -- Beams ignore the tear range; only a capped beam (Azazel) stops short.
     local beam = instantBeam(p) and {reach=state.laserReach or math.huge} or nil
-    local shoot, aligned, ax, ay = aim(p, target, ctx.queueDelay, beam)
+    local melee = meleeWeapon(p)
+    local bomb = bombWeapon(p)
+    local rocket = rocketWeapon(p)
+    local knife = knifeWeapon(p)
+    local haemo = haemolacriaWeapon(p)
+    local crosshair = rocket and findRocketTarget(ctx.entities, p) or nil
+    ctx.crosshair = crosshair
+    local shoot, aligned, ax, ay = aim(p, target, ctx.queueDelay, beam, {
+        melee=melee, meleeReach=95, bomb=bomb, rocket=rocket, crosshair=crosshair,
+        knife=knife, haemo=haemo,
+    })
     local info = {targetX=target.Position.X, targetY=target.Position.Y, targetR=target.Size, aimX=ax, aimY=ay}
     state.info = info
-    if state.mode == 1 then state.lastShoot = shoot; return M.word(1, nil, shoot, false) end
 
     -- A charged Brimstone release goes where it pays most, not just at the
     -- target, and holds a little when an enemy is about to walk in.
-    local safe = not blastsUs(state, ctx, p, target)
+    local safe = not blastsUs(state, ctx, p, target, shoot)
     state.beamGoals = beam ~= nil and has(p, "HasWeaponType", WeaponType, {"WEAPON_BRIMSTONE"})
     local plan
     local need = math.ceil(max(1, p.MaxFireDelay or 10)) + MARGIN + floor(state.bias)
+    if knife then
+        local d = target.Position:Distance(p.Position)
+        if d <= 95 + target.Size then ctx.partialNeed = max(4, floor(need * 0.4))
+        elseif d <= 170 + target.Size then ctx.partialNeed = max(6, floor(need * 0.7))
+        else ctx.partialNeed = nil end
+    else
+        ctx.partialNeed = nil
+    end
     -- Only the release needs the plan: from two updates before full charge.
     if state.beamGoals and state.held + 3 >= need then
         plan = beamPlan(state, ctx, p, enemies)
@@ -867,6 +1012,9 @@ function M.update(state, ctx)
     state.lastShoot = shoot
     local wasHeld = state.held
     local hold = fireControl(state, ctx, p, aligned, safe)
+    if melee and not aligned then hold = false end
+    if bomb and (not safe or not aligned) then hold = false end
+    if rocket and not safe then hold = false end
     -- Updates until the next beam can leave: the rest of the charge (a full
     -- one while a beam is out or just released), plus the online queue.
     state.releaseIn = max(0, need - state.held) + (ctx.queueDelay or 0)

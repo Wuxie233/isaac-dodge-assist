@@ -52,8 +52,9 @@ function Input.GetActionValue(action,controller)
 end
 -- Mutable roster: co-op joins/leaves and lobby restarts change it mid-run.
 local roster,rosterCount={p},1
-function Game()return {GetNumPlayers=function()return rosterCount end,GetRoom=function()return room end,IsPaused=function()return paused end,
- GetSeeds=function()return {GetStartSeedString=function()return "ABCD 1234" end}end}end
+local game={GetNumPlayers=function()return rosterCount end,GetRoom=function()return room end,IsPaused=function()return paused end,
+ GetSeeds=function()return {GetStartSeedString=function()return "ABCD 1234" end}end}
+function Game()return game end
 Isaac={GetTime=function()return os.clock()*1000 end,GetPlayer=function(i)return roster[(i or 0)+1] or p end,
  GetRoomEntities=function()return scene end,DebugString=function(s)logs[#logs+1]=s end,
  RenderText=function()end,WorldToScreen=function(v)return v end}
@@ -282,7 +283,7 @@ for i=1,7 do tick()end
 values=packet()
 assert(values[3]>0 and values[1]<=0,'spiked rock contact not avoided')
 p.CanFly=true;tick();values=packet()
-for _,s in ipairs(values)do assert(s==0,'flying player avoided a spiked rock')end
+assert(values[3]>0 and values[1]<=0,'flying player must still avoid a spiked rock')
 p.CanFly=false
 function room:GetGridCollision()return 0 end
 spikeKind,spikeState=GridEntityType.GRID_SPIKES_ONOFF,0
@@ -373,10 +374,7 @@ local function combatPair()
 end
 scene={npc2};npc2.Position=Vector(560,500);npc2.Velocity=Vector(0,0);p.Position=Vector(400,500)
 tick();assert(combatPair()==nil,'combat word while OFF')
-f10();tick()
-local word=assert(combatPair(),'AIM word missing')
-assert(word&3==1 and (word>>6)&7==2,'AIM must shoot right: '..word)
-f10();tick();word=assert(combatPair(),'AUTO word missing')
+f10();tick();local word=assert(combatPair(),'AUTO word missing')
 assert(word&3==2 and (word>>6)&7==2 and word&512~=0 and ((word>>2)&15)<9,'AUTO word: '..word)
 -- Left Shift toggles: one press pauses (surviving a room change), holding
 -- is not needed, the next press resumes.
@@ -392,7 +390,7 @@ local paused=false;for _,line in ipairs(logs)do if line=='IAD STATE: PAUSED' the
 assert(paused,'pause state not reported')
 shift();tick();assert(combatPair(),'second Shift press did not resume')
 f10();tick();assert(combatPair()==nil,'combat word after OFF')
-print('PASS F10 combat modes: IAD2 contract, AIM and AUTO words, Shift toggle (room-persistent) and OFF release')
+print('PASS F10 combat modes: IAD2 contract, AUTO word, Shift toggle (room-persistent) and OFF release')
 
 -- Roster changes: a co-op partner joining or leaving must keep the sensor on
 -- our player. 0.12.4 game logs parked it on "F7: SELECT YOUR PLAYER" for 5277
@@ -520,3 +518,129 @@ panelDraws={};callbacks[G2.MC_GET_SHADER_PARAMS](nil,'Another-Shader');assert(#p
 tab=false;Input.IsButtonTriggered=function(key)return key==Keyboard.KEY_F5 end;render()
 Input.IsButtonTriggered=function()return false end;Input.IsButtonPressed=function()return false end
 print('PASS floor panel: Tab held, F5 stats page, drawn from the shader callback when it runs')
+
+-- 0.26+: Repentance enemies (Grudge/Pon/Mother), DIRT_PILE warning, curving
+-- projectiles, Closed 5.52 Spiked Chest + Sacrifice Spike manual soft-brake
+-- (release stops, sustained hold bypasses), Jacob/Esau twin support, and
+-- Curse of the Unknown HP breakdown HUD.
+paused=false;scene={};p.CanFly=false;p.Position=Vector(470,480);p.Velocity=Vector(0,0);p.Size=13
+deviceDir,appliedDir={},{}
+callbacks[ModCallbacks.MC_POST_GAME_STARTED]()
+for i=1,4 do tick() end
+local grudge=entity(877,0);function grudge:ToNPC()return self end;function grudge:IsActiveEnemy()return true end
+grudge.Position=Vector(580,480);grudge.Velocity=Vector(0,0);grudge.Size=13
+scene={grudge};tick();values=packet()
+assert(values[1]>0 and math.min(values[4],values[5])<values[1],'Grudge cardinal ambusher not dodged')
+local pon=entity(840,0);function pon:ToNPC()return self end;function pon:IsActiveEnemy()return true end
+pon.Position=Vector(510,480);pon.Velocity=Vector(-12,0);pon.Size=14
+function pon:GetSprite()return {GetAnimation=function()return 'Jump' end,GetFrame=function()return 2 end}end
+scene={pon};tick();values=packet()
+assert(values[1]>0,'Pon hop not dodged')
+local mother=entity(912,0);function mother:ToNPC()return self end;function mother:IsBoss()return true end;function mother:IsActiveEnemy()return true end
+mother.Position=Vector(470,380);mother.Velocity=Vector(0,10);mother.Size=28
+function mother:GetSprite()return {GetAnimation=function()return 'DashDown' end,GetFrame=function()return 4 end}end
+scene={mother};tick();values=packet()
+assert(values[1]>0,'Mother downward dash warning missed')
+local dirt=entity(EntityType.ENTITY_EFFECT,EffectVariant.DIRT_PILE);function dirt:ToEffect()return self end
+dirt.Position=Vector(495,480)
+scene={dirt};tick();values=packet()
+assert(values[1]>0,'DIRT_PILE pre-jet warning not avoided')
+local curved=entity(EntityType.ENTITY_PROJECTILE,0);function curved:ToProjectile()return self end
+curved.Height=-20;curved.FallingSpeed=0;curved.FallingAccel=-0.1
+curved.Position=Vector(520,504);curved.Velocity=Vector(-12,0);curved.Size=4
+function curved:HasProjectileFlags(flag)return flag==ProjectileFlags.CURVE_LEFT end
+scene={curved};tick();values=packet()
+assert(values[1]>0,'curving projectile extra safety radius missing')
+function curved:HasProjectileFlags()return false end
+tick();values=packet()
+assert(values[1]<=0,'straight projectile with offset triggered curve margin at rest')
+print('PASS Repentance enemies (Grudge/Pon/Mother), DIRT_PILE warning and curving tear margin')
+
+-- Manual pitfall soft-brake (bit 10 = 1024 in IAD2) & bypass on sustained hold,
+-- plus closed 5.52 Spiked Chest in hazardCells.
+RoomType={ROOM_DEFAULT=1,ROOM_SACRIFICE=13}
+PickupVariant={PICKUP_COLLECTIBLE=100,PICKUP_SPIKEDCHEST=52,PICKUP_MIMICCHEST=54}
+local rt=RoomType.ROOM_SACRIFICE
+function room:GetType()return rt end
+function room:GetGridEntity(i)
+ if i~=poopIndex then return nil end
+ return {Position=room:GetGridPosition(i),State=0,GetType=function()return GridEntityType.GRID_SPIKES end,
+  GetVariant=function()return 0 end,
+  GetSprite=function()return {GetAnimation=function()return 'Idle' end,GetFrame=function()return 0 end,IsFinished=function()return false end}end}
+end
+function room:GetGridCollision()return 0 end
+scene={};p.Position=Vector(500,500)
+callbacks[ModCallbacks.MC_POST_GAME_STARTED]()
+for i=1,7 do tick() end
+deviceDir={[currentAt+1]={X=1,Y=0},[currentAt+2]={X=1,Y=0}}
+tick();local bw=combatPair()
+assert(bw and (bw&1024)~=0,'Sacrifice spike did not trigger manual soft-brake: '..tostring(bw))
+deviceDir={}
+for i=1,10 do tick() end
+local released=combatPair()
+assert(not released or (released&1024)==0,'released soft-brake did not clear')
+local bypassed=false
+for i=1,16 do deviceDir[currentAt+i]={X=1,Y=0} end
+for i=1,16 do
+ tick()
+ local w=combatPair()
+ if i>=12 and (not w or (w&1024)==0) then bypassed=true end
+end
+assert(bypassed,'sustained hold did not bypass soft-brake')
+rt=RoomType.ROOM_DEFAULT;deviceDir={}
+local chest=entity(EntityType.ENTITY_PICKUP,52);chest.SubType=1;chest.Position=Vector(540,500)
+function chest:ToPickup()return self end
+scene={chest};for i=1,3 do tick() end
+assert(combatCtx.hazardCells[poopIndex]==true,'closed 5.52 Spiked Chest missing from hazardCells')
+deviceDir={[currentAt+1]={X=1,Y=0}}
+tick();bw=combatPair()
+assert(bw and (bw&1024)~=0,'closed 5.52 Spiked Chest did not trigger soft-brake')
+deviceDir={};scene={}
+RoomType,PickupVariant,room.GetType=nil,nil,nil
+room.GetGridEntity,room.GetGridCollision=poopEntity,poopCollision
+print('PASS pitfall soft-brake (Sacrifice spike + closed 5.52 chest), release stop and sustained-hold bypass')
+
+-- Jacob & Esau twin support: unblocked and steady walking binds Jacob cleanly.
+local origGetPlayerType=p.GetPlayerType
+p.GetPlayerType=function()return PlayerType.PLAYER_JACOB end
+partner.GetPlayerType=function()return PlayerType.PLAYER_ESAU end
+roster,rosterCount={p,partner},2
+local beforeJacobLog=#logs
+callbacks[ModCallbacks.MC_POST_GAME_STARTED]()
+for i=1,35 do
+ local f=currentAt+i
+ deviceDir[f]={X=1,Y=0};appliedDir[f]={X=1,Y=0}
+end
+for i=1,35 do tick() end
+for i=beforeJacobLog+1,#logs do
+ assert(not logs[i]:find('UNSUPPORTED CHARACTER',1,true),'Jacob marked unsupported: '..logs[i])
+end
+assert(expectBound('Jacob & Esau steady walk')[5]=='0','Jacob did not bind over Esau on steady movement')
+p.GetPlayerType=origGetPlayerType;partner.GetPlayerType=nil
+roster,rosterCount={p},1;deviceDir,appliedDir={}
+print('PASS Jacob & Esau twin support and steady directional auto-binding')
+
+-- Curse of the Unknown: reads Red/Rotten/Bone/Soul/Black/Eternal/Broken HP onto HUD.
+local savedGetLevel=game.GetLevel
+local savedRenderText=Isaac.RenderText
+LevelCurse={CURSE_OF_THE_UNKNOWN=8}
+game.GetLevel=function()return {GetCurses=function()return 8 end}end
+function p:GetHearts()return 5 end
+function p:GetMaxHearts()return 6 end
+function p:GetRottenHearts()return 1 end
+function p:GetBoneHearts()return 1 end
+function p:GetSoulHearts()return 5 end
+function p:GetBlackHearts()return 1 end
+function p:GetEternalHearts()return 1 end
+function p:GetBrokenHearts()return 1 end
+local hudLines={}
+Isaac.RenderText=function(txt)hudLines[#hudLines+1]=txt end
+callbacks[ModCallbacks.MC_POST_RENDER]()
+Isaac.RenderText=savedRenderText;game.GetLevel=savedGetLevel;LevelCurse=nil
+p.GetHearts,p.GetMaxHearts,p.GetRottenHearts,p.GetBoneHearts,p.GetSoulHearts,p.GetBlackHearts,p.GetEternalHearts,p.GetBrokenHearts=nil,nil,nil,nil,nil,nil,nil,nil
+local joined=table.concat(hudLines,' | ')
+assert(joined:find('Red 1.5/3',1,true),'Curse HP red missing: '..joined)
+assert(joined:find('Rot 1',1,true) and joined:find('Bone 1',1,true) and joined:find('Soul 1.5',1,true)
+ and joined:find('Black 1',1,true) and joined:find('Et +1',1,true) and joined:find('Brk 1',1,true),
+ 'Curse HP breakdown wrong: '..joined)
+print('PASS Curse of the Unknown read-only HP breakdown HUD')

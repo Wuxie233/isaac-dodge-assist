@@ -175,6 +175,21 @@ assert(committed.endpoint.X<free.endpoint.X-30,'queued left inputs did not delay
 q=Queue.new();for f=1,200 do Queue.observe(q,f,seq[f],seq[f]) end
 assert(q.delay==0 and #Queue.pending(q)==0,'offline play gained a queue')
 print('PASS online input queue: lag 4 learned, pending order, committed motion, offline zero')
+
+-- Inside an unavoidable hazard zone (XXBP8HN9 Spikes04): exit timing decides the
+-- primary risk tier instead of fluctuating exposure causing L<->R thrashing.
+local inCtx=context(player(200,200),10)
+local inField=Field.new(10,13)
+Field.add(inField,nil,Vector(200,200),Vector(200,200),25,false)
+inCtx.field=inField
+local s1,_,_,_,ins1=Planner.solve(inCtx,dirs)
+assert(ins1,'expected inside=true inside static hazard')
+-- Jittery warning further along right vs left must not flip primary score tier when inside.
+Field.add(inField,6,Vector(240,200),Vector(240,200),18,true)
+local s2=Planner.solve(inCtx,dirs)
+assert(math.floor(s1[2]/1048576)==math.floor(s2[2]/1048576),'ctx.inside primary tier should depend only on exit tick')
+print('PASS inside hazard exit stability & planner invariants')
+
 dofile('native/tests/main_integration.lua')
 dofile('native/tests/hazard_replay_regression.lua')
 dofile('native/tests/reload_regression.lua')

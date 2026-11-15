@@ -57,6 +57,68 @@ function M.satanStomp(npc, out)
         from=math.max(0, STOMP_FROM-1-f), to=STOMP_TO+1-f}
 end
 
+-- Grudge (877): sits still in ambush until the player enters a cardinal line,
+-- then charges across at ~18/update (6LW23XWD f=238). Warn along clear cardinal
+-- lanes while stationary so the player does not walk blindly across its trigger.
+local GRUDGE_TYPE, PON_TYPE, MOTHER_TYPE = 877, 840, 912
+local GRUDGE_AXES = {Vector(-1, 0), Vector(1, 0), Vector(0, -1), Vector(0, 1)}
+local function isNpcType(npc, key, rawId)
+    local t = npc.Type
+    local enumId = EntityType and EntityType[key]
+    return t == rawId or (enumId ~= nil and t == enumId)
+end
+function M.grudge(npc, room, lasers)
+    if not isNpcType(npc, "ENTITY_GRUDGE", GRUDGE_TYPE) or not npc:IsActiveEnemy(false) then return end
+    if npc.Velocity:LengthSquared() >= 1 then return end
+    local reach = 520
+    local halfW = math.max(16, (npc.Size or 13) + 4)
+    for _, dir in ipairs(GRUDGE_AXES) do
+        local dist = reach
+        if room and room.IsPositionInRoom then
+            for step = 40, reach, 40 do
+                if not room:IsPositionInRoom(npc.Position + dir * step, 0) then dist = step; break end
+            end
+        end
+        if dist >= 40 then
+            lasers[#lasers+1] = {origin=npc.Position, velocity=Vector(0,0),
+                ring=false, width=halfW, points={Vector(0,0), dir * dist},
+                reach=dist, angularSpeed=0, delay=0, warning=true}
+        end
+    end
+end
+
+-- Pon (840): fast-hopping enemy that bounces off walls; widen warning around
+-- rapid movement or leaps.
+function M.pon(npc, out)
+    if not isNpcType(npc, "ENTITY_PON", PON_TYPE) or not npc:IsActiveEnemy(false) then return end
+    local sprite = npc:GetSprite()
+    local anim = sprite and sprite:GetAnimation():lower() or ""
+    if npc.Velocity:LengthSquared() > 16 or (npc.SpriteOffset and npc.SpriteOffset.Y < -2) or
+        anim:find("jump", 1, true) or anim:find("hop", 1, true) or anim:find("attack", 1, true) then
+        out[#out+1] = {position=npc.Position + npc.Velocity * 1.5, velocity=npc.Velocity,
+            radius=(npc.Size or 14) + 22, warning=true}
+    end
+end
+
+-- Mother (912): Repentance Corpse II boss; Warn ahead of downward/horizontal
+-- dashes and wide melee/knife animations (Spin/Slam/ThrowKnife/Appear).
+function M.mother(npc, room, out)
+    if not isNpcType(npc, "ENTITY_MOTHER", MOTHER_TYPE) or not npc:IsActiveEnemy(false) then return end
+    local sprite = npc:GetSprite()
+    local anim = sprite and sprite:GetAnimation():lower() or ""
+    if anim:find("dash", 1, true) or anim:find("charge", 1, true) then
+        local dir = npc.Velocity:LengthSquared() > 1 and npc.Velocity:Normalized() or Vector(0, 1)
+        for d = 40, 200, 45 do
+            out[#out+1] = {position=npc.Position + dir * d, velocity=npc.Velocity * 0.25,
+                radius=math.max(36, (npc.Size or 28) + 8), warning=true}
+        end
+    elseif anim:find("slam", 1, true) or anim:find("fist", 1, true) or
+        anim:find("knife", 1, true) or anim:find("spin", 1, true) then
+        out[#out+1] = {position=npc.Position, velocity=npc.Velocity,
+            radius=math.max(48, (npc.Size or 28) + 20), warning=true}
+    end
+end
+
 -- Every bomb blast in the 0.12.4-0.12.6 logs (normal and troll bombs) landed
 -- on "Pulse" frame 58, 30-81 units from the bomb. Treat 78 * RadiusMultiplier
 -- as a hit for the updates around detonation; the wider 100 envelope stays a

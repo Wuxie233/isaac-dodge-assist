@@ -211,7 +211,36 @@ local function wordsWidth(words)
     for i, word in ipairs(words) do w = w + UI.width(word[1]) + (i > 1 and UI.width(" ")*2 or 0) end
     return w
 end
-function M.renderTooltip(pedestals, player)
+local frameBoxes = {}
+function M.beginFrame() frameBoxes = {} end
+local function screenPos(x, y, mirror, width)
+    local point = Isaac.WorldToScreen(Vector(x, y))
+    if mirror then
+        local sw = width or (Isaac.GetScreenWidth and Isaac.GetScreenWidth()) or 480
+        return sw - point.X, point.Y
+    end
+    return point.X, point.Y
+end
+local function placeBox(x, y, w, h, sw, sh)
+    sw = sw or (Isaac.GetScreenWidth and Isaac.GetScreenWidth()) or 480
+    sh = sh or (Isaac.GetScreenHeight and Isaac.GetScreenHeight()) or 270
+    if sw >= w + 4 then x = math.max(2, math.min(sw - w - 2, x)) end
+    y = math.max(4, math.min(math.max(4, sh - h - 4), y))
+    for _ = 1, #frameBoxes + 1 do
+        local hit
+        for _, b in ipairs(frameBoxes) do
+            if x < b[1] + b[3] + 2 and x + w + 2 > b[1] and y < b[2] + b[4] + 1 and y + h + 1 > b[2] then
+                hit = b; break
+            end
+        end
+        if not hit then break end
+        if hit[2] - h - 2 >= 4 then y = hit[2] - h - 2
+        else y = hit[2] + hit[4] + 2 end
+    end
+    frameBoxes[#frameBoxes + 1] = {x, y, w, h}
+    return x, y
+end
+function M.renderTooltip(pedestals, player, mirror, width)
     local best, bestD
     for _, p in ipairs(pedestals) do
         local d = math.sqrt((p.x - player.X)^2 + (p.y - player.Y)^2)
@@ -237,8 +266,9 @@ function M.renderTooltip(pedestals, player)
     local w = math.max(UI.width(title), after and UI.width(after) or 0, wordsWidth(words))
     for _, n in ipairs(notes) do w = math.max(w, wordsWidth(n)) end
     local lines = 1 + (#words > 0 and 1 or 0) + (after and 1 or 0) + #notes
-    local point = Isaac.WorldToScreen(Vector(best.x, best.y))
-    local x, y = point.X - w/2, point.Y - 46 - (lines - 1)*lh
+    local px, py = screenPos(best.x, best.y, mirror, width)
+    local x, y = placeBox(px - w/2, py - 46 - (lines - 1)*lh, w + 8, lh*lines + 4, width)
+    x = x + 4; y = y + 2
     UI.rect(x - 4, y - 2, w + 8, lh*lines + 4, {0, 0, 0}, 0.6)
     UI.text(title, x, y, UI.QUALITY[quality or 1] or UI.TEXT, 1)
     local row = 1
@@ -250,7 +280,7 @@ end
 -- Cards, runes and soul stones on the floor (shop ones too): a tarot card
 -- looks like any other until it is used. Each shows its name; the one
 -- nearest the player (within reach) also what it does. card = {x, y, id}.
-function M.renderCards(list, player)
+function M.renderCards(list, player, mirror, width)
     local _, _, table_ = data()
     if not table_ or #list == 0 then return end
     local zh = UI.lang() == "zh"
@@ -267,11 +297,12 @@ function M.renderCards(list, player)
             local name = (zh and info.zh or info.en) or info.en
             local effect = c == near and ((zh and info.effect.zh or info.effect.en) or info.effect.en) or nil
             local w = math.max(UI.width(name), effect and UI.width(effect) or 0)
-            local point = Isaac.WorldToScreen(Vector(c.x, c.y))
-            local top = point.Y - 30 - (effect and lh or 0)
-            UI.rect(point.X - w/2 - 3, top - 1, w + 6, lh*(effect and 2 or 1) + 2, {0, 0, 0}, 0.55)
-            UI.text(name, point.X - UI.width(name)/2, top, colour, 1)
-            if effect then UI.text(effect, point.X - UI.width(effect)/2, top + lh, UI.TEXT, 1) end
+            local px, py = screenPos(c.x, c.y, mirror, width)
+            local bx, top = placeBox(px - w/2 - 3, py - 30 - (effect and lh or 0), w + 6, lh*(effect and 2 or 1) + 2, width)
+            local cx = bx + (w + 6)/2
+            UI.rect(bx, top, w + 6, lh*(effect and 2 or 1) + 2, {0, 0, 0}, 0.55)
+            UI.text(name, cx - UI.width(name)/2, top + 1, colour, 1)
+            if effect then UI.text(effect, cx - UI.width(effect)/2, top + 1 + lh, UI.TEXT, 1) end
         end
     end
 end
@@ -325,7 +356,7 @@ local function sacrificeLines(c)
     return lines
 end
 -- Over each one its first words; the one nearest the player all of them.
-function M.renderContainers(list, player)
+function M.renderContainers(list, player, mirror, width)
     if #list == 0 then return end
     local near, nearD
     for _, c in ipairs(list) do
@@ -334,17 +365,18 @@ function M.renderContainers(list, player)
     end
     local lh, gap = UI.lineHeight(), UI.width("  ")
     for _, c in ipairs(list) do
-        local point = Isaac.WorldToScreen(Vector(c.x, c.y))
+        local px, py = screenPos(c.x, c.y, mirror, width)
         local lines
         if c.sacrifice then
-            -- One line per sacrifice, each cut to its width.
+            -- One line per sacrifice, each cut to its width; long lists use 2 columns.
             lines = sacrificeLines(c)
+            local capW = #lines > 6 and 118 or 220
             for _, l in ipairs(lines) do
-                local width, keep = 0, {}
+                local lw, keep = 0, {}
                 for i, w in ipairs(l) do
                     local ww = UI.width(w[1]) + (i > 1 and gap or 0)
-                    if width + ww > 220 then keep[#keep+1] = {"..", UI.DIM}; break end
-                    keep[#keep+1], width = w, width + ww
+                    if lw + ww > capW then keep[#keep+1] = {"..", UI.DIM}; break end
+                    keep[#keep+1], lw = w, lw + ww
                 end
                 for i = #l, 1, -1 do l[i] = nil end
                 for i, w in ipairs(keep) do l[i] = w end
@@ -355,15 +387,15 @@ function M.renderContainers(list, player)
             local full = c == near or c.nth ~= nil
             local maxW = full and 170 or 90
             -- Lay the words out in at most two lines (one for the far ones).
-            local line, width = {}, 0
+            local line, lw = {}, 0
             lines = {}
             for _, w in ipairs(words) do
                 local ww = UI.width(w[1])
-                if #line > 0 and width + gap + ww > maxW then
-                    lines[#lines+1], line, width = line, {}, 0
+                if #line > 0 and lw + gap + ww > maxW then
+                    lines[#lines+1], line, lw = line, {}, 0
                 end
                 line[#line+1] = w
-                width = width + (#line > 1 and gap or 0) + ww
+                lw = lw + (#line > 1 and gap or 0) + ww
             end
             if #line > 0 then lines[#lines+1] = line end
             local limit = full and 2 or 1
@@ -371,19 +403,41 @@ function M.renderContainers(list, player)
             while #lines > limit do table.remove(lines) end
             if cut then local last = lines[#lines]; last[#last+1] = {"..", UI.DIM} end
         end
+        local lineWidths = {}
         local blockW = 0
-        for _, l in ipairs(lines) do
+        for i, l in ipairs(lines) do
             local w = 0
-            for i, word in ipairs(l) do w = w + UI.width(word[1]) + (i > 1 and gap or 0) end
+            for j, word in ipairs(l) do w = w + UI.width(word[1]) + (j > 1 and gap or 0) end
+            lineWidths[i] = w
             blockW = math.max(blockW, w)
         end
-        local top = point.Y - (c.rock and 22 or 30) - (#lines - 1)*lh
-        UI.rect(point.X - blockW/2 - 3, top - 1, blockW + 6, lh*#lines + 2, {0, 0, 0}, 0.55)
-        for i, l in ipairs(lines) do
-            local x = point.X - blockW/2
-            for _, word in ipairs(l) do
-                UI.text(word[1], x, top + (i - 1)*lh, word[2], 1)
-                x = x + UI.width(word[1]) + gap
+        if c.sacrifice and #lines > 6 then
+            local rows = math.ceil(#lines / 2)
+            local col1W, col2W = 0, 0
+            for i = 1, rows do col1W = math.max(col1W, lineWidths[i] or 0) end
+            for i = rows + 1, #lines do col2W = math.max(col2W, lineWidths[i] or 0) end
+            local totalW = col1W + gap*2 + col2W
+            local bx, top = placeBox(px - totalW/2 - 3, py - 22 - (rows - 1)*lh, totalW + 6, lh*rows + 2, width)
+            UI.rect(bx, top, totalW + 6, lh*rows + 2, {0, 0, 0}, 0.58)
+            for i, l in ipairs(lines) do
+                local col = i <= rows and 0 or 1
+                local row = col == 0 and i or (i - rows)
+                local x = bx + 3 + (col == 1 and (col1W + gap*2) or 0)
+                for _, word in ipairs(l) do
+                    UI.text(word[1], x, top + 1 + (row - 1)*lh, word[2], 1)
+                    x = x + UI.width(word[1]) + gap
+                end
+            end
+        else
+            local bx, top = placeBox(px - blockW/2 - 3, py - (c.rock and 22 or 30) - (#lines - 1)*lh,
+                blockW + 6, lh*#lines + 2, width)
+            UI.rect(bx, top, blockW + 6, lh*#lines + 2, {0, 0, 0}, 0.55)
+            for i, l in ipairs(lines) do
+                local x = bx + 3
+                for _, word in ipairs(l) do
+                    UI.text(word[1], x, top + 1 + (i - 1)*lh, word[2], 1)
+                    x = x + UI.width(word[1]) + gap
+                end
             end
         end
     end
@@ -391,19 +445,21 @@ end
 
 -- Effect over every pill on the floor. pill = {x, y, effect} (effect id or
 -- nil when unknown).
-function M.renderPills(list)
+function M.renderPills(list, mirror, width)
     local _, effects = data()
     if not effects then return end
+    local lh = UI.lineHeight()
     for _, p in ipairs(list) do
         local info = p.effect and effects[p.effect]
         if info then
             local text = (UI.lang() == "zh" and info.zh or info.en) or info.en
             if p.horse then text = text .. UI.t("horse") end
             local colour = info.class == "good" and UI.GOOD or info.class == "bad" and UI.BAD or UI.TEXT
-            local point = Isaac.WorldToScreen(Vector(p.x, p.y))
+            local px, py = screenPos(p.x, p.y, mirror, width)
             local w = UI.width(text)
-            UI.rect(point.X - w/2 - 3, point.Y - 30, w + 6, UI.lineHeight() + 2, {0, 0, 0}, 0.55)
-            UI.text(text, point.X - w/2, point.Y - 29, colour, 1)
+            local bx, top = placeBox(px - w/2 - 3, py - 30, w + 6, lh + 2, width)
+            UI.rect(bx, top, w + 6, lh + 2, {0, 0, 0}, 0.55)
+            UI.text(text, bx + 3, top + 1, colour, 1)
         end
     end
 end

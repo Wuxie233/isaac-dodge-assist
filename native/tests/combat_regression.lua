@@ -14,7 +14,7 @@ local function enum()
 end
 for _,name in ipairs({'EntityType','EntityCollisionClass','GridCollisionClass','EntityFlag'})do _G[name]=enum()end
 GridCollisionClass.COLLISION_NONE=0
-EntityType.ENTITY_PLAYER=1
+EntityType.ENTITY_PLAYER=1;EntityType._next=10
 WeaponType={WEAPON_TEARS=1,WEAPON_BRIMSTONE=2,WEAPON_LASER=3,WEAPON_KNIFE=4,WEAPON_MONSTROS_LUNGS=7,WEAPON_TECH_X=9,WEAPON_SPIRIT_SWORD=13}
 local Combat=dofile('mod/isaac_dodge_assist/combat.lua')
 
@@ -65,17 +65,19 @@ local function update(state,entities,extra)
  return Combat.decode(Combat.update(state,ctx))
 end
 
--- Word round trip; OFF publishes nothing.
-local m,mv,sh,hold=Combat.decode(Combat.word(2,8,4,true));assert(m==2 and mv==8 and sh==4 and hold)
-m,mv,sh,hold=Combat.decode(Combat.word(1,nil,3,false));assert(m==1 and mv==nil and sh==3 and not hold)
+-- Word round trip & OFF <-> AUTO toggle (AIM removed).
+local m,mv,sh,hold,brk=Combat.decode(Combat.word(2,8,4,true,true))
+assert(m==2 and mv==8 and sh==4 and hold and brk,'decode brake bit')
+local wm,wmv,wsh,whold,wbrk=Combat.decode(Combat.mirror(Combat.word(2,1,1,true,true)))
+assert(wm==2 and wmv==2 and wsh==2 and whold and wbrk,'mirror preserves brake bit')
 local s=Combat.new()
 assert(Combat.update(s,{entities={enemy(300,180)}})==0)
+assert(Combat.cycle(s)==2 and Combat.cycle(s)==0,'F10 toggles OFF <-> AUTO')
 
--- AIM: target to the right; lead turns a fast vertical mover into an up shot.
+-- AUTO: lead turns a fast vertical mover into an up shot; queue delay lengthens it.
 Combat.cycle(s)
-m,mv,sh=update(s,{enemy(300,180)});assert(m==1 and mv==nil and sh==2,'aim right')
+m,mv,sh=update(s,{enemy(300,180)});assert(m==2 and mv~=nil and sh==2,'auto shoot right')
 m,mv,sh=update(s,{enemy(220,150,0,-10)});assert(sh==3,'lead up: '..sh)
--- Online queue delay lengthens the lead.
 local slow=enemy(140,180,0,-6)
 m,mv,sh=update(s,{slow});assert(sh==2)
 m,mv,sh=update(s,{slow},{queueDelay=4});assert(sh==3,'queue lead')
@@ -93,7 +95,7 @@ b.Position=Vector(100,600);update(s,{a,b});assert(s.targetSeed==a.InitSeed,'swit
 print('PASS combat word, aim lead with queue, target filters and hysteresis')
 
 -- AUTO: goal on the target row/column with a clear lane.
-Combat.cycle(s);assert(s.mode==2)
+s=Combat.new();Combat.cycle(s);assert(s.mode==2)
 p.Position=Vector(100,100)
 local t=enemy(300,180)
 m,mv,sh,hold=update(s,{t})
@@ -138,7 +140,7 @@ local function attack(kind,extra)
  return e
 end
 weapons[WeaponType.WEAPON_BRIMSTONE]=true
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 p.Position=Vector(100,180)
 local target=enemy(400,180)
 local function holds(n,entities)
@@ -168,7 +170,7 @@ local _,_,_,h=update(s,{enemy(400,60)})
 assert(h,'misaligned charge is held')
 p.Position=Vector(100,180)
 -- The hint says charge, but tears come out of an unbroken hold: auto-fire.
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 for i=1,8 do
  local list={target}
  if i>=6 then list[2]=attack(EntityType.ENTITY_TEAR) end
@@ -179,7 +181,7 @@ assert(holds(30,{target,attack(EntityType.ENTITY_TEAR)}):find('r')==nil,'auto-fi
 weapons={}
 -- A normal tear weapon must keep firing even when entity ownership is not
 -- observable (the 2026-10-25 co-op baby run regressed into charge mode).
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 local normal=holds(120)
 assert(not normal:find('r'),'normal tears released without attack evidence: '..normal)
 assert(s.weapon=='tears' and s.stalled,'silent normal weapon changed firing mode')
@@ -189,7 +191,7 @@ assert(holds(30,{target}):sub(1,2)=='HH','continued silent hold')
 p.ControllerIndex=7
 local mainTwin={Index=99,ControllerIndex=7,Type=EntityType.ENTITY_PLAYER}
 local remote={Index=99,ControllerIndex=8,Type=EntityType.ENTITY_PLAYER}
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 update(s,{target})
 update(s,{target,attack(EntityType.ENTITY_TEAR,{Parent=mainTwin,SpawnerEntity=nil})})
 assert(s.quiet==0,'main-twin tear was not observed')
@@ -197,7 +199,7 @@ update(s,{target,attack(EntityType.ENTITY_TEAR,{Parent=remote,SpawnerEntity=nil}
 assert(s.quiet==1,'remote player tear counted as our attack')
 -- Conflicting links: a remote shot must be rejected even when its Parent is
 -- the local main twin. Traversal order must not decide ownership.
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 update(s,{target})
 update(s,{target,attack(EntityType.ENTITY_TEAR,{Parent=mainTwin,SpawnerEntity=remote})})
 assert(s.quiet==1,'remote SpawnerEntity hidden by local Parent')
@@ -205,7 +207,7 @@ p.ControllerIndex=nil
 weapons={}
 -- Picking up a charge weapon after tear auto-fire must discard the old
 -- evidence and start charging rather than holding forever.
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 for i=1,8 do
  local list={target}
  if i>=6 then list[2]=attack(EntityType.ENTITY_TEAR) end
@@ -218,7 +220,7 @@ weapons={}
 -- Pending release/check state must not survive a mode cycle or an empty
 -- interval: neither may fire immediately or add a false charge bias.
 weapons[WeaponType.WEAPON_BRIMSTONE]=true
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 local released=false
 for i=1,40 do
  local _,_,_,h=update(s,{target})
@@ -229,14 +231,14 @@ for i=1,10 do update(s,{}) end
 local bias=s.bias
 update(s,{target})
 assert(s.bias==bias,'empty interval charged a failed release')
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 released=false
 for i=1,40 do
  local _,_,_,h=update(s,{target})
  if not h then released=true;break end
 end
 assert(released,'Brimstone never released before cycle')
-Combat.cycle(s);Combat.cycle(s);Combat.cycle(s)
+Combat.cycle(s);Combat.cycle(s)
 local _,_,_,h=update(s,{target})
 assert(h,'pending release survived mode cycle')
 weapons={}
@@ -247,7 +249,7 @@ local _,_,aimed=update(s,{enemy(200,89)},{queueDelay=4})
 assert(aimed==3,'queued shooter displacement ignored: '..tostring(aimed))
 p.Velocity=Vector(0,0)
 -- Azazel: the laser length caps the standing distance.
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 weapons[WeaponType.WEAPON_BRIMSTONE]=true
 update(s,{target});update(s,{target,attack(EntityType.ENTITY_LASER,{MaxDistance=110})})
 assert(s.laserReach==110 and s.info.goalX,'laser reach recorded')
@@ -267,13 +269,13 @@ CollectibleType={COLLECTIBLE_CHOCOLATE_MILK=69,COLLECTIBLE_CURSED_EYE=316,COLLEC
 local items={}
 function p:HasCollectible(id)return items[id]==true end
 items[597]=true
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 assert(not holds(60):find('r'),'Neptunus treated as a charge weapon')
 items={}
 -- Proven auto-fire survives a room/no-target interval (0.12.6 re-learned it
 -- 83 times in one session); a weapon change still clears it.
 items[69]=true
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 for i=1,8 do
  local list={target}
  if i>=6 then list[2]=attack(EntityType.ENTITY_TEAR) end
@@ -284,7 +286,7 @@ for i=1,200 do update(s,{}) end
 assert(not holds(40):find('r'),'auto-fire proof lost after an empty interval')
 items={}
 -- Target dwell: a slightly closer newcomer does not steal the target.
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 p.Position=Vector(100,180)
 local first,second=enemy(300,180),enemy(330,180)
 update(s,{first});assert(s.targetSeed==first.InitSeed)
@@ -293,7 +295,7 @@ update(s,{first,second});assert(s.targetSeed==first.InitSeed,'target switched in
 second.Position=Vector(100,240) -- 60 vs 200: more than twice as good
 update(s,{first,second});assert(s.targetSeed==second.InitSeed,'clearly better target ignored')
 -- Goal side is sticky for the same target.
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 local still=enemy(300,180)
 update(s,{still});local side=s.goalSide
 assert(side,'goal side recorded')
@@ -301,7 +303,7 @@ p.Position=Vector(300+(side==2 and 40 or -40),180)
 for i=1,5 do update(s,{still}) end
 assert(s.goalSide==side,'goal side flipped without reason')
 -- AUTO pathing treats hazard cells (spikes) as walls.
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 p.Position=Vector(100,180)
 local hazard={}
 for y=1,7 do hazard[room:GetGridIndex(Vector(180,y*40+20))]=true end
@@ -309,7 +311,7 @@ local _,mv=update(s,{enemy(460,180)},{hazardCells=hazard})
 assert(s.info.goalX==nil or s.info.goalX<180,'goal behind a spike wall: '..tostring(s.info.goalX))
 -- A long hold that still fired nothing is not a short charge: no bias.
 weapons[WeaponType.WEAPON_BRIMSTONE]=true
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 p.Position=Vector(100,300)
 s.held=60;update(s,{enemy(400,60)})        -- misaligned: keeps holding past need
 p.Position=Vector(100,180)
@@ -344,7 +346,7 @@ local function exploderEnemy(x,y,hp,chase)
 end
 local blast={exploder=function(e)return e.exploder==true end,chaser=function(e)return e.chaser==true end}
 local function fires(target)
- local s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+ local s=Combat.new();Combat.cycle(s)
  local held=false
  for _=1,4 do local _,_,_,h=update(s,{target},blast);held=h end
  return held
@@ -363,7 +365,7 @@ assert(not fires(closing),'fired at an exploder that will be next to us when it 
 -- at (200,180) and an exploder just behind it, the goal moves further out
 -- for a Mulliboom than for a boom fly.
 local function goalGap(neighbour)
- local s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+ local s=Combat.new();Combat.cycle(s)
  update(s,{enemy(200,180),neighbour},blast)
  assert(s.info.targetX==200,'target changed')
  return Vector(s.info.goalX,s.info.goalY):Distance(neighbour.Position)-neighbour.Size
@@ -372,7 +374,7 @@ local chasing,drifting=goalGap(exploderEnemy(220,180,20,true)),goalGap(exploderE
 assert(chasing>=137 and drifting<137,'chaser standoff '..chasing..' vs '..drifting)
 -- A chasing exploder far away is shot first, before it closes in.
 local function targetX(other)
- local s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+ local s=Combat.new();Combat.cycle(s)
  update(s,{enemy(270,180),other},blast)
  return s.info.targetX
 end
@@ -382,7 +384,7 @@ assert(targetX(exploderEnemy(290,140,20,false))==270,'drifting exploder preferre
 -- beam while the exploder is too close, and releases once it is not.
 weapons[WeaponType.WEAPON_BRIMSTONE]=true
 local function released(target,n)
- local s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+ local s=Combat.new();Combat.cycle(s)
  for _=1,n do local _,_,_,h=update(s,{target},blast);if not h then return true end end
  return false
 end
@@ -390,7 +392,7 @@ assert(not released(exploderEnemy(180,180,3),30),'charge released a killing beam
 assert(released(exploderEnemy(300,180,3),30),'charge never released at a distant exploder')
 weapons={}
 -- A chasing exploder as the target is also engaged from 150.
-local s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+local s=Combat.new();Combat.cycle(s)
 update(s,{exploderEnemy(300,180,20,true)},blast)
 assert(Vector(s.info.goalX,s.info.goalY):Distance(Vector(300,180))>=150,'chasing target engaged closer than 150')
 print('PASS 0.17 combat: no killing shot at a nearby exploder, chasing exploders kept 150 away and shot first')
@@ -419,7 +421,7 @@ assert(not aligned,'queued release must lead a moving target')
 shoot,aligned=Combat.aim(p,enemy(250,150,0,10),3,{reach=260})
 assert(shoot==2 and aligned,'queued release lead missing')
 -- A capped beam's reach belongs to that weapon: a new weapon forgets it.
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 s.laserReach,s.hint,s.hintTick=110,'tears',-100
 update(s,{enemy(400,180)})
 assert(s.laserReach==nil,'old beam reach kept after a weapon change')
@@ -434,7 +436,7 @@ print('PASS 0.18 combat: beam aim is instant, width and reach bound')
 
 -- 0.18 AUTO stats: damage our own attacks deal, and target changes while
 -- the old target is still alive (flicker, not kills).
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 p.Position,p.ControllerIndex=Vector(100,180),0
 local a,b=enemy(300,180),enemy(100,300)
 update(s,{a,b})
@@ -451,7 +453,7 @@ local alive={a,b};for i,e in ipairs(alive)do if e.InitSeed==first then table.rem
 update(s,alive)
 assert(s.stats.switches==1 and (s.stats.retargets or 0)==0,'kill counted as a retarget')
 -- Both alive and the other becomes much closer: a retarget.
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 local far,near=enemy(300,180),enemy(500,300)
 update(s,{far,near})
 assert(s.targetSeed==far.InitSeed,'setup: nearer target first')
@@ -468,7 +470,7 @@ p.MaxFireDelay,p.Damage,p.Velocity=19.5,3.5,Vector(0,0)
 local function hp(e,v)e.HitPoints=v;return e end
 -- Charge, then report the first release: update count and shoot axis.
 local function release(list,limit,extra)
- local s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+ local s=Combat.new();Combat.cycle(s)
  for i=1,limit do
   local _,_,sh,h=update(s,type(list)=='function' and list(i) or list,extra)
   if not h then return i,sh,s end
@@ -508,7 +510,7 @@ assert(at and sh~=1,'beam killed an exploder next to us')
 -- Standing: with two enemies sharing a row, the goal lines the beam up with
 -- both rather than with the lone nearest one.
 p.Position=Vector(100,180)
-local s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+local s=Combat.new();Combat.cycle(s)
 update(s,{hp(enemy(220,260),20),hp(enemy(320,100),20),hp(enemy(440,100),20)})
 assert(s.info.goalY and math.abs(s.info.goalY-100)<1,'goal not on the two-enemy row: '..tostring(s.info.goalX)..','..tostring(s.info.goalY))
 weapons={}
@@ -519,7 +521,7 @@ weapons={}
 -- E3's row holds two; judged at release, E1's row does.
 weapons[WeaponType.WEAPON_BRIMSTONE]=true
 p.Position=Vector(100,180)
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 local E1,E2,E3,E4=hp(enemy(300,100),20),hp(enemy(420,100+3*22,0,-3),20),hp(enemy(200,260),20),hp(enemy(120,260,0,3),20)
 update(s,{E3,E1,E2,E4})
 assert(s.info.goalY and math.abs(s.info.goalY-100)<10,'goal off the release-time row: '..tostring(s.info.goalX)..','..tostring(s.info.goalY))
@@ -536,20 +538,20 @@ print('PASS 0.19 combat: Brimstone payoff picks the axis, waits for walkers (cap
 -- hit fired nothing), so the count restarts instead of releasing early.
 weapons[WeaponType.WEAPON_BRIMSTONE]=true
 p.Position,p.Velocity=Vector(100,180),Vector(0,0)
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 for i=1,20 do update(s,{enemy(100,40)}) end
 assert(s.weapon=='charge' and s.held>5,'not charging: '..tostring(s.weapon)..' '..s.held)
 Combat.hurt(s)
 assert(s.held==0,'hit kept the charge')
 -- Other charged weapons keep it (no evidence either way).
 weapons={[WeaponType.WEAPON_MONSTROS_LUNGS]=true}
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 for i=1,6 do update(s,{enemy(100,40)}) end
 local held=s.held;Combat.hurt(s)
 assert(held>0 and s.held==held,'a non-Brimstone charge was reset')
 -- While our beam is out it follows us: step across with the enemy it hits.
 weapons[WeaponType.WEAPON_BRIMSTONE]=true
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 local walker=enemy(220,200,0,4)
 update(s,{walker})
 s.beamAxis=2
@@ -559,7 +561,7 @@ assert(s.info.goalY and math.abs(s.info.goalY-200)<1 and math.abs(s.info.goalX-1
 weapons={}
 -- AUTO never walks across an item pedestal (a hazard cell next to us),
 -- even when the walk would end past it.
-s=Combat.new();Combat.cycle(s);Combat.cycle(s)
+s=Combat.new();Combat.cycle(s)
 p.Position=Vector(100,180)
 local _,mv=update(s,{enemy(460,180)},{stride=20,hazardCells={[room:GetGridIndex(Vector(140,180))]=true}})
 assert(mv~=2,'walked right over the pedestal')
@@ -575,3 +577,108 @@ assert(Combat.chooseMove(st,{scores={0,-1048576,-1048576,5*1048576,0,0,0,0,0},bl
 assert(Combat.chooseMove(st,{scores={0,0,0,0,0,0,0,0,0},blocked=0},costs)==3,'quiet: cheaper direction taken')
 assert(Combat.chooseMove(st,{scores={0,-1048576,-1048576,5*1048576,0,0,0,0,0},blocked=2},costs)==3,'blocked last direction not kept')
 print('PASS 0.25.9 combat: AUTO keeps its direction while threatened')
+
+-- 0.26+: Deathmatch EntityPlayer targeting, infinite Brimstone standoff vs
+-- Azazel laserReach, Dr. Fetus blast/obstacle guard (even when flying),
+-- Epic Fetus crosshair tracking, Spirit Sword / Bone melee alignment,
+-- Mom's Knife distance-scaled partial charge, and Haemolacria lob + splash.
+weapons={};rocks={};items={}
+p.Position,p.Velocity,p.CanFly=Vector(100,180),Vector(0,0),false
+p.MaxFireDelay,p.TearRange,p.ShotSpeed=19.5,260,1
+WeaponType.WEAPON_BOMBS=5
+WeaponType.WEAPON_ROCKETS=8
+WeaponType.WEAPON_BONE=11
+EffectVariant=EffectVariant or {TARGET=30}
+CollectibleType.COLLECTIBLE_HAEMOLACRIA=531
+
+-- Deathmatch: opponent EntityPlayer is targeted while own player entity is ignored.
+s=Combat.new();Combat.cycle(s)
+local opp={Type=EntityType.ENTITY_PLAYER,InitSeed=777,Position=Vector(340,180),Velocity=Vector(0,0),
+ Size=10,HitPoints=10,EntityCollisionClass=EntityCollisionClass.ENTCOLL_ALL}
+function opp:ToNPC()return nil end;function opp:IsDead()return false end;function opp:IsVulnerable()return true end
+function opp:HasEntityFlags()return false end
+update(s,{p,opp},{deathmatch=true})
+assert(s.targetSeed==777,'Deathmatch did not target opponent player: '..tostring(s.targetSeed))
+
+-- Infinite Brimstone standoff (>= 200) vs Azazel laserReach=110.
+weapons={[WeaponType.WEAPON_BRIMSTONE]=true}
+s=Combat.new();Combat.cycle(s);p.Position=Vector(100,180)
+local farTarget=enemy(500,180)
+update(s,{farTarget})
+assert(s.info.goalX and math.abs(s.info.goalX-500)+math.abs(s.info.goalY-180)>=200,
+ 'infinite Brimstone walked up too close: goal=('..tostring(s.info.goalX)..','..tostring(s.info.goalY)..')')
+s.laserReach=110
+while (s.releaseIn or 99)>3 do update(s,{farTarget}) end
+update(s,{farTarget})
+assert(s.info.goalX and math.abs(s.info.goalX-500)+math.abs(s.info.goalY-180)<=110,
+ 'capped Azazel Brimstone stayed outside reach')
+weapons={}
+
+-- Dr. Fetus (WEAPON_BOMBS): blocks unsafe close shot (< 115) and solid rock
+-- in the bomb lane (< 60px ahead) even when the player has flight.
+weapons={[WeaponType.WEAPON_BOMBS]=true}
+s=Combat.new();Combat.cycle(s);p.CanFly=true;p.Position=Vector(100,180)
+local _,_,shClose,holdClose=update(s,{enemy(180,180)})
+assert(not holdClose,'Dr. Fetus fired inside self-blast range: sh='..tostring(shClose))
+rocks[room:GetGridIndex(Vector(140,180))]=true;s.grid=nil
+local _,_,shWall,holdWall=update(s,{enemy(360,180)})
+assert(not holdWall,'flying Dr. Fetus bombed into nearby solid rock: sh='..tostring(shWall))
+rocks={};s.grid=nil
+local _,_,shOpen,holdOpen=update(s,{enemy(360,180)})
+assert(shOpen==2 and holdOpen,'Dr. Fetus refused open long-range lane')
+p.CanFly=false;weapons={}
+
+-- Epic Fetus (WEAPON_ROCKETS): tracks EffectVariant.TARGET toward enemy and
+-- stops firing if crosshair sits within self-blast radius (< 90).
+weapons={[WeaponType.WEAPON_ROCKETS]=true}
+s=Combat.new();Combat.cycle(s);p.Position=Vector(100,180)
+local crossSafe={Type=EntityType.ENTITY_EFFECT,Variant=EffectVariant.TARGET,InitSeed=555,
+ Position=Vector(340,180),SpawnerEntity=p}
+function crossSafe:ToNPC()return nil end;function crossSafe:IsDead()return false end
+local _,_,shRkt,holdRkt=update(s,{enemy(340,300),crossSafe})
+assert(shRkt==4 and holdRkt,'Epic Fetus did not steer crosshair down toward enemy: '..tostring(shRkt))
+crossSafe.Position=Vector(140,180)
+local _,_,shDanger,holdDanger=update(s,{enemy(340,180),crossSafe})
+assert(not holdDanger,'Epic Fetus kept firing while crosshair was on top of player')
+weapons={}
+
+-- Melee (Spirit Sword & Forgotten Bone): swings only when aligned within reach.
+for _,w in ipairs({WeaponType.WEAPON_SPIRIT_SWORD, WeaponType.WEAPON_BONE}) do
+ weapons={[w]=true}
+ s=Combat.new();Combat.cycle(s);p.Position=Vector(100,180)
+ local _,_,shFar,holdFar=update(s,{enemy(340,180)})
+ assert(not holdFar,'melee weapon swung at out-of-range enemy: sh='..tostring(shFar))
+ local _,_,shHit,holdHit=update(s,{enemy(160,180)})
+ assert(shHit==2 and holdHit,'melee weapon failed to swing at in-range target: '..w)
+end
+weapons={}
+
+-- Mom's Knife: close enemy uses partial charge (~0.4*need) while far waits full need.
+weapons={[WeaponType.WEAPON_KNIFE]=true}
+p.MaxFireDelay=19.5
+s=Combat.new();Combat.cycle(s);p.Position=Vector(100,180)
+local closePat=holds(12,{enemy(170,180)})
+assert(closePat:find('r')~=nil,'close Mom\'s Knife waited for full charge: '..closePat)
+s=Combat.new();Combat.cycle(s)
+local farPat=holds(15,{enemy(400,180)})
+assert(farPat:find('r')==nil,'far Mom\'s Knife released too early: '..farPat)
+weapons={}
+
+-- Haemolacria: ignores rocks when picking targets and prefers clustered splash.
+items[CollectibleType.COLLECTIBLE_HAEMOLACRIA]=true
+s=Combat.new();Combat.cycle(s);p.Position=Vector(100,180)
+for y=1,7 do rocks[room:GetGridIndex(Vector(180,y*40+20))]=true end
+s.grid=nil
+local shielded=enemy(260,180) -- 160 away behind rock
+local openFar=enemy(290,260)  -- ~206 away, open
+update(s,{shielded,openFar})
+assert(s.targetSeed==shielded.InitSeed,'Haemolacria avoided rock-behind nearer enemy')
+rocks={};s.grid=nil
+s=Combat.new();Combat.cycle(s)
+local solo=enemy(260,100) -- ~179 away
+local c1=enemy(290,180);local c2=enemy(310,180);local c3=enemy(290,200) -- 190 away, clustered
+update(s,{solo,c1,c2,c3})
+assert(s.targetSeed==c1.InitSeed or s.targetSeed==c2.InitSeed or s.targetSeed==c3.InitSeed,
+ 'Haemolacria did not prefer clustered splash targets: solo='..solo.InitSeed..' picked='..tostring(s.targetSeed))
+items={}
+print('PASS 0.26+ combat: Deathmatch player, Brimstone standoff, Dr./Epic Fetus, Spirit Sword/Bone, Knife partial charge, Haemolacria')

@@ -82,8 +82,8 @@ local score={grade='A',total=63,colour={1,1,1},qualities={[0]=0,0,1,2,1},unseen=
 local zh=hud('zh',{state='THREAT / HELPER',combatMode=2,player=2,score=score})
 assert(zh:find('躲避',1,true) and zh:find('自动战斗',1,true) and zh:find('P2',1,true) and zh:find('本层 A 63',1,true) and
  zh:find('Q4x1',1,true) and zh:find('未知 1',1,true),'chinese HUD: '..zh)
-local en=hud('en',{state='MONITOR / HELPER',combatMode=1,score=score})
-assert(en:find('Dodge',1,true) and en:find('Auto aim',1,true) and en:find('Floor A 63',1,true),'english HUD: '..en)
+local en=hud('en',{state='MONITOR / HELPER',combatMode=2,score=score})
+assert(en:find('Dodge',1,true) and en:find('Auto combat',1,true) and en:find('Floor A 63',1,true),'english HUD: '..en)
 local state=Hud.new();Hud.toast(state,'hello')
 local seen=0
 for _=1,120 do texts={};Hud.render(state,{state='OFF',combatMode=0},48,50);if table.concat(texts,'|'):find('hello',1,true) then seen=seen+1 end end
@@ -195,5 +195,47 @@ texts={};ItemView.renderContainers({{x=0,y=0,rock=true,done=true,sacrifice={}}},
 assert(table.concat(texts,'|')=='sacrifices done','done: '..table.concat(texts,'|'))
 texts={};ItemView.renderContainers({{x=0,y=0,rock=true,sacrifice={{loot={coin=6},items={},extras={},words={}}}}},Vector(0,20))
 assert(table.concat(texts,'|')=='Next:|coins 6','sanguine: '..table.concat(texts,'|'))
+
+-- Curse of the Unknown HP breakdown, soft-brake badge, mirror WorldToScreen,
+-- label overlap avoidance, 2-column long sacrifice tables, and MapView cell badges.
+UI.setLang('zh')
+local curseZh=hud('zh',{state='MONITOR / HELPER',combatMode=0,brake=true,
+ hp={red=3,maxRed=6,rotten=1,bone=1,soul=2,black=1,eternal=1,broken=1}})
+assert(curseZh:find('防误触',1,true) and curseZh:find('红 1.5/3',1,true) and curseZh:find('腐 1',1,true)
+ and curseZh:find('骨 1',1,true) and curseZh:find('魂 1',1,true) and curseZh:find('黑 0.5',1,true)
+ and curseZh:find('永 +1',1,true) and curseZh:find('碎 1',1,true),'curse HP zh: '..curseZh)
+
+local drawnBoxes={}
+UI.rect=function(rx,ry,rw,rh)drawnBoxes[#drawnBoxes+1]={rx,ry,rw,rh}end
+texts={}
+Hud.playerLabel(Vector(100,100),1,true,480)
+assert(UI.width(texts[1])>0,'playerLabel mirrored')
+drawnBoxes={};ItemView.beginFrame()
+ItemView.renderPills({{x=100,y=100,effect=1,horse=false}},true,480)
+assert(#drawnBoxes==1 and drawnBoxes[1][1]>300,'pill mirrored X: '..tostring(drawnBoxes[1][1]))
+drawnBoxes={};ItemView.beginFrame()
+ItemView.renderPills({{x=200,y=120,effect=1},{x=200,y=120,effect=2}},false,480)
+assert(#drawnBoxes==2 and math.abs(drawnBoxes[1][2]-drawnBoxes[2][2])>=10,'overlapping pill boxes did not stagger')
+
+local longSac={}
+for n=3,12 do longSac[#longSac+1]={n=n,loot={coin=n},items={},extras={},words={}} end
+drawnBoxes={};ItemView.beginFrame();texts={}
+ItemView.renderContainers({{x=240,y=135,rock=true,sacrifice=longSac}},Vector(240,140),false,480)
+assert(#drawnBoxes==1 and drawnBoxes[1][2]>=4 and drawnBoxes[1][2]+drawnBoxes[1][4]<=270,'10-row sacrifice clipped screen')
+
+local FloorMap=include('floor_map')
+local MapView=include('map_view');MapView.use(UI,ItemView)
+local fakeRooms={{ListIndex=0,SafeGridIndex=6*13+4,VisitedCount=0,Clear=false,Flags=0,SpawnSeed=1,AwardSeed=1,
+ Data={Type=4,Shape=1,Variant=0,Subtype=0}}}
+local fakeLevel={GetRooms=function()return {Size=1,Get=function(_,i)return fakeRooms[i+1] end}end,
+ GetCurrentRoomDesc=function()return fakeRooms[1] end}
+local mNormal=FloorMap.scan(fakeLevel,nil,false)
+local mMirror=FloorMap.scan(fakeLevel,nil,true)
+assert(mNormal.rooms[1].cells[1][1]==4 and mMirror.rooms[1].cells[1][1]==8,'FloorMap mirror X flip')
+drawnBoxes={};texts={}
+MapView.render(mMirror,{[0]={items=1,bestQ=4,loot={coin=3,key=1},rocks=1}},
+ {grade='S',total=90,colour={1,1,1},items=60,loot=20,rooms=10,unseen=0,qualities={},entries={},lootTotals={},roomList={}},{})
+local mt=table.concat(texts,'|')
+assert(mt:find('Q4',1,true) and mt:find('币3',1,true),'MapView direct cell Q4/resource badges missing: '..mt)
 UI.setLang(nil)
-print('PASS sacrifice labels: next three sacrifices, finished room, Sanguine Bond')
+print('PASS sacrifice labels: next ten sacrifices, finished room, Sanguine Bond, Curse HP, mirror X, overlap stagger, MapView cell badges')

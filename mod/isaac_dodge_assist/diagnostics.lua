@@ -51,11 +51,13 @@ function M.flushPerformance(reason)
     performance=nil
 end
 -- Bomb kinematics for the chain-knockback model (push, friction, fuse):
--- every bomb, every update, while two or more share the room or one moves.
+-- sampled periodically when bombs move or chain-push so desktop log IO
+-- never drops online frames while preserving motion traces.
 function M.bombs(frame, bombs)
+    if frame % 4 ~= 0 then return end
     local moving = false
     for _, bomb in ipairs(bombs) do
-        if bomb.Velocity:LengthSquared() > 0.25 then moving = true end
+        if bomb.Velocity:LengthSquared() > 0.25 then moving = true; break end
     end
     if #bombs < 2 and not moving then return end
     for _, bomb in ipairs(bombs) do

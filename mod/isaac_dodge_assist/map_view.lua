@@ -51,6 +51,29 @@ local function flow(words, x, y, width, colour)
     return y + lh
 end
 
+local function cellResourceTags(extra)
+    local tags = {}
+    if not extra then return tags end
+    if extra.need then tags[#tags+1] = {UI.t("mapNeed"), UI.WARN} end
+    local l = extra.loot or {}
+    local chests = floor((l.chest or 0) + (l.gold or 0) + 0.5)
+    local souls = floor((l.soul or 0) + 0.5)
+    local keys = floor((l.key or 0) + 0.5)
+    local bombs = floor((l.bomb or 0) + 0.5)
+    local coins = floor((l.coin or 0) + (l.nickel or 0)*5 + (l.dime or 0)*10 + 0.5)
+    local cards = floor((l.card or 0) + (l.pill or 0) + 0.5)
+    local hearts = floor((l.heart or 0) + 0.5)
+    if chests > 0 then tags[#tags+1] = {UI.t("mapChest") .. (chests > 1 and chests or ""), {0.95, 0.78, 0.35}} end
+    if souls > 0 then tags[#tags+1] = {UI.t("mapSoul") .. (souls > 1 and souls or ""), {0.45, 0.78, 1}} end
+    if keys > 0 then tags[#tags+1] = {UI.t("mapKey") .. (keys > 1 and keys or ""), {0.9, 0.9, 0.9}} end
+    if bombs > 0 then tags[#tags+1] = {UI.t("mapBomb") .. (bombs > 1 and bombs or ""), {0.8, 0.8, 0.8}} end
+    if coins > 0 then tags[#tags+1] = {UI.t("mapCoin") .. (coins > 1 and coins or ""), {1, 0.85, 0.25}} end
+    if cards > 0 then tags[#tags+1] = {UI.t("mapCard") .. (cards > 1 and cards or ""), {0.85, 0.65, 1}} end
+    if hearts > 0 then tags[#tags+1] = {UI.t("mapHeart") .. (hearts > 1 and hearts or ""), {1, 0.4, 0.4}} end
+    if (extra.rocks or 0) > 0 then tags[#tags+1] = {"*" .. (extra.rocks > 1 and extra.rocks or ""), {1, 0.85, 0.25}} end
+    return tags
+end
+
 local function drawMap(floorMap, extras, left, top, width, height)
     local x0, y0, x1, y1 = 99, 99, -1, -1
     for _, room in ipairs(floorMap.rooms) do
@@ -59,8 +82,9 @@ local function drawMap(floorMap, extras, left, top, width, height)
         end
     end
     local cols, rows = x1 - x0 + 1, y1 - y0 + 1
-    local cw = max(8, min(22, floor(width / cols), floor(height / rows / 0.8)))
-    local ch = floor(cw * 0.8)
+    local cw = max(8, min(44, floor(width / cols), floor(height / rows / 0.85)))
+    local ch = floor(cw * 0.85)
+    local lh = UI.lineHeight()
     left = left + floor((width - cols*cw) / 2)
     for _, room in ipairs(floorMap.rooms) do
         local kind = UI.room(room.type)
@@ -69,8 +93,11 @@ local function drawMap(floorMap, extras, left, top, width, height)
         local alpha = room.colour and (room.visited and 0.95 or 0.6) or 0.85
         -- A big room is one block: a gap only where the next cell is
         -- another room.
-        local own = {}
-        for _, c in ipairs(room.cells) do own[c[1] .. ":" .. c[2]] = true end
+        local own, tl = {}, room.cells[1]
+        for _, c in ipairs(room.cells) do
+            own[c[1] .. ":" .. c[2]] = true
+            if c[2] < tl[2] or (c[2] == tl[2] and c[1] < tl[1]) then tl = c end
+        end
         local function gap(cx, cy) return own[cx .. ":" .. cy] and 0 or 1 end
         for _, c in ipairs(room.cells) do
             local x, y = left + (c[1] - x0)*cw, top + (c[2] - y0)*ch
@@ -78,17 +105,38 @@ local function drawMap(floorMap, extras, left, top, width, height)
             UI.rect(x + l, y + t, cw - l - r, ch - t - b, fill, alpha)
             if room.index == floorMap.current then UI.frame(x, y, cw, ch, WHITE, 1, 2) end
         end
-        local first = room.cells[1]
-        local x, y = left + (first[1] - x0)*cw, top + (first[2] - y0)*ch
-        if kind and cw >= 12 then
-            -- White with the font's own shadow/outline reads on any fill.
-            local label = kind[1]
-            UI.text(label, x + (cw - UI.width(label))/2, y + (ch - UI.lineHeight())/2 + 1, WHITE, 1)
-        end
+        local x, y = left + (tl[1] - x0)*cw, top + (tl[2] - y0)*ch
         local extra = extras and extras[room.index]
-        if extra and (extra.rocks or 0) > 0 then UI.rect(x + cw - 5, y + 2, 3, 3, {1, 0.85, 0.25}, 1) end
-        if extra and (extra.items or 0) > 0 then UI.rect(x + 2, y + 2, 3, 3, {0.3, 1, 0.4}, 1)
-        elseif extra and (extra.forecast or 0) > 0 then UI.rect(x + 2, y + 2, 3, 3, {0.35, 0.9, 1}, 1) end
+        local detail = cw >= 26 and ch >= lh*2
+        if detail then
+            if kind then UI.text(kind[1], x + 2, y + 1, WHITE, 1) end
+            if extra and extra.bestQ ~= nil then
+                local qText = (extra.forecastOnly and "~Q" or "Q") .. tostring(extra.bestQ)
+                if UI.width(qText) > cw - (kind and UI.width(kind[1]) + 4 or 4) then
+                    qText = "Q" .. tostring(extra.bestQ)
+                end
+                UI.text(qText, x + cw - UI.width(qText) - 2, y + 1, UI.QUALITY[extra.bestQ] or WHITE, 1)
+            elseif extra and (extra.items or 0) > 0 then
+                UI.rect(x + cw - 5, y + 2, 3, 3, {0.3, 1, 0.4}, 1)
+            elseif extra and (extra.forecast or 0) > 0 then
+                UI.rect(x + cw - 5, y + 2, 3, 3, {0.35, 0.9, 1}, 1)
+            end
+            local rx, bs = x + 2, 0.8
+            for _, tag in ipairs(cellResourceTags(extra)) do
+                local tw = UI.width(tag[1]) * bs
+                if rx + tw > x + cw - 1 then break end
+                UI.text(tag[1], rx, y + ch - lh * bs, tag[2], 0.95, bs)
+                rx = rx + tw + 1
+            end
+        else
+            if kind and cw >= 12 then
+                local label = kind[1]
+                UI.text(label, x + (cw - UI.width(label))/2, y + (ch - lh)/2 + 1, WHITE, 1)
+            end
+            if extra and (extra.rocks or 0) > 0 then UI.rect(x + cw - 5, y + 2, 3, 3, {1, 0.85, 0.25}, 1) end
+            if extra and (extra.items or 0) > 0 then UI.rect(x + 2, y + 2, 3, 3, {0.3, 1, 0.4}, 1)
+            elseif extra and (extra.forecast or 0) > 0 then UI.rect(x + 2, y + 2, 3, 3, {0.35, 0.9, 1}, 1) end
+        end
     end
     return top + rows*ch
 end

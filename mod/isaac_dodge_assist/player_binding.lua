@@ -8,10 +8,13 @@
 -- Counting those matches per slot identifies our player without asking F7.
 local M = {}
 local HISTORY, MAX_LAG = 12, 8
-local MIN_EVENTS, DOMINANCE = 6, 3
+local MIN_EVENTS, DOMINANCE = 3, 2.5
 
 local function same(a, b)
     return a and b and math.abs(a.X-b.X) < 0.3 and math.abs(a.Y-b.Y) < 0.3
+end
+local function nonZero(a)
+    return a and (math.abs(a.X) >= 0.3 or math.abs(a.Y) >= 0.3)
 end
 
 function M.new()
@@ -28,7 +31,7 @@ function M.observe(state, index, polled, applied)
     state.frames = state.frames + 1
     local slot = state.slots[index]
     if not slot then
-        slot = {history = {}, events = 0, frames = 0, lag = nil}
+        slot = {history = {}, events = 0, frames = 0, lag = nil, steady = 0}
         state.slots[index] = slot
     end
     slot.frames = slot.frames + 1
@@ -42,10 +45,28 @@ function M.observe(state, index, polled, applied)
         for lag = 0, MAX_LAG do
             local at = #slot.history - lag
             if at >= 2 and same(slot.history[at], applied) and not same(slot.history[at-1], applied) then
-                slot.events, slot.lag = slot.events + 1, lag
+                slot.events, slot.lag, slot.steady = slot.events + 1, lag, 0
                 break
             end
         end
+    elseif nonZero(applied) then
+        -- Sustained non-zero movement matching recent local polled input
+        -- (for straight walks without rapid key flips).
+        local matched = false
+        for lag = 0, math.min(MAX_LAG, #slot.history - 1) do
+            local at = #slot.history - lag
+            if at >= 1 and same(slot.history[at], applied) then matched = true; break end
+        end
+        if matched then
+            slot.steady = slot.steady + 1
+            if slot.steady >= 8 then
+                slot.events, slot.steady = slot.events + 1, 0
+            end
+        else
+            slot.steady = 0
+        end
+    else
+        slot.steady = 0
     end
     slot.lastApplied = applied
 end

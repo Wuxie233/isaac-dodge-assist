@@ -37,4 +37,14 @@ assert(B.best(twin)==nil, 'ambiguous slots produced a binding')
 -- One stale slot with old evidence is dropped when the roster restarts.
 B.reset(state)
 assert(next(state.slots)==nil and B.best(state)==nil, 'reset kept old slot evidence')
-print('PASS player binding from device evidence: local slot, remote slot, twins and reset')
+
+-- Sustained straight walking binds cleanly without rapid key tapping.
+local steady = B.new()
+local right = {X = 1, Y = 0}
+for i = 1, 24 do
+ B.observe(steady, 0, right, right)
+ B.observe(steady, 1, right, {X = 0, Y = 0})
+end
+local sb, sev = B.best(steady)
+assert(sb == 0 and sev >= 3, 'steady directional walking failed to auto-bind: '..tostring(sb)..' events='..tostring(sev))
+print('PASS player binding from device evidence: local slot, remote slot, steady walk, twins and reset')

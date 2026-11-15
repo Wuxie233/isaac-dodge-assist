@@ -260,18 +260,21 @@ end
 local mark=#logs
 s,b=replay(Vector(360,345),Vector(0,0),{fused(200,280,56),fused(240,280,48)})
 check('pushed bomb',s,b,1)
--- Every update with two or more bombs records each one for the push model.
-assert(bombLines(mark)>=2,'IAD BOMB not recorded')
+-- Sampled every 4th update with two or more bombs: advance the rest of the 4-frame window.
+for _=1,3 do callbacks[ModCallbacks.MC_POST_UPDATE]() end
+assert(bombLines(mark)==2,'IAD BOMB not sampled once across 4-frame window')
 local sample;for i=mark,#logs do if logs[i]:find('^IAD BOMB: ') then sample=logs[i] end end
 assert(sample:match('^IAD BOMB: f=%d+ id=%d+ var=%d+ pos=240%.0,280%.0 vel=0%.00,0%.00 anim=Pulse:48 rm=1%.00$'),sample)
 mark=#logs
 s=replay(Vector(360,345),Vector(0,0),{fused(240,280,48)})
 assert(s[1]<HARD,'lone bomb 136 away predicted as a hit')
+for _=1,3 do callbacks[ModCallbacks.MC_POST_UPDATE]() end
 assert(bombLines(mark)==0,'a lone resting bomb was recorded')
 -- A lone bomb on the move is recorded too (friction).
 local rolling=fused(240,280,48);rolling.Velocity=Vector(3,0);mark=#logs
 replay(Vector(360,345),Vector(0,0),{rolling})
-assert(bombLines(mark)>=1,'rolling bomb not recorded')
+for _=1,3 do callbacks[ModCallbacks.MC_POST_UPDATE]() end
+assert(bombLines(mark)==1,'rolling bomb not sampled across 4-frame window')
 print('PASS chain knockback: pushed blasts swept along the push, chained in order, limits and replay')
 -- B78YY60D (0.25.9): Wormwood surfacing (Attack2, collides from frame 8),
 -- Satan's foot (Stomp frame 26, 78 from centre) and Mom's arm tip (63

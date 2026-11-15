@@ -28,10 +28,14 @@ local STATES = {
 }
 M.STATES = STATES
 
--- view: {state, combatMode (0 off, 1 aim, 2 auto), preview (F9),
--- player (1-based, nil when alone), score (FloorScore result or nil),
--- hidden (the F5 panel covers the HUD: only toasts)}.
+-- view: {state, combatMode (0 off, 2 auto), preview (F9), brake (soft-brake),
+-- player (1-based, nil when alone), hp (Curse of the Unknown breakdown),
+-- score (FloorScore result or nil), hidden (the F5 panel covers the HUD: only toasts)}.
 -- (x,y): top-left of the HUD block.
+local function formatHalf(n)
+    if n % 2 == 0 then return tostring(n // 2) end
+    return string.format("%.1f", n / 2)
+end
 function M.render(state, view, x, y)
     if view.hidden then return M.renderToast(state) end
     local known = STATES[view.state]
@@ -39,11 +43,33 @@ function M.render(state, view, x, y)
     local line = UI.lineHeight()
     UI.rect(x, y + line/2 - 2, 4, 4, dot, 0.95)
     local text = UI.t(key)
-    if view.combatMode == 1 then text = text .. "   " .. UI.t("aim")
-    elseif view.combatMode == 2 then text = text .. "   " .. UI.t("auto") end
+    if view.combatMode == 2 then text = text .. "   " .. UI.t("auto") end
     if view.preview then text = text .. "   " .. UI.t("preview") end
+    if view.brake then text = text .. "   " .. UI.t("softBrakeBadge") end
     if view.player then text = text .. "   " .. UI.t("you", view.player) end
     UI.text(text, x + 8, y, known and UI.TEXT or UI.DIM, 0.9)
+    local rowY = y + line
+    local hp = view.hp
+    if hp then
+        local tokens = {}
+        if (hp.maxRed or 0) > 0 or (hp.red or 0) > 0 then
+            tokens[#tokens+1] = {UI.t("hpRed", formatHalf(hp.red or 0) .. "/" .. formatHalf(hp.maxRed or 0)), {1, 0.35, 0.35}}
+        end
+        if (hp.rotten or 0) > 0 then tokens[#tokens+1] = {UI.t("hpRotten", tostring(hp.rotten)), {0.65, 0.82, 0.35}} end
+        if (hp.bone or 0) > 0 then tokens[#tokens+1] = {UI.t("hpBone", tostring(hp.bone)), {0.9, 0.9, 0.9}} end
+        if (hp.soul or 0) > 0 then tokens[#tokens+1] = {UI.t("hpSoul", formatHalf(hp.soul)), {0.45, 0.78, 1}} end
+        if (hp.black or 0) > 0 then tokens[#tokens+1] = {UI.t("hpBlack", formatHalf(hp.black)), {0.65, 0.55, 0.95}} end
+        if (hp.eternal or 0) > 0 then tokens[#tokens+1] = {UI.t("hpEternal", hp.eternal), {1, 1, 0.95}} end
+        if (hp.broken or 0) > 0 then tokens[#tokens+1] = {UI.t("hpBroken", hp.broken), {0.68, 0.45, 0.45}} end
+        if #tokens > 0 then
+            local hx, gap = x + 8, UI.width("  ")
+            for _, tok in ipairs(tokens) do
+                UI.text(tok[1], hx, rowY, tok[2], 0.9)
+                hx = hx + UI.width(tok[1]) + gap
+            end
+            rowY = rowY + line
+        end
+    end
     local score = view.score
     if score then
         local parts = {UI.t("floorLine", score.grade, score.total)}
@@ -52,7 +78,7 @@ function M.render(state, view, x, y)
             if n > 0 then parts[#parts+1] = "Q" .. level .. "x" .. n end
         end
         if score.unseen > 0 then parts[#parts+1] = UI.t("unseenItems", score.unseen) end
-        UI.text(table.concat(parts, "  "), x + 8, y + line, score.colour, 0.85)
+        UI.text(table.concat(parts, "  "), x + 8, rowY, score.colour, 0.85)
     end
     M.renderToast(state)
 end
@@ -68,11 +94,13 @@ function M.renderToast(state)
     end
 end
 
--- In co-op, which character the assist is driving.
-function M.playerLabel(position, player)
+-- In co-op, which character the assist is driving. Mirror world flips world X.
+function M.playerLabel(position, player, mirror, width)
     local point = Isaac.WorldToScreen(position)
+    local px = point.X
+    if mirror then px = (width or (Isaac.GetScreenWidth and Isaac.GetScreenWidth()) or 480) - px end
     local label = UI.t("you", player)
-    UI.text(label, point.X - UI.width(label)/2, point.Y - 48, UI.GOOD, 0.8)
+    UI.text(label, px - UI.width(label)/2, point.Y - 48, UI.GOOD, 0.8)
 end
 
 return M
