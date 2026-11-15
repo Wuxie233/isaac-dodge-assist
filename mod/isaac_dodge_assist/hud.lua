@@ -28,7 +28,7 @@ local STATES = {
 }
 M.STATES = STATES
 
--- view: {state, combatMode (0 off, 2 auto), preview (F9), brake (soft-brake),
+-- view: {state, combatMode (0 off, 2 auto), preview (F9),
 -- player (1-based, nil when alone), hp (Curse of the Unknown breakdown),
 -- score (FloorScore result or nil), hidden (the F5 panel covers the HUD: only toasts)}.
 -- (x,y): top-left of the HUD block.
@@ -45,7 +45,6 @@ function M.render(state, view, x, y)
     local text = UI.t(key)
     if view.combatMode == 2 then text = text .. "   " .. UI.t("auto") end
     if view.preview then text = text .. "   " .. UI.t("preview") end
-    if view.brake then text = text .. "   " .. UI.t("softBrakeBadge") end
     if view.player then text = text .. "   " .. UI.t("you", view.player) end
     UI.text(text, x + 8, y, known and UI.TEXT or UI.DIM, 0.9)
     local rowY = y + line

@@ -19,11 +19,24 @@ end
 function M.polled(player, mirror)
     if not (Input and Input.GetActionValue and ButtonAction) then return nil end
     local index = player.ControllerIndex or 0
+    -- Repentance+ online co-op assigns virtual controller indices (>= 2) whose
+    -- GetActionValue stream carries already-synced netplay state with 0 lag,
+    -- letting remote partners steal auto-bind; always poll local device 0.
+    local device = index >= 2 and 0 or index
     local ok, l, r, u, d = pcall(function()
-        return Input.GetActionValue(ButtonAction.ACTION_LEFT, index), Input.GetActionValue(ButtonAction.ACTION_RIGHT, index),
-            Input.GetActionValue(ButtonAction.ACTION_UP, index), Input.GetActionValue(ButtonAction.ACTION_DOWN, index)
+        return Input.GetActionValue(ButtonAction.ACTION_LEFT, device), Input.GetActionValue(ButtonAction.ACTION_RIGHT, device),
+            Input.GetActionValue(ButtonAction.ACTION_UP, device), Input.GetActionValue(ButtonAction.ACTION_DOWN, device)
     end)
     if not ok or type(l) ~= "number" then return nil end
+    if device == 0 and l == 0 and r == 0 and u == 0 and d == 0 and Input.IsButtonPressed and Keyboard then
+        local okk, kl, kr, ku, kd = pcall(function()
+            return Keyboard.KEY_A and Input.IsButtonPressed(Keyboard.KEY_A, 0) and 1 or 0,
+                   Keyboard.KEY_D and Input.IsButtonPressed(Keyboard.KEY_D, 0) and 1 or 0,
+                   Keyboard.KEY_W and Input.IsButtonPressed(Keyboard.KEY_W, 0) and 1 or 0,
+                   Keyboard.KEY_S and Input.IsButtonPressed(Keyboard.KEY_S, 0) and 1 or 0
+        end)
+        if okk and type(kl) == "number" then l, r, u, d = kl, kr, ku, kd end
+    end
     -- In world terms: the mirror world walks the left key to the right.
     local x, y = r - l, d - u
     if mirror then x = -x end

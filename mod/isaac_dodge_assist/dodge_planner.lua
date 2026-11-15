@@ -7,7 +7,15 @@ local function safe(ctx,x,y)
     if ctx.gridSafeXY then return ctx.gridSafeXY(ctx.room,ctx.player,x,y) end
     return ctx.gridSafe(ctx.room,ctx.player,Vector(x,y))
 end
+local function progressToward(target,x,y,nx,ny)
+    local ox,oy=x-target.X,y-target.Y
+    local dx,dy=nx-target.X,ny-target.Y
+    return dx*dx+dy*dy < ox*ox+oy*oy - 0.0001
+end
 local function traversable(ctx,x,y,nx,ny)
+    if ctx.escapeTarget and not safe(ctx,x,y) and progressToward(ctx.escapeTarget,x,y,nx,ny) then
+        return true
+    end
     local dx,dy=nx-x,ny-y
     local count=max(1,math.ceil(math.sqrt(dx*dx+dy*dy)/6))
     for i=1,count do
@@ -105,9 +113,32 @@ function M.path(ctx,dir,model)
         firstHit=firstHit,lastHit=lastHit,hits=hits,depth=terminalDepth,exitTie=exitTie,
         clearance=clearance,preference=min(999,floor(preference))}
 end
+local function findEscapeTarget(ctx,directions)
+    local pos=ctx.player.Position
+    if safe(ctx,pos.X,pos.Y) then return nil end
+    local room=ctx.room
+    local radius=max(2,(ctx.player.Size or 10)-1)
+    if room and room.GetClampedPosition then
+        local c=room:GetClampedPosition(pos,radius)
+        if c and safe(ctx,c.X,c.Y) then return {X=c.X,Y=c.Y} end
+    end
+    for _,dist in ipairs({16,32,48,64,96}) do
+        for i=2,#directions do
+            local d=directions[i]
+            local tx,ty=pos.X+d.X*dist,pos.Y+d.Y*dist
+            if safe(ctx,tx,ty) then return {X=tx,Y=ty} end
+        end
+    end
+    if room and room.GetCenterPos then
+        local ctr=room:GetCenterPos()
+        if ctr then return {X=ctr.X,Y=ctr.Y} end
+    end
+    return nil
+end
 function M.solve(ctx,directions,spaceCost)
     local current=ctx.sample(ctx.field,ctx.player.Position,ctx.player.Position,0)
     ctx.inside=current>0
+    ctx.escapeTarget=findEscapeTarget(ctx,directions)
     local paths,scores,blocked,danger={},{},0,false
     local bestRisk=math.huge
     for i,dir in ipairs(directions) do
@@ -119,6 +150,7 @@ function M.solve(ctx,directions,spaceCost)
         if not (a.blocked and b.blocked) then bestRisk=min(bestRisk,paths[i].risk) end
         if paths[i].risk>0 then danger=true end
     end
+    ctx.escapeTarget=nil
     for i,item in ipairs(paths) do
         local a,b=item.fast,item.slow
         local cost=0

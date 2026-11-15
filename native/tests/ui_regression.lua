@@ -201,7 +201,8 @@ assert(table.concat(texts,'|')=='Next:|coins 6','sanguine: '..table.concat(texts
 UI.setLang('zh')
 local curseZh=hud('zh',{state='MONITOR / HELPER',combatMode=0,brake=true,
  hp={red=3,maxRed=6,rotten=1,bone=1,soul=2,black=1,eternal=1,broken=1}})
-assert(curseZh:find('防误触',1,true) and curseZh:find('红 1.5/3',1,true) and curseZh:find('腐 1',1,true)
+assert(not curseZh:find('防误触',1,true),'removed soft-brake badge must not render')
+assert(curseZh:find('红 1.5/3',1,true) and curseZh:find('腐 1',1,true)
  and curseZh:find('骨 1',1,true) and curseZh:find('魂 1',1,true) and curseZh:find('黑 0.5',1,true)
  and curseZh:find('永 +1',1,true) and curseZh:find('碎 1',1,true),'curse HP zh: '..curseZh)
 

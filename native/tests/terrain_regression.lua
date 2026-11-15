@@ -40,7 +40,11 @@ local function old(player,pos)
   if not room:IsPositionInRoom(q,0)then return false end
   local index=room:GetGridIndex(q)
   local c=room:GetGridCollision(index)
-  if c==1 or c==2 or(not player.CanFly and c~=0 and c~=3)then return false end
+  if c==1 or (not player.CanFly and c~=0 and c~=3) then return false end
+  if c==2 and player.CanFly then
+   local ge=room.GetGridEntity and room:GetGridEntity(index)
+   if ge and GridEntityType and GridEntityType.GRID_LOCK and ge:GetType()==GridEntityType.GRID_LOCK then return false end
+  end
  end
  return true
 end
@@ -69,4 +73,51 @@ room.cells[at]=2;local second=Terrain.new(room,p,directions);assert(not Terrain.
 room.cells[at]=0;local third=Terrain.new(room,p,directions);assert(Terrain.safe(third,100,100),'destroyed obstacle stale')
 room.cells[at]=4;p.CanFly=true;assert(Terrain.safe(Terrain.new(room,p,directions),100,100),'flight over pit failed')
 p.CanFly=false;assert(not Terrain.safe(Terrain.new(room,p,directions),100,100),'lost flight cached incorrectly')
-print('PASS terrain cache vs original: '..checked..' random footprints, exact grid edges, L rooms, flight, changing obstacles')
+do
+ GridEntityType=GridEntityType or {GRID_LOCK=11}
+ local rockRoom={
+  GetTopLeftPos=function()return Vector(60,140)end,
+  GetBottomRightPos=function()return Vector(580,420)end,
+  GetGridWidth=function()return 15 end,
+  GetGridSize=function()return 135 end,
+  GetGridPosition=function(_,i)return Vector((i%15)*40+40,math.floor(i/15)*40+120)end,
+  GetGridIndex=function(_,v)return math.floor((v.Y-100)/40)*15+math.floor((v.X-20)/40)end,
+  GetGridCollision=function(_,i)
+   local cx,cy=i%15,math.floor(i/15)
+   if cx<=0 or cx>=14 or cy<=0 or cy>=8 then return GridCollisionClass.COLLISION_WALL end
+   if i==65 or i==67 then return GridCollisionClass.COLLISION_SOLID end
+   return GridCollisionClass.COLLISION_NONE
+  end,
+  GetGridEntity=function(_,i)
+   if i==67 then return {GetType=function()return GridEntityType.GRID_LOCK end} end
+   return nil
+  end,
+  IsPositionInRoom=function(_,v,m)m=m or 0;return v.X>=60+m and v.X<=580-m and v.Y>=140+m and v.Y<=420-m end,
+ }
+ -- index 65 = col 5 row 4 => center (240, 280); index 67 = col 7 row 4 => center (320, 280).
+ local pf={Position=Vector(200,280),Size=10,CanFly=true}
+ local tf=Terrain.new(rockRoom,pf,directions)
+ assert(Terrain.safe(tf,240,280),'flying player must cross COLLISION_SOLID rock')
+ assert(not Terrain.safe(tf,320,280),'flying player must be blocked by GRID_LOCK Key Block')
+ pf.CanFly=false
+ local tw=Terrain.new(rockRoom,pf,directions)
+ assert(not Terrain.safe(tw,240,280),'walking player must be blocked by COLLISION_SOLID rock')
+
+ -- Beast room sky: beyond normal grid/room bounds (gridIndex=-1, col=0) must remain traversable when opts.beast=true.
+ local beastRoom={
+  GetTopLeftPos=function()return Vector(60,140)end,
+  GetBottomRightPos=function()return Vector(580,420)end,
+  GetGridWidth=function()return 15 end,
+  GetGridSize=function()return 135 end,
+  GetGridPosition=function(_,i)return Vector((i%15)*40+40,math.floor(i/15)*40+120)end,
+  GetGridIndex=function()return -1 end,
+  GetGridCollision=function()return GridCollisionClass.COLLISION_NONE end,
+  GetGridEntity=function()return nil end,
+  IsPositionInRoom=function()return false end,
+ }
+ pf.CanFly=true
+ local tb=Terrain.new(beastRoom,pf,directions,{beast=true})
+ assert(Terrain.safe(tb,566,464),'Beast sky must be traversable when opts.beast=true')
+ assert(not Terrain.safe(tb,566,492),'Beast deep void below screen floor must remain blocked')
+end
+print('PASS terrain cache vs original: '..checked..' random footprints, exact grid edges, L rooms, flight, SOLID/GRID_LOCK, Beast sky')

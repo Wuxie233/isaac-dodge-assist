@@ -190,6 +190,35 @@ local s2=Planner.solve(inCtx,dirs)
 assert(math.floor(s1[2]/1048576)==math.floor(s2[2]/1048576),'ctx.inside primary tier should depend only on exit tick')
 print('PASS inside hazard exit stability & planner invariants')
 
+-- Origin-unsafe recovery (e.g. door threshold or Beast room edge): must not return blocked=510.
+do
+ GridCollisionClass=GridCollisionClass or {COLLISION_NONE=0,COLLISION_WALL=1,COLLISION_SOLID=2,COLLISION_WALL_EXCEPT_PLAYER=3,COLLISION_PIT=4}
+ local TerrainSnap=require('mod.isaac_dodge_assist.terrain_snapshot')
+ local pU=player(320,425)
+ local r={
+  GetTopLeftPos=function()return Vector(60,140)end,
+  GetBottomRightPos=function()return Vector(580,420)end,
+  GetCenterPos=function()return Vector(320,280)end,
+  GetClampedPosition=function(_,v,m)return Vector(math.max(60+m,math.min(580-m,v.X)),math.max(140+m,math.min(420-m,v.Y)))end,
+  GetGridIndex=function(_,v)local cx=math.floor((v.X-20)/40);local cy=math.floor((v.Y-100)/40);return cy*15+cx end,
+  GetGridCollision=function(_,i)
+   local cx,cy=i%15,math.floor(i/15)
+   return (cx<=0 or cx>=14 or cy<=0 or cy>=8) and GridCollisionClass.COLLISION_WALL or 0
+  end,
+  IsPositionInRoom=function(_,v,m)m=m or 0;return v.X>=60+m and v.X<=580-m and v.Y>=140+m and v.Y<=420-m end,
+  GetGridWidth=function()return 15 end,
+  GetGridSize=function()return 135 end,
+  GetGridPosition=function(_,i)return Vector((i%15)*40+40,math.floor(i/15)*40+120)end,
+  GetGridEntity=function()return nil end,
+ }
+ local terrainU=TerrainSnap.new(r,pU,dirs)
+ local uCtx=context(pU,14,function(_,_,pos)return TerrainSnap.safe(terrainU,pos.X,pos.Y)end)
+ uCtx.terrain=terrainU;uCtx.room=r;uCtx.inside=false
+ local _,blockedU=solve(uCtx)
+ assert(blockedU~=510 and (blockedU&(1<<3))==0,'origin unsafe near bottom wall blocked UP escape: blocked='..tostring(blockedU))
+ print('PASS origin-unsafe recovery (never locks all 8 directions / blocked=510)')
+end
+
 dofile('native/tests/main_integration.lua')
 dofile('native/tests/hazard_replay_regression.lua')
 dofile('native/tests/reload_regression.lua')

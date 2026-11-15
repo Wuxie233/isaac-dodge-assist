@@ -77,7 +77,6 @@ static Decision decide(const double* risk, uint32_t blocked, uint32_t combat, co
     // deliberate idle override and freeze AUTO in place.
     int mode=combat&3, move=(combat>>2)&15, shoot=(combat>>6)&7;
     bool hold=(combat>>9)&1;
-    bool softBrake=(combat>>10)&1;
     Decision d{rank(risk,blocked,manual,x,y,previous),-1};
     if(mode==2 && move<9) {
         // A real direction key always wins over AUTO, including the case where
@@ -87,12 +86,7 @@ static Decision decide(const double* risk, uint32_t blocked, uint32_t combat, co
         else if(d.move>=0 && risk[manual]>0) d.move=d.move;
         else d.move=-1;
     }
-    // Manual anti-pitfall soft-brake: gently hold idle when walking toward a
-    // soft hazard (sacrifice spikes, pedestals, doors, spiked chests) until held
-    // through in Lua; hard dodge always takes priority.
-    if(d.move<0 && hasManual && softBrake && !(blocked&1u) && risk[0]<=risk[manual]) {
-        d.move=0;
-    }
+    // Soft hazards are avoided by AUTO via hazardCells; manual movement is never braked.
     bool firing=raw[4]>0.5f || raw[5]>0.5f || raw[6]>0.5f || raw[7]>0.5f;
     if(mode>=1 && mode<=2 && shoot>=1 && shoot<=4) {
         if(firing) d.fire=1<<(shoot-1);
@@ -168,7 +162,7 @@ static int overridden(const Poll& poll, int action) {
 }
 static float __attribute__((fastcall)) valueHook(void* self, void*, int action) {
     if(action>=0 && action<8) {
-        if(action<4) InterlockedIncrement(&shared->polls);
+        if(shared && action<4) InterlockedIncrement(&shared->polls);
         if(!engaged()) return originalValue(self,action);
         Poll poll=choose(self);
         int value=overridden(poll,action);

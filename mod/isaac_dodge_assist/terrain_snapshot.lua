@@ -1,31 +1,78 @@
 -- Per-update terrain cache. No grid/entity references survive an update.
 local M={}
 local floor,max,sqrt=math.floor,math.max,math.sqrt
-function M.new(room,player,directions)
+function M.new(room,player,directions,opts)
     local width,size=room:GetGridWidth(),room:GetGridSize()
     local origin,right,below=room:GetGridPosition(0),room:GetGridPosition(1),room:GetGridPosition(width)
     local sx,sy=right.X-origin.X,below.Y-origin.Y
     local offsets,radius={},max(2,player.Size-1)
     for i,d in ipairs(directions) do offsets[i]={d.X*radius,d.Y*radius} end
+    local beast=opts and opts.beast==true or false
+    local skyMinX,skyMaxX,skyMinY,skyMaxY
+    if beast then
+        local tl,br=room:GetTopLeftPos(),room:GetBottomRightPos()
+        skyMinX=tl.X
+        skyMaxX=max(br.X+140,720)
+        skyMinY=tl.Y-80
+        skyMaxY=br.Y+70
+    end
+    local floorCache=opts and opts.floorCache
+    if floorCache then
+        local key=width.."|"..size.."|"..origin.X.."|"..origin.Y.."|"..sx.."|"..sy
+        if floorCache.key~=key then
+            floorCache.key=key
+            floorCache.roomWhole={}
+        end
+    end
     return {room=room,width=width,size=size,sx=sx,sy=sy,ox=origin.X,oy=origin.Y,offsets=offsets,
-        cells={},radius=radius,flying=player.CanFly,point=Vector(0,0),queries=0,nativeCalls=6}
+        cells={},radius=radius,flying=player.CanFly,beast=beast,
+        skyMinX=skyMinX,skyMaxX=skyMaxX,skyMinY=skyMinY,skyMaxY=skyMaxY,
+        roomWhole=floorCache and floorCache.roomWhole or nil,
+        point=Vector(0,0),queries=0,nativeCalls=beast and 8 or 6}
 end
 local function cell(ctx,index)
     local cached=ctx.cells[index]
     if cached then return cached end
     local room=ctx.room
     local collision=room:GetGridCollision(index)
-    local pass=collision~=GridCollisionClass.COLLISION_WALL and
-        collision~=GridCollisionClass.COLLISION_SOLID and
-        (ctx.flying or collision==GridCollisionClass.COLLISION_NONE or
-            collision==GridCollisionClass.COLLISION_WALL_EXCEPT_PLAYER)
-    local pos=room:GetGridPosition(index)
+    ctx.nativeCalls=ctx.nativeCalls+1
+    local pass
+    if ctx.flying then
+        -- Flying players cross rocks/poop/urns (COLLISION_SOLID) except Key Blocks (GRID_LOCK).
+        pass=collision~=GridCollisionClass.COLLISION_WALL
+        if pass and collision==GridCollisionClass.COLLISION_SOLID and GridEntityType and GridEntityType.GRID_LOCK then
+            local grid=room:GetGridEntity(index)
+            ctx.nativeCalls=ctx.nativeCalls+1
+            pass=not (grid and grid:GetType()==GridEntityType.GRID_LOCK)
+        end
+    else
+        pass=collision==GridCollisionClass.COLLISION_NONE or
+            collision==GridCollisionClass.COLLISION_WALL_EXCEPT_PLAYER
+    end
+    local px,py
+    if ctx.sx>0 and ctx.sy>0 then
+        px=ctx.ox+(index%ctx.width)*ctx.sx
+        py=ctx.oy+floor(index/ctx.width)*ctx.sy
+    else
+        local pos=room:GetGridPosition(index)
+        ctx.nativeCalls=ctx.nativeCalls+1
+        px,py=pos.X,pos.Y
+    end
     -- A circle containing the entire cell certifies every footprint sample in
     -- it. Boundary/door/L-room cells fall back to the original point queries.
-    local whole=pass and ctx.sx>0 and ctx.sy>0 and
-        room:IsPositionInRoom(pos,sqrt(ctx.sx*ctx.sx+ctx.sy*ctx.sy)*0.5+0.001)
-    ctx.nativeCalls=ctx.nativeCalls+2+(pass and ctx.sx>0 and ctx.sy>0 and 1 or 0)
-    cached={pass=pass,whole=whole,x=pos.X,y=pos.Y}
+    local whole=false
+    if pass and ctx.sx>0 and ctx.sy>0 then
+        local cache=ctx.roomWhole
+        if cache and cache[index]~=nil then
+            whole=cache[index]
+        else
+            ctx.point.X,ctx.point.Y=px,py
+            whole=room:IsPositionInRoom(ctx.point,sqrt(ctx.sx*ctx.sx+ctx.sy*ctx.sy)*0.5+0.001)
+            ctx.nativeCalls=ctx.nativeCalls+1
+            if cache then cache[index]=whole end
+        end
+    end
+    cached={pass=pass,whole=whole,x=px,y=py}
     ctx.cells[index]=cached
     return cached
 end
@@ -42,8 +89,36 @@ local function openNeighborhood(ctx,index,center)
     center.open=true
     return true
 end
+local function beastPointSafe(ctx,px,py)
+    if px<ctx.skyMinX or px>ctx.skyMaxX or py<ctx.skyMinY or py>ctx.skyMaxY then return false end
+    local room,point=ctx.room,ctx.point
+    local index=-1
+    if ctx.sx>0 and ctx.sy>0 then
+        local column=floor((px-ctx.ox)/ctx.sx+0.5)
+        local row=floor((py-ctx.oy)/ctx.sy+0.5)
+        if column>=0 and column<ctx.width and row>=0 then
+            local candidate=column+row*ctx.width
+            if candidate>=0 and candidate<ctx.size then index=candidate end
+        end
+    else
+        point.X,point.Y=px,py
+        index=room:GetGridIndex(point)
+        ctx.nativeCalls=ctx.nativeCalls+1
+    end
+    if index>=0 and index<ctx.size then
+        return cell(ctx,index).pass
+    end
+    return true
+end
 function M.safe(ctx,x,y)
     ctx.queries=ctx.queries+1
+    if ctx.beast then
+        if not beastPointSafe(ctx,x,y) then return false end
+        for _,offset in ipairs(ctx.offsets) do
+            if not beastPointSafe(ctx,x+offset[1],y+offset[2]) then return false end
+        end
+        return true
+    end
     local point,room=ctx.point,ctx.room
     -- The cell from the grid pitch, in Lua: one GetGridIndex per query was
     -- about 1000 engine calls an update (B78YY60D, median 987 calls).

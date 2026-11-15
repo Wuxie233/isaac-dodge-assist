@@ -57,21 +57,21 @@ end
 
 -- IAD2 word: bits 0-1 mode (0 off, 2 auto), 2-5 move (0-8 = IAD1 candidate
 -- index, 15 none), 6-8 shoot (0 none, 1 left, 2 right, 3 up, 4 down),
--- 9 hold fire, 10 soft-brake manual pitfall guard.
-function M.word(mode, move, shoot, hold, brake)
-    return mode | ((move or NO_MOVE) << 2) | ((shoot or 0) << 6) | (hold and 512 or 0) | (brake and 1024 or 0)
+-- 9 hold fire.
+function M.word(mode, move, shoot, hold)
+    return mode | ((move or NO_MOVE) << 2) | ((shoot or 0) << 6) | (hold and 512 or 0)
 end
 function M.decode(word)
     local move = (word >> 2) & 15
-    return word & 3, move ~= NO_MOVE and move or nil, (word >> 6) & 7, (word & 512) ~= 0, (word & 1024) ~= 0
+    return word & 3, move ~= NO_MOVE and move or nil, (word >> 6) & 7, (word & 512) ~= 0
 end
 -- The word with left and right swapped (mirror world: the game flips
 -- horizontal input, so the keys for a world direction are the other side's).
 local MIRROR_MOVE = {[0] = 0, 2, 1, 3, 4, 6, 5, 8, 7}
 local MIRROR_SHOOT = {[0] = 0, 2, 1, 3, 4}
 function M.mirror(word)
-    local mode, move, shoot, hold, brake = M.decode(word)
-    return M.word(mode, move and MIRROR_MOVE[move], MIRROR_SHOOT[shoot] or shoot, hold, brake)
+    local mode, move, shoot, hold = M.decode(word)
+    return M.word(mode, move and MIRROR_MOVE[move], MIRROR_SHOOT[shoot] or shoot, hold)
 end
 
 local function has(player, method, enum, names)
@@ -382,10 +382,19 @@ local function grid(state, room, player, frame)
     local width, size = room:GetGridWidth(), room:GetGridSize()
     g = {room=room, frame=frame, flying=player.CanFly, width=width, size=size, walk={}, shot={}}
     local C = GridCollisionClass
+    local lock = player.CanFly and GridEntityType and GridEntityType.GRID_LOCK
     for i = 0, size-1 do
         local c = room:GetGridCollision(i)
-        g.walk[i] = c ~= C.COLLISION_WALL and c ~= C.COLLISION_SOLID and
-            (player.CanFly or c == C.COLLISION_NONE or c == C.COLLISION_WALL_EXCEPT_PLAYER)
+        if player.CanFly then
+            local pass = c ~= C.COLLISION_WALL
+            if pass and c == C.COLLISION_SOLID and lock then
+                local e = room:GetGridEntity(i)
+                pass = not (e and e:GetType() == lock)
+            end
+            g.walk[i] = pass
+        else
+            g.walk[i] = c == C.COLLISION_NONE or c == C.COLLISION_WALL_EXCEPT_PLAYER
+        end
         g.shot[i] = c ~= C.COLLISION_WALL and c ~= C.COLLISION_SOLID and c ~= C.COLLISION_OBJECT
     end
     state.grid = g

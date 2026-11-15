@@ -271,6 +271,13 @@ function M.chaser(entity) return listed(chasers, entity) end
 -- (centre to centre) from the exploder. The field adds the player's size,
 -- so 75 makes about 85 from a size-10 player a hit.
 M.BURST_RADIUS = 75
+M.TAINTED_BOOMFLY_RADIUS = 100
+local function burstRadius(npc)
+    if npc.Type == EntityType.ENTITY_BOOMFLY and npc.Variant == TAINTED_BOOMFLY then
+        return M.TAINTED_BOOMFLY_RADIUS
+    end
+    return M.BURST_RADIUS
+end
 
 -- Closest distance during update t between two bodies whose relative
 -- offset is (rx,ry) now and changes by (vx,vy) per update.
@@ -338,24 +345,46 @@ end
 function M.deathBursts(npcs, tears, beams, player, steps, areas, lasers)
     local predicted = {}
     for _, npc in ipairs(npcs) do
-        local t, beam = killTime(npc, tears, beams, steps)
-        if t then
-            predicted[npc.InitSeed] = t
-            -- Arrival is exact to an update or two; beam ticks less so.
-            local early, late = beam and 3 or 2, beam and 3 or 1
-            areas[#areas+1] = {position=npc.Position, velocity=npc.Velocity, radius=M.BURST_RADIUS,
-                from=math.max(0, t-early), to=t+late}
-            if npc.Type == EntityType.ENTITY_BOOMFLY and npc.Variant == TAINTED_BOOMFLY and lasers then
-                for _, angle in ipairs({0, 90, 180, 270}) do
-                    lasers[#lasers+1] = {origin=npc.Position + npc.Velocity*t, velocity=Vector(0,0),
-                        ring=false, width=24, points={Vector(0,0), Vector(600,0):Rotated(angle)},
-                        reach=600, angularSpeed=0, delay=0, warning=true, activeFrom=t}
+        local radius = burstRadius(npc)
+        local dead = npc.IsDead and npc:IsDead()
+        if dead then
+            local sprite = npc.GetSprite and npc:GetSprite()
+            if sprite and sprite:GetAnimation() == "Explode" then
+                local sf = sprite:GetFrame() or 0
+                local rem = math.min(steps, math.max(1, 30 - sf))
+                areas[#areas+1] = {position=npc.Position, velocity=Vector(0,0), radius=radius,
+                    from=0, to=rem}
+                if npc.Type == EntityType.ENTITY_BOOMFLY and npc.Variant == TAINTED_BOOMFLY and lasers then
+                    local crossFrom = math.max(1, 25 - sf)
+                    if crossFrom <= steps then
+                        for _, angle in ipairs({0, 90, 180, 270}) do
+                            lasers[#lasers+1] = {origin=npc.Position, velocity=Vector(0,0),
+                                ring=false, width=24, points={Vector(0,0), Vector(600,0):Rotated(angle)},
+                                reach=600, angularSpeed=0, delay=0, warning=true, activeFrom=crossFrom}
+                        end
+                    end
                 end
             end
-        elseif npc.HitPoints <= math.max(3.5, player.Damage*2) or M.chaser(npc) then
-            -- A chaser explodes on reaching us whatever its health
-            -- (2026-11-04: two 1-heart Leech hits), so it always warns.
-            areas[#areas+1] = {position=npc.Position, velocity=npc.Velocity, radius=M.BURST_RADIUS, warning=true}
+        else
+            local t, beam = killTime(npc, tears, beams, steps)
+            if t then
+                predicted[npc.InitSeed] = t
+                -- Arrival is exact to an update or two; beam ticks less so.
+                local early, late = beam and 3 or 2, beam and 3 or 1
+                areas[#areas+1] = {position=npc.Position, velocity=npc.Velocity, radius=radius,
+                    from=math.max(0, t-early), to=t+late}
+                if npc.Type == EntityType.ENTITY_BOOMFLY and npc.Variant == TAINTED_BOOMFLY and lasers then
+                    for _, angle in ipairs({0, 90, 180, 270}) do
+                        lasers[#lasers+1] = {origin=npc.Position + npc.Velocity*t, velocity=Vector(0,0),
+                            ring=false, width=24, points={Vector(0,0), Vector(600,0):Rotated(angle)},
+                            reach=600, angularSpeed=0, delay=0, warning=true, activeFrom=t}
+                    end
+                end
+            elseif npc.HitPoints <= math.max(3.5, player.Damage*2) or M.chaser(npc) then
+                -- A chaser explodes on reaching us whatever its health
+                -- (2026-11-04: two 1-heart Leech hits), so it always warns.
+                areas[#areas+1] = {position=npc.Position, velocity=npc.Velocity, radius=radius, warning=true}
+            end
         end
     end
     return predicted

@@ -556,8 +556,8 @@ tick();values=packet()
 assert(values[1]<=0,'straight projectile with offset triggered curve margin at rest')
 print('PASS Repentance enemies (Grudge/Pon/Mother), DIRT_PILE warning and curving tear margin')
 
--- Manual pitfall soft-brake (bit 10 = 1024 in IAD2) & bypass on sustained hold,
--- plus closed 5.52 Spiked Chest in hazardCells.
+-- Manual mode skips pitfall soft-brake (bit 10 = 1024 never emitted in IAD2),
+-- while Sacrifice spikes and closed 5.52 Spiked Chests remain in hazardCells for AUTO.
 RoomType={ROOM_DEFAULT=1,ROOM_SACRIFICE=13}
 PickupVariant={PICKUP_COLLECTIBLE=100,PICKUP_SPIKEDCHEST=52,PICKUP_MIMICCHEST=54}
 local rt=RoomType.ROOM_SACRIFICE
@@ -572,21 +572,18 @@ function room:GetGridCollision()return 0 end
 scene={};p.Position=Vector(500,500)
 callbacks[ModCallbacks.MC_POST_GAME_STARTED]()
 for i=1,7 do tick() end
+assert(combatCtx.hazardCells[poopIndex]==true,'Sacrifice spike missing from hazardCells')
 deviceDir={[currentAt+1]={X=1,Y=0},[currentAt+2]={X=1,Y=0}}
 tick();local bw=combatPair()
-assert(bw and (bw&1024)~=0,'Sacrifice spike did not trigger manual soft-brake: '..tostring(bw))
+assert(not bw or (bw&1024)==0,'Sacrifice spike must not trigger manual soft-brake: '..tostring(bw))
 deviceDir={}
 for i=1,10 do tick() end
-local released=combatPair()
-assert(not released or (released&1024)==0,'released soft-brake did not clear')
-local bypassed=false
 for i=1,16 do deviceDir[currentAt+i]={X=1,Y=0} end
 for i=1,16 do
  tick()
  local w=combatPair()
- if i>=12 and (not w or (w&1024)==0) then bypassed=true end
+ assert(not w or (w&1024)==0,'manual hold must never emit bit 1024: '..tostring(w))
 end
-assert(bypassed,'sustained hold did not bypass soft-brake')
 rt=RoomType.ROOM_DEFAULT;deviceDir={}
 local chest=entity(EntityType.ENTITY_PICKUP,52);chest.SubType=1;chest.Position=Vector(540,500)
 function chest:ToPickup()return self end
@@ -594,11 +591,11 @@ scene={chest};for i=1,3 do tick() end
 assert(combatCtx.hazardCells[poopIndex]==true,'closed 5.52 Spiked Chest missing from hazardCells')
 deviceDir={[currentAt+1]={X=1,Y=0}}
 tick();bw=combatPair()
-assert(bw and (bw&1024)~=0,'closed 5.52 Spiked Chest did not trigger soft-brake')
+assert(not bw or (bw&1024)==0,'closed 5.52 Spiked Chest must not trigger manual soft-brake: '..tostring(bw))
 deviceDir={};scene={}
 RoomType,PickupVariant,room.GetType=nil,nil,nil
 room.GetGridEntity,room.GetGridCollision=poopEntity,poopCollision
-print('PASS pitfall soft-brake (Sacrifice spike + closed 5.52 chest), release stop and sustained-hold bypass')
+print('PASS manual mode skips pitfall soft-brake (Sacrifice spike + closed 5.52 chest)')
 
 -- Jacob & Esau twin support: unblocked and steady walking binds Jacob cleanly.
 local origGetPlayerType=p.GetPlayerType
@@ -644,3 +641,184 @@ assert(joined:find('Rot 1',1,true) and joined:find('Bone 1',1,true) and joined:f
  and joined:find('Black 1',1,true) and joined:find('Et +1',1,true) and joined:find('Brk 1',1,true),
  'Curse HP breakdown wrong: '..joined)
 print('PASS Curse of the Unknown read-only HP breakdown HUD')
+
+-- Helper to parse latest IAD1 packet.
+local function parseIad1()
+ local line=logs[#logs]
+ local scoresStr,blk=line:match('^IAD1|%d+|%d+|%d+|%d+|%d+|([^|]+)|(%d+)$')
+ assert(scoresStr,'unexpected IAD1 line: '..tostring(line))
+ local sc={}
+ for v in scoresStr:gmatch('[^,]+') do sc[#sc+1]=tonumber(v) end
+ return sc,tonumber(blk)
+end
+
+-- 1) Online co-op ControllerIndex >= 2 (virtual netplay slot): physical device 0 + WASD fallback
+-- must keep local player bound (lag > 0) and prevent remote slot 1 steal.
+do
+ callbacks[ModCallbacks.MC_POST_GAME_STARTED]()
+ scene={};tick();tick()
+ local savedGetAction=Input.GetActionValue
+ local savedIsPressed=Input.IsButtonPressed
+ p.ControllerIndex=4;p.Position=Vector(320,280);p.Velocity=Vector(0,0)
+ partner.ControllerIndex=5;partner.Position=Vector(200,280);partner.Velocity=Vector(0,0)
+ roster,rosterCount={p,partner},2
+ local lag4,remotePartner={{X=1,Y=0},{X=0,Y=1},{X=-1,Y=0},{X=0,Y=-1}},{}
+ -- Poll via Keyboard WASD only on controller 0 (GetActionValue returns 0 even on 0 to verify WASD fallback),
+ -- while virtual controller 4/5 have synced remote partner movement with 0 lag.
+ Input.GetActionValue=function(act,ctrl)
+  if ctrl>=2 then
+   local v=dirAt(remotePartner,currentAt)
+   if act==ButtonAction.ACTION_LEFT then return math.max(0,-v.X) end
+   if act==ButtonAction.ACTION_RIGHT then return math.max(0,v.X) end
+   if act==ButtonAction.ACTION_UP then return math.max(0,-v.Y) end
+   if act==ButtonAction.ACTION_DOWN then return math.max(0,v.Y) end
+  end
+  return 0
+ end
+ Input.IsButtonPressed=function(key,ctrl)
+  if ctrl~=0 then return false end
+  local v=dirAt(deviceDir,currentAt)
+  if v.X>0 and key==Keyboard.KEY_D then return true end
+  if v.X<0 and key==Keyboard.KEY_A then return true end
+  if v.Y<0 and key==Keyboard.KEY_W then return true end
+  if v.Y>0 and key==Keyboard.KEY_S then return true end
+  return false
+ end
+ deviceDir,appliedDir={},{}
+ local baseF=currentAt
+ for i=1,80 do
+  local seq=lag4[((math.floor((i-1)/6))%4)+1]
+  local pseq=lag4[((math.floor((i-1)/5)+1)%4)+1]
+  deviceDir[baseF+i]=seq
+  appliedDir[baseF+i+3]=seq
+  remotePartner[baseF+i]=pseq
+ end
+ local savedPartnerPos=partner.Position
+ local baseTick=currentAt
+ for i=1,80 do
+  local rv=dirAt(remotePartner,baseTick+i)
+  partner.Velocity=Vector(rv.X*3,rv.Y*3)
+  tick()
+ end
+ local sawBoundZero=false
+ for i=#logs,math.max(1,#logs-15),-1 do
+  if logs[i]:find('IAD PLAYER BOUND: slot=0 ',1,true) then sawBoundZero=true end
+ end
+ local boundLine
+ for _,l in ipairs(logs) do if l:find('IAD PLAYER BOUND:',1,true) then boundLine=l end end
+ -- Check via expectBound-equivalent: last BIND/UNBIND event before end.
+ assert(expectBound('online virtual ControllerIndex >= 2')[5]=='0','virtual ControllerIndex>=2 lost binding to slot 1: '..tostring(boundLine))
+ Input.GetActionValue=savedGetAction;Input.IsButtonPressed=savedIsPressed
+ p.ControllerIndex=0;partner.ControllerIndex=1;partner.Position=savedPartnerPos;partner.Velocity=Vector(0,0)
+ roster,rosterCount={p},1;deviceDir,appliedDir={}
+ callbacks[ModCallbacks.MC_POST_GAME_STARTED]()
+ print('PASS online virtual ControllerIndex>=2 reads physical slot 0 + WASD without remote steal')
+end
+
+-- 2) 1ASNDQW3 missed hazards + Beast sky/magma + CanFly ROCK vs GRID_LOCK + AUTO-only hazardCells.
+do
+ local savedRoom=room
+ local savedEnt={ENTITY_BOOMFLY=EntityType.ENTITY_BOOMFLY,ENTITY_PROJECTILE=EntityType.ENTITY_PROJECTILE,
+  ENTITY_DOGMA=EntityType.ENTITY_DOGMA,ENTITY_THE_BEAST=EntityType.ENTITY_THE_BEAST,ENTITY_FIREPLACE=EntityType.ENTITY_FIREPLACE}
+ local savedGrid={GRID_LOCK=GridEntityType.GRID_LOCK,GRID_SPIKES=GridEntityType.GRID_SPIKES}
+ local savedPos,savedFly=p.Position,p.CanFly
+ EntityType.ENTITY_BOOMFLY=EntityType.ENTITY_BOOMFLY or 25
+ EntityType.ENTITY_PROJECTILE=EntityType.ENTITY_PROJECTILE or 9
+ EntityType.ENTITY_DOGMA=EntityType.ENTITY_DOGMA or 950
+ EntityType.ENTITY_THE_BEAST=EntityType.ENTITY_THE_BEAST or 951
+ GridEntityType.GRID_LOCK=GridEntityType.GRID_LOCK or 11
+ scene={};for _=1,5 do tick() end
+
+ -- 2a) 9.0.0 high-arc ENTCOLL_NONE lobbed tear (1ASNDQW3 Hit #26 / frame 206): must score non-zero threat before landing.
+ p.Position=Vector(320,280);p.Velocity=Vector(0,0);p.CanFly=false
+ local lob=entity(EntityType.ENTITY_PROJECTILE,0)
+ lob.Position=Vector(320,280);lob.Velocity=Vector(0,0);lob.Size=6
+ lob.EntityCollisionClass=EntityCollisionClass.ENTCOLL_NONE
+ lob.Height=-70.0;lob.FallingSpeed=5.3;lob.FallingAccel=1.320;lob.ProjectileFlags=0
+ function lob:ToProjectile()return self end
+ function lob:HasProjectileFlags()return false end
+ scene={lob};tick()
+ local sc=parseIad1()
+ assert(sc[1]>0,'9.0.0 ENTCOLL_NONE high-arc lob must produce idle threat score: '..tostring(sc[1]))
+ lob.Height=-59.95;lob.FallingSpeed=14.62;lob.FallingAccel=1.60
+ tick()
+ sc=parseIad1()
+ assert(sc[1]>0,'9.0.0 ENTCOLL_NONE falling tear at height=-59.95 must score > 0: '..tostring(sc[1]))
+
+ -- 2b) 950.2.0 Dogma RingLoop:4 (Hit #31): IsActiveEnemy=false, IsBoss=true, ENTCOLL_PLAYERONLY(4), CollisionDamage=1.
+ local ring=entity(EntityType.ENTITY_DOGMA,2)
+ ring.Position=Vector(320,280);ring.Velocity=Vector(0,0);ring.Size=40
+ ring.EntityCollisionClass=4;ring.CollisionDamage=1
+ function ring:ToNPC()return self end
+ function ring:IsActiveEnemy()return false end
+ function ring:IsBoss()return true end
+ function ring:GetSprite()return {GetAnimation=function()return 'RingLoop' end,GetFrame=function()return 4 end}end
+ scene={ring};tick()
+ sc=parseIad1()
+ assert(sc[1]>0,'950.2.0 RingLoop boss contact threat must score > 0: '..tostring(sc[1]))
+
+ -- 2c) 25.6.0 Tainted Boom Fly dead=true Explode:24 at 100.88px (Hit #25).
+ local tbf=entity(EntityType.ENTITY_BOOMFLY,6)
+ tbf.Position=Vector(220,280);tbf.Velocity=Vector(0,0);tbf.Size=20
+ function tbf:ToNPC()return self end
+ function tbf:IsDead()return true end
+ function tbf:GetSprite()return {GetAnimation=function()return 'Explode' end,GetFrame=function()return 24 end}end
+ p.Position=Vector(320.88,280)
+ scene={tbf};tick()
+ sc=parseIad1()
+ assert(sc[1]>0,'25.6.0 dead Explode:24 at 100.88px must threaten idle: '..tostring(sc[1]))
+
+ -- 2d) 951 Beast Room 16.666: sky bounds + magma floor + never blocked=510.
+ local beast=entity(EntityType.ENTITY_THE_BEAST,0)
+ beast.Position=Vector(520,320);beast.Size=166;beast.CollisionDamage=0;beast.EntityCollisionClass=0
+ function beast:ToNPC()return self end
+ function beast:IsBoss()return true end
+ local beastRoom={
+  GetType=function()return 5 end,
+  GetTopLeftPos=function()return Vector(60,140)end,
+  GetBottomRightPos=function()return Vector(580,420)end,
+  GetCenterPos=function()return Vector(320,280)end,
+  GetClampedPosition=function(_,v)return v end,
+  GetGridWidth=function()return 15 end,
+  GetGridSize=function()return 135 end,
+  GetGridPosition=function(_,i)return Vector((i%15)*40+40,math.floor(i/15)*40+120)end,
+  GetGridIndex=function()return -1 end,
+  GetGridCollision=function()return GridCollisionClass.COLLISION_NONE end,
+  GetGridEntity=function()return nil end,
+  IsPositionInRoom=function()return false end,
+ }
+ room=beastRoom;p.CanFly=true;p.Position=Vector(566.4,464.9);p.Velocity=Vector(0,0)
+ scene={beast};tick()
+ local bSc,bBlk=parseIad1()
+ assert(bBlk~=510,'Beast sky must not lock blocked=510: blk='..tostring(bBlk))
+ assert(bSc[1]>0,'Beast magma floor at Y=464.9 must warn idle position: '..tostring(bSc[1]))
+ assert(bSc[4]<bSc[1],'Beast magma escape UP must score better than idle')
+
+ -- 2e) AUTO mode preserves hazardCells avoidance (Sacrifice spikes) after manual brake removal.
+ room=savedRoom;p.Position=Vector(320,280);p.Velocity=Vector(0,0);p.CanFly=false
+ local gridSize=room:GetGridSize()
+ local oldGC,oldGE,oldGT=room.GetGridCollision,room.GetGridEntity,room.GetType
+ local spkIdx=room:GetGridIndex(Vector(360,280))
+ GridEntityType.GRID_SPIKES=GridEntityType.GRID_SPIKES or 8
+ room.GetType=function()return RoomType and RoomType.ROOM_SACRIFICE or 13 end
+ room.GetGridCollision=function(self,i)if i==spkIdx then return GridCollisionClass.COLLISION_NONE end;return oldGC(self,i)end
+ room.GetGridEntity=function(self,i)
+  if i==spkIdx then return {GetType=function()return GridEntityType.GRID_SPIKES end,Position=Vector(360,280),State=0,
+   GetSprite=function()return {GetAnimation=function()return 'Idle' end}end} end
+  return oldGE and oldGE(self,i) or nil
+ end
+ local blocker=entity(EntityType.ENTITY_GAPER or 10,0);blocker.Position=Vector(560,280);function blocker:ToNPC()return self end;function blocker:IsActiveEnemy()return true end
+ f10() -- switch to AUTO
+ scene={blocker};tick()
+ local aw=combatPair()
+ assert(aw and (aw&3)==2 and ((aw>>2)&15)~=2,'AUTO combat should not walk straight RIGHT into Sacrifice spike: word='..tostring(aw))
+ f10() -- back to OFF
+
+ room.GetType,room.GetGridCollision,room.GetGridEntity=oldGT,oldGC,oldGE
+ room=savedRoom;scene={};p.Position,p.CanFly=savedPos,savedFly
+ EntityType.ENTITY_BOOMFLY,EntityType.ENTITY_PROJECTILE,EntityType.ENTITY_DOGMA,EntityType.ENTITY_THE_BEAST,EntityType.ENTITY_FIREPLACE=
+  savedEnt.ENTITY_BOOMFLY,savedEnt.ENTITY_PROJECTILE,savedEnt.ENTITY_DOGMA,savedEnt.ENTITY_THE_BEAST,savedEnt.ENTITY_FIREPLACE
+ GridEntityType.GRID_LOCK,GridEntityType.GRID_SPIKES=savedGrid.GRID_LOCK,savedGrid.GRID_SPIKES
+ callbacks[ModCallbacks.MC_POST_GAME_STARTED]()
+ print('PASS 1ASNDQW3 hazards (9.0.0 lob, 950.2.0 RingLoop, 25.6.0 Explode, Beast sky+magma) & AUTO hazardCells')
+end

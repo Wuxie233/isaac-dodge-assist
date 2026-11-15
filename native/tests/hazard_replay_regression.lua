@@ -298,4 +298,44 @@ local covered=false
 for _,area in ipairs(a)do if area.position:Distance(Vector(282.7,198.5))<=area.radius+10 then covered=true end end
 assert(#a==3 and covered,'mom arm tip misses the B78YY60D hit')
 print('PASS npc hazards: Wormwood surfacing, Satan stomp, Mom arm tip')
+
+-- 1ASNDQW3 Hit #25 (25.6.0 Tainted Boom Fly at 100.88px, Explode:24, dead=true) & Hit #28/#29 (950.0.0 Dogma BrimstoneStartRight/LoopRight).
+do
+ EntityType.ENTITY_BOOMFLY=EntityType.ENTITY_BOOMFLY or 25
+ EntityType.ENTITY_DOGMA=EntityType.ENTITY_DOGMA or 950
+ local tbf=entity(EntityType.ENTITY_BOOMFLY,6,'Explode',24);tbf.Position=Vector(220,280);tbf.Dead=true
+ function tbf:IsDead()return self.Dead end
+ local bursts,ls={},{}
+ NpcHazards.deathBursts({tbf},{},{},{Position=Vector(320.88,280),Size=10},14,bursts,ls)
+ local radial=false
+ for _,ar in ipairs(bursts) do if ar.position:Distance(Vector(320.88,280))<=ar.radius+10 then radial=true end end
+ assert(radial,'1ASNDQW3 Hit #25: dying 25.6.0 Tainted Boom Fly radial burst missed 100.88px')
+ assert(#ls>=4,'1ASNDQW3 Hit #25: dying 25.6.0 Tainted Boom Fly cross lasers missing')
+
+ local LaserHazards=require('mod.isaac_dodge_assist.laser_hazards')
+ local dogmaRoom={GetTopLeftPos=function()return Vector(60,140) end,GetBottomRightPos=function()return Vector(580,420) end}
+ local dogma=entity(EntityType.ENTITY_DOGMA,0,'BrimstoneStartRight',38);dogma.Position=Vector(320,280)
+ local shapes={}
+ LaserHazards.appendWarnings(dogma,dogmaRoom,shapes,Vector(180,265))
+ local hasLeft,hasRight=false,false
+ for _,sh in ipairs(shapes) do
+  local p2=sh.points[2]
+  local deg=math.deg(math.atan(p2.Y,p2.X))%360
+  if math.abs(deg-180)<5 then hasLeft=true end
+  if math.abs(deg)<5 or math.abs(deg-360)<5 then hasRight=true end
+ end
+ assert(hasLeft and hasRight,'Dogma BrimstoneStartRight must warn both 0 and 180 (FlipX fires left!)')
+ local dogmaLoop=entity(EntityType.ENTITY_DOGMA,0,'BrimstoneLoopRight',7);dogmaLoop.Position=Vector(320,280)
+ local loopShapes={}
+ LaserHazards.appendWarnings(dogmaLoop,dogmaRoom,loopShapes,Vector(320,420))
+ local hasDown=false
+ for _,sh in ipairs(loopShapes) do
+  local p2=sh.points[2]
+  local deg=math.deg(math.atan(p2.Y,p2.X))%360
+  if math.abs(deg-90)<5 then hasDown=true end
+ end
+ assert(hasDown,'Dogma BrimstoneLoopRight must warn cardinal toward target before mid-loop snap')
+ print('PASS 1ASNDQW3 hazards: Tainted Boom Fly 25.6.0 burst & Dogma 950.0.0 Brimstone warnings')
+end
+
 for _,line in ipairs(logs)do assert(not line:find('IAD LOADER: core error',1,true),line)end

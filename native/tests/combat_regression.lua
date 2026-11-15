@@ -65,11 +65,13 @@ local function update(state,entities,extra)
  return Combat.decode(Combat.update(state,ctx))
 end
 
--- Word round trip & OFF <-> AUTO toggle (AIM removed).
-local m,mv,sh,hold,brk=Combat.decode(Combat.word(2,8,4,true,true))
-assert(m==2 and mv==8 and sh==4 and hold and brk,'decode brake bit')
-local wm,wmv,wsh,whold,wbrk=Combat.decode(Combat.mirror(Combat.word(2,1,1,true,true)))
-assert(wm==2 and wmv==2 and wsh==2 and whold and wbrk,'mirror preserves brake bit')
+-- Word round trip & OFF <-> AUTO toggle (AIM and bit-1024 brake removed).
+local word=Combat.word(2,8,4,true,true)
+assert((word&1024)==0,'manual brake bit 1024 must not be emitted')
+local m,mv,sh,hold,brk=Combat.decode(word)
+assert(m==2 and mv==8 and sh==4 and hold and brk==nil,'decode returns 4 fields without brake')
+local wm,wmv,wsh,whold,wbrk=Combat.decode(Combat.mirror(Combat.word(2,1,1,true)))
+assert(wm==2 and wmv==2 and wsh==2 and whold and wbrk==nil,'mirror preserves 4 combat fields')
 local s=Combat.new()
 assert(Combat.update(s,{entities={enemy(300,180)}})==0)
 assert(Combat.cycle(s)==2 and Combat.cycle(s)==0,'F10 toggles OFF <-> AUTO')

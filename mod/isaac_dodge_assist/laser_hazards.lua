@@ -229,10 +229,54 @@ function M.appendEffectWarnings(effect, room, shapes)
     end
 end
 
+-- Dogma phase 1 (950.0.0) BrimstoneStartRight fires 0 or 180 depending on
+-- sprite FlipX (not exposed reliably), and BrimstoneLoop* can snap 90/180 deg
+-- onto the target's cardinal quadrant mid-barrage (1ASNDQW3 Hit #28/#29).
+local function appendDogma(npc, room, shapes, target)
+    local dogmaType = (EntityType and EntityType.ENTITY_DOGMA) or 950
+    if npc.Type ~= dogmaType or npc.Variant ~= 0 then return end
+    local sprite = npc:GetSprite()
+    local anim = sprite:GetAnimation()
+    if type(anim) ~= "string" then return end
+    local origin = Vector(npc.Position.X, npc.Position.Y - 15)
+    local reach = (room:GetBottomRightPos() - room:GetTopLeftPos()):Length()
+    if anim:sub(1, 14) == "BrimstoneStart" then
+        local side = anim:sub(15)
+        local angles
+        if side == "Right" or side == "Left" then
+            angles = {0, 180}
+        elseif side == "Down" then
+            angles = {90}
+        elseif side == "Up" then
+            angles = {270}
+        else
+            angles = {0, 90, 180, 270}
+        end
+        local activeFrom = math.max(1, 39 - (sprite:GetFrame() or 0))
+        for _, angle in ipairs(angles) do
+            shapes[#shapes+1] = {origin=origin, velocity=npc.Velocity,
+                ring=false, width=24, points={Vector(0,0), Vector(reach,0):Rotated(angle)},
+                reach=reach, angularSpeed=0, delay=0, activeFrom=activeFrom}
+        end
+    elseif anim:sub(1, 13) == "BrimstoneLoop" and target then
+        local dx, dy = target.X - origin.X, target.Y - origin.Y
+        local angle
+        if math.abs(dx) >= math.abs(dy) then
+            angle = dx >= 0 and 0 or 180
+        else
+            angle = dy >= 0 and 90 or 270
+        end
+        shapes[#shapes+1] = {origin=origin, velocity=npc.Velocity,
+            ring=false, width=20, points={Vector(0,0), Vector(reach,0):Rotated(angle)},
+            reach=reach, angularSpeed=0, delay=0, warning=true, activeFrom=2}
+    end
+end
+
 -- target: the position aimed beams point at (our player).
 function M.appendWarnings(npc, room, shapes, target)
     appendBrimstone(npc, room, shapes)
     appendBossBeam(npc, room, shapes, target)
+    appendDogma(npc, room, shapes, target)
     appendRageCreep(npc, room, shapes)
     if npc.Type ~= EntityType.ENTITY_URIEL and npc.Type ~= EntityType.ENTITY_GABRIEL then return end
     local state = npc.State
