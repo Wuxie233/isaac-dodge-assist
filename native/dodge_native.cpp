@@ -23,7 +23,7 @@
 // word: bits 0-1 mode (1 aim, 2 auto), 2-5 move (0-8, 15 none),
 // 6-8 shoot (0 none, 1-4 = actions 4-7), 9 hold fire.
 // Extended v2 fields (bytes 128..191) activate 60Hz direct memory prediction
-// when extMagic == Shared::kExtMagic and host maps >= sizeof(Shared).
+// when extMagic == Shared::kExtMagic ("NAT2").
 using iad::Shared;
 static Shared* shared;
 static void* mappedView;
@@ -59,6 +59,30 @@ static DWORD lastAt;
 static void* lastDevice;
 static LONGLONG lastCounter, counterFrequency;
 
+// Keyboard directions are binary, so only an actual key-down level (>0.5) is a
+// manual override; analog noise must not masquerade as a key, and opposite keys cancel.
+static int decodeManualDir(const float* raw, int& outX, int& outY) {
+    outX = (raw[1] > 0.5f) - (raw[0] > 0.5f);
+    outY = (raw[3] > 0.5f) - (raw[2] > 0.5f);
+    for (int i = 1; i < 9; ++i) {
+        if (dx[i] == outX && dy[i] == outY) return i;
+    }
+    return 0;
+}
+
+// Any shoot key in AIM/AUTO: fire toward the target instead.
+// No shoot key in AUTO: fire as Lua holds/releases.
+static int computeFireMask(uint32_t combat, const float* raw) {
+    int mode = combat & 3, shoot = (combat >> 6) & 7;
+    bool hold = (combat >> 9) & 1;
+    bool firing = raw[4] > 0.5f || raw[5] > 0.5f || raw[6] > 0.5f || raw[7] > 0.5f;
+    if (mode >= 1 && mode <= 2 && shoot >= 1 && shoot <= 4) {
+        if (firing) return 1 << (shoot - 1);
+        if (mode == 2) return hold ? (1 << (shoot - 1)) : 0;
+    }
+    return -1;
+}
+
 static int rank(const double* risk, uint32_t blocked, int manual, int x, int y, int previous=-1) {
     int best=manual;
     bool finite=true;for(int i=0;i<9;++i) finite=finite && std::isfinite(risk[i]);
@@ -82,38 +106,24 @@ static int rank(const double* risk, uint32_t blocked, int manual, int x, int y, 
 }
 
 // Hands off the movement keys in AUTO: walk where Lua chose (dodge already
-// included). Keyboard directions are binary, so only an actual key-down level
-// (>=0.5) is a manual override; analog noise must not masquerade as a key.
-// Any shoot key in AIM/AUTO: fire toward the target instead.
-// No shoot key in AUTO: fire as Lua holds/releases.
+// included). Soft hazards are avoided by AUTO via hazardCells; manual movement
+// is never braked.
 static Decision decide(const double* risk, uint32_t blocked, uint32_t combat, const float* raw, int previous) {
-    int x=(raw[1]>0.5f)-(raw[0]>0.5f), y=(raw[3]>0.5f)-(raw[2]>0.5f), manual=0;
-    for(int i=1;i<9;++i) if(dx[i]==x && dy[i]==y) manual=i;
-    // Candidate 0 is idle; it is not a separate "no manual input" flag.
-    const bool hasManual=(x!=0 || y!=0);
-    // Opposite keys cancel. Do not let a zero net vector masquerade as a
-    // deliberate idle override and freeze AUTO in place.
-    int mode=combat&3, move=(combat>>2)&15, shoot=(combat>>6)&7;
-    bool hold=(combat>>9)&1;
-    Decision d{rank(risk,blocked,manual,x,y,previous),-1};
-    if(mode==2 && move<9) {
-        // A real direction key always wins over AUTO, including the case where
-        // rank() selected the same direction with an equal (zero) score.
-        // Idle input is different: only then may AUTO walk on its own.
-        if(!hasManual) d.move=move;
-        else if(d.move>=0 && risk[manual]>0) d.move=d.move;
-        else d.move=-1;
-    }
-    // Soft hazards are avoided by AUTO via hazardCells; manual movement is never braked.
-    bool firing=raw[4]>0.5f || raw[5]>0.5f || raw[6]>0.5f || raw[7]>0.5f;
-    if(mode>=1 && mode<=2 && shoot>=1 && shoot<=4) {
-        if(firing) d.fire=1<<(shoot-1);
-        else if(mode==2) d.fire=hold ? 1<<(shoot-1) : 0;
+    int x = 0, y = 0;
+    int manual = decodeManualDir(raw, x, y);
+    const bool hasManual = (x != 0 || y != 0);
+    int mode = combat & 3, move = (combat >> 2) & 15;
+    Decision d{rank(risk, blocked, manual, x, y, previous), computeFireMask(combat, raw)};
+    if (mode == 2 && move < 9) {
+        if (!hasManual) d.move = move;
+        else if (d.move >= 0 && risk[manual] > 0) d.move = d.move;
+        else d.move = -1;
     }
     return d;
 }
+
 // The cached window is a safety boundary, not a claim about the engine's
-// real input-poll boundary: mid-poll packets, focus or Shift changes can
+// real input-poll boundary: mid-poll packets, focus or ` changes can
 // still split a poll longer than 3ms, and two distinct polls closer than 3ms
 // share this snapshot. It does make every value and pressed answer (including
 // passthrough) come from one raw sample, which the 0.4.1 decision-only cache
@@ -122,40 +132,54 @@ static int mirrorDir(int dir) {
     return (dir >= 0 && dir < 9) ? mirrorPerm[dir] : dir;
 }
 
+// Note: VirtualQuery RegionSize is page-rounded (>= 4096), so mappedViewBytes
+// only guards OS page readability; sample.extMagic == Shared::kExtMagic ("NAT2",
+// zero in v1 mappings) is the authoritative V2 protocol gate.
 static bool hasV2View() {
     return shared && ((static_cast<const void*>(shared) != mappedView) || mappedViewBytes >= sizeof(Shared));
 }
 
 static Decision fuseNativeDecision(const iad::PlanResult& plan, uint32_t combat, const float* raw, bool mirror) {
-    int x = (raw[1] > 0.5f) - (raw[0] > 0.5f), y = (raw[3] > 0.5f) - (raw[2] > 0.5f), manualLocal = 0;
-    for (int i = 1; i < 9; ++i) if (dx[i] == x && dy[i] == y) manualLocal = i;
+    int x = 0, y = 0;
+    int manualLocal = decodeManualDir(raw, x, y);
     const bool hasManual = (x != 0 || y != 0);
-    int mode = combat & 3, autoLocalMove = (combat >> 2) & 15, shoot = (combat >> 6) & 7;
-    bool hold = (combat >> 9) & 1;
+    int mode = combat & 3, autoLocalMove = (combat >> 2) & 15;
 
     int localBest = (plan.bestDir >= 0 && plan.bestDir < 9)
         ? (mirror ? mirrorDir(plan.bestDir) : plan.bestDir)
         : -1;
-    Decision d{localBest, -1};
+    Decision d{localBest, computeFireMask(combat, raw)};
 
     if (mode == 2 && autoLocalMove < 9) {
         int manualWorld = mirror ? mirrorDir(manualLocal) : manualLocal;
         int autoWorld = mirror ? mirrorDir(autoLocalMove) : autoLocalMove;
         bool autoUnblocked = (autoWorld == 0) || ((plan.blockedMask & (1 << autoWorld)) == 0);
-        bool autoSafe = !plan.danger || (autoUnblocked && plan.scores[autoWorld] <= 0.0);
+        bool autoSafe = autoUnblocked;
+        if (autoSafe && plan.danger) {
+            // Match combat.lua:882-887: require <= 0 when a safe direction exists;
+            // allow +500*kScale slack when only soft warnings exist so AUTO keeps moving!
+            double least = 1e30;
+            for (int i = 0; i < 9; ++i) {
+                if (i > 0 && (plan.blockedMask & (1 << i)) != 0) continue;
+                if (plan.straightScores[i] < least) least = plan.straightScores[i];
+            }
+            double limit = 0.0;
+            if (least <= 0.0) {
+                limit = 0.0;
+            } else if (least < iad::PlanResult::kHard) {
+                limit = least + 500.0 * iad::PlanResult::kScale;
+            } else {
+                limit = least;
+            }
+            autoSafe = (plan.straightScores[autoWorld] <= limit);
+        }
         if (!hasManual) {
             d.move = autoSafe ? autoLocalMove : (localBest >= 0 ? localBest : 0);
-        } else if (d.move >= 0 && plan.scores[manualWorld] > 0.0) {
+        } else if (d.move >= 0 && plan.straightScores[manualWorld] > 0.0) {
             d.move = d.move;
         } else {
             d.move = -1;
         }
-    }
-
-    bool firing = raw[4] > 0.5f || raw[5] > 0.5f || raw[6] > 0.5f || raw[7] > 0.5f;
-    if (mode >= 1 && mode <= 2 && shoot >= 1 && shoot <= 4) {
-        if (firing) d.fire = 1 << (shoot - 1);
-        else if (mode == 2) d.fire = hold ? (1 << (shoot - 1)) : 0;
     }
     return d;
 }
@@ -178,7 +202,7 @@ static Decision evaluate(void* device, DWORD now, const float* raw) {
 
     if (v2View && sample.extMagic == Shared::kExtMagic) {
         if ((sample.luaFlags & Shared::kFlagPaused) != 0) {
-            InterlockedExchange(&shared->nativeMode, 0);
+            if (shared->active) InterlockedExchange(&shared->nativeMode, 0);
             return none;
         }
         bool canNative = peMatched && exeBase != 0 &&
@@ -189,14 +213,17 @@ static Decision evaluate(void* device, DWORD now, const float* raw) {
             QueryPerformanceCounter(&t0);
             localMem.resetCache();
             if (iad::collectThreatScene(localMem, exeBase, sample.boundSeed, sample.luaFlags,
-                                        sample.horizonMs, sample.queueDelay, 36, cachedScene)) {
-                int x = (raw[1] > 0.5f) - (raw[0] > 0.5f), y = (raw[3] > 0.5f) - (raw[2] > 0.5f), manualLocal = 0;
-                for (int i = 1; i < 9; ++i) if (dx[i] == x && dy[i] == y) manualLocal = i;
+                                        sample.horizonMs, sample.queueDelay, 60, cachedScene)) {
+                int x = 0, y = 0;
+                int manualLocal = decodeManualDir(raw, x, y);
+                bool hasManual = (x != 0 || y != 0);
                 bool mirror = cachedScene.grid.mirror;
                 int rawWorld = mirror ? mirrorDir(manualLocal) : manualLocal;
                 int prevWorld = (previous >= 0 && previous < 9) ? (mirror ? mirrorDir(previous) : previous) : -1;
                 int mode = sample.combat & 3;
-                iad::PlanResult plan = iad::solveNativePlan(cachedScene, rawWorld, prevWorld, mode != 2);
+                // Manual WASD is never blocked from Sacrifice Room spikes or shop items, even in AUTO mode
+                bool allowPickups = (mode != 2) || hasManual;
+                iad::PlanResult plan = iad::solveNativePlan(cachedScene, rawWorld, prevWorld, allowPickups);
                 Decision d = fuseNativeDecision(plan, sample.combat, raw, mirror);
                 QueryPerformanceCounter(&t1);
                 LONG micros = counterFrequency > 0
@@ -204,19 +231,21 @@ static Decision evaluate(void* device, DWORD now, const float* raw) {
                     : 0;
                 LONG threats = static_cast<LONG>(cachedScene.bullets.size() + cachedScene.discs.size() + cachedScene.lasers.size());
                 LONG chosenFlag = (d.move >= 0 ? (d.move & 15) : 15) | (plan.usedTurn ? 16 : 0);
-                InterlockedExchange(&shared->nativeMode, 1);
-                InterlockedExchange(&shared->nativeThreats, threats);
-                InterlockedExchange(&shared->nativeMicros, micros);
-                InterlockedIncrement(&shared->nativeFrames);
-                InterlockedExchange(&shared->nativeChosen, chosenFlag);
+                if (shared->active) {
+                    InterlockedExchange(&shared->nativeMode, 1);
+                    InterlockedExchange(&shared->nativeThreats, threats);
+                    InterlockedExchange(&shared->nativeMicros, micros);
+                    InterlockedIncrement(&shared->nativeFrames);
+                    InterlockedExchange(&shared->nativeChosen, chosenFlag);
+                }
                 return d;
             }
-            if (cachedScene.paused) {
-                InterlockedExchange(&shared->nativeMode, 0);
+            if (cachedScene.paused || cachedScene.passthrough) {
+                if (shared->active) InterlockedExchange(&shared->nativeMode, 0);
                 return none;
             }
         }
-        InterlockedExchange(&shared->nativeMode, 2);
+        if (shared->active) InterlockedExchange(&shared->nativeMode, 2);
     }
 
     return decide(sample.risk,sample.blocked,sample.combat,raw,previous);
@@ -258,7 +287,11 @@ static Poll choose(void* device) {
 static bool engaged() {
     if(!shared) return false;
     const volatile Shared* s=shared;
-    return s->magic==0x32444149 && s->version==1 && s->active && GetTickCount()-s->stamp<=120;
+    bool ok = s->magic==Shared::kMagic && s->version==1 && s->active && GetTickCount()-s->stamp<=120;
+    if(!ok && hasV2View() && s->extMagic==Shared::kExtMagic && s->nativeMode!=0) {
+        InterlockedExchange(&shared->nativeMode, 0);
+    }
+    return ok;
 }
 static int overridden(const Poll& poll, int action) {
     const Decision& d=poll.decision;

@@ -161,6 +161,11 @@ local roomType=30
 function room:GetType()return roomType end
 scene={tear(opponent)};tick();values=packet()
 assert(values[1]>0,'Deathmatch: opponent tear not dodged')
+do
+ local metaLine=logs[#logs-1] or ''
+ local mFlags=tonumber(metaLine:match('^IAD3|%d+|%d+|(%d+)|'))
+ assert(mFlags and (mFlags&4)~=0,'Deathmatch: IAD3 NATIVE_DEATHMATCH flag bit missing: '..tostring(metaLine))
+end
 scene={};tick();scene={tear(p)};tick();values=packet()
 for _,s in ipairs(values)do assert(s==0,'Deathmatch: own tear treated as a threat')end
 local function creep(owner)
@@ -382,21 +387,21 @@ local cw,hasMeta=nil,false
 tick();cw,hasMeta=combatPair();assert(cw==nil and hasMeta,'IAD3 missing or combat word while OFF')
 f10();tick();local word;word,hasMeta=combatPair();assert(word and hasMeta,'AUTO word or IAD3 missing')
 assert(word&3==2 and (word>>6)&7==2 and word&512~=0 and ((word>>2)&15)<9,'AUTO word: '..word)
--- Left Shift toggles: one press pauses (surviving a room change), holding
+-- ` (grave accent) toggles: one press pauses (surviving a room change), holding
 -- is not needed, the next press resumes.
-local function shift()
+local function togglePause()
  Input.IsButtonTriggered=function(key)return key==Keyboard.KEY_GRAVE_ACCENT end
  callbacks[ModCallbacks.MC_POST_RENDER]();Input.IsButtonTriggered=function()return false end
 end
-shift();tick();cw,hasMeta=combatPair();assert(cw==nil and not hasMeta,'combat/IAD3 emitted while paused by Shift')
-assert(logs[#logs]:find('|0|',1,true),'Shift pause still active')
+togglePause();tick();cw,hasMeta=combatPair();assert(cw==nil and not hasMeta,'combat/IAD3 emitted while paused by `')
+assert(logs[#logs]:find('|0|',1,true),'` pause still active')
 callbacks[ModCallbacks.MC_POST_NEW_ROOM]();for i=1,5 do tick()end
-cw,hasMeta=combatPair();assert(cw==nil and not hasMeta and logs[#logs]:find('|0|',1,true),'Shift pause lost on room change')
+cw,hasMeta=combatPair();assert(cw==nil and not hasMeta and logs[#logs]:find('|0|',1,true),'` pause lost on room change')
 local paused=false;for _,line in ipairs(logs)do if line=='IAD STATE: PAUSED' then paused=true end end
 assert(paused,'pause state not reported')
-shift();tick();cw,hasMeta=combatPair();assert(cw and hasMeta,'second Shift press did not resume')
+togglePause();tick();cw,hasMeta=combatPair();assert(cw and hasMeta,'second ` press did not resume')
 f10();tick();cw,hasMeta=combatPair();assert(cw==nil and hasMeta,'combat word after OFF')
-print('PASS F10 combat modes: IAD2 & IAD3 contract, AUTO word, Shift toggle (room-persistent) and OFF release')
+print('PASS F10 combat modes: IAD2 & IAD3 contract, AUTO word, ` toggle (room-persistent) and OFF release')
 
 -- Roster changes: a co-op partner joining or leaving must keep the sensor on
 -- our player. 0.12.4 game logs parked it on "F7: SELECT YOUR PLAYER" for 5277

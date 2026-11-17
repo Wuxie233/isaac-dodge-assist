@@ -1,3 +1,13 @@
+## 0.5.0 60Hz 只读内存直读预测与二段转弯规划
+
+- **新增能力**：原生 DLL 在校验匹配当前安装的 `isaac-ng.exe`（PE 时间戳 `0x69e6e3a7`、映像尺寸 `0x92c000`）且收到配对的 `IAD3` 元数据时，直接在每次键盘轮询窗口内以 60Hz 只读游戏内存，跳过 30Hz 日志传输延迟并支持二段转弯轨迹规划（`d1 -> d2`）：
+  - `game_structs.hpp`：定义 192 字节共享内存（前 128 字节保持 v1 兼容，128..191 字节以 `extMagic = "NAT2"` 门控扩展字段）、反汇编核对的实体/房间/弹体/激光/炸弹引信偏移，以及带页表可读缓存的只读内存读取器 `LocalProcessReader`（零写入，不触碰实体、随机数或联机网络设备）。
+  - `native_predict.hpp`：60Hz 威胁场景采集——固定网格原点 `(40, 120)`（兼容窄走廊与 L 形房间缺口）、60Hz 插值相位对齐（读取 `kInterpPrevPos` 避免半帧超前）、玩家/跟班/同控制器双角色（雅各与以扫）归属识别、弯曲/追踪（`SMART` 与 `SMART_PERFECT`）/延时变向（`ChangeTimeout`）/弹跳与抛物落地弹幕、旋转/采样曲线激光（过滤收缩与已衰减单次命中光束）、地面毒池 `SpriteScale` 与范围特效半径、炸弹引信与连锁推开胶囊体、自爆怪提前击杀预测、献祭房尖刺（手动放行、AUTO 避让）及部分 Boss/怪物前摇预警。
+  - `native_planner.hpp`：按实测 60Hz 玩家物理参数（快慢双包络模型、物理碰撞与地面无碰撞伤害分离）评估 9 个连续方向与排空输入队列后的二段转弯轨迹，保持 `1048576` 整级风险分层与 64 空间单位滞回防抖，并对同控制器双角色联合验算。
+  - `PacketClock.cs` / `NativeHost.cs`：新增 `IAD3|<seq>|<boundSeed>|<flags>|<queueDelay>` 一次性序列号配对（`NativeMeta` 结构），共享内存扩至 192 字节，窗口标题更新为 `0.5.0` 并显示当前躲避状态与周边威胁数，统计日志记录 `nativeMode`/`nativeThreats`/`nativeMicros`/`nativeFrames`。
+- **回退与直通规则**：暂停（游戏暂停、控制台或 `` ` `` 键）、死亡/幽灵、控制冷却（`ControlsCooldown`）、进房前 4 帧过渡及非 Beast 横版地下室（Crawlspace 等）直接透传原始按键，不回退到旧 30Hz 评分；仅当未启用原生预测或缺少 `IAD3` 元数据时回退到 `IAD1` 评分表。
+- **构建与测试**：Linux 运行 `bash native/build-dll.sh` 生成 DLL，`g++ -std=c++17 -O2 -Wall -Wextra -Werror native/tests/native_60hz_test.cpp` 运行 60Hz 内存预测与二段转弯闭环单元测试；Windows 运行 `native/build-host.ps1` 构建 Host，并用 `HostProtocolRegression.exe` 与 `NativeAbiTest.exe` 校验协议配对与 x86 调用 ABI。游戏内避伤效果与联机表现待实机游玩验证。
+
 ## 0.4.6 不再因按住左 Shift 放手
 
 - DLL 以前在左 Shift 按下时一律交还原始输入。暂停改由传感器 0.25.5 的 ` 键切换（共享内存里的"不活动"同样让 DLL 透传），Shift 太容易误碰，所以 DLL 不再看它。其余不变。

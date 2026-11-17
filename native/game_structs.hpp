@@ -117,31 +117,33 @@ namespace Offsets {
 
     static constexpr uintptr_t kManagerRva = 0x87169cu;
     static constexpr uintptr_t kGameRva    = 0x871678u;
-    static constexpr uintptr_t kLRoomTableRva = 0x835b80u;
 
     namespace Manager {
-        static constexpr uintptr_t kState   = 0x8u;     // int32 (2 = in run)
-        static constexpr uintptr_t kTick60  = 0x4abbcu; // uint32 (bit 0 = interp tick)
+        static constexpr uintptr_t kState            = 0x8u;     // int32 (2 = in run)
+        static constexpr uintptr_t kTick60           = 0x4abbcu; // uint32 (bit 0 = interp tick)
+        static constexpr uintptr_t kControllersBegin = 0x4b3d8u; // ptr
+        static constexpr uintptr_t kControllersEnd   = 0x4b3dcu; // ptr
     }
 
     namespace Game {
-        static constexpr uintptr_t kStage        = 0x0u;
-        static constexpr uintptr_t kStageType    = 0x4u;
-        static constexpr uintptr_t kRoom         = 0x18300u;
-        static constexpr uintptr_t kDimension    = 0x1830cu;
-        static constexpr uintptr_t kPlayersBegin = 0x1baa8u;
-        static constexpr uintptr_t kPlayersEnd   = 0x1baacu;
-        static constexpr uintptr_t kPauseB83C    = 0x1b83cu;
-        static constexpr uintptr_t kPauseBA78    = 0x1ba78u;
-        static constexpr uintptr_t kPauseC034    = 0x1c034u;
-        static constexpr uintptr_t kPauseD520    = 0x1d520u;
-        static constexpr uintptr_t kPauseD654    = 0x1d654u;
-        static constexpr uintptr_t kPause25954   = 0x25954u;
-        static constexpr uintptr_t kPauseFrames  = 0x264f4u;
-        static constexpr uintptr_t kFrameCount   = 0x264f8u;
-        static constexpr uintptr_t kCurses       = 0x26550u;
-        static constexpr uintptr_t kGameModeFlags= 0x26614u;
-        static constexpr uintptr_t kPause68D78   = 0x68d78u;
+        static constexpr uintptr_t kStage             = 0x0u;
+        static constexpr uintptr_t kStageType         = 0x4u;
+        static constexpr uintptr_t kLevelCurses       = 0x0cu;   // uint32 Level::m_Curses
+        static constexpr uintptr_t kRoom              = 0x18300u;
+        static constexpr uintptr_t kDimension         = 0x1830cu;
+        static constexpr uintptr_t kPlayersBegin      = 0x1baa8u;
+        static constexpr uintptr_t kPlayersEnd        = 0x1baacu;
+        static constexpr uintptr_t kPauseOverlayA     = 0x1b83cu;
+        static constexpr uintptr_t kPauseOverlayB     = 0x1ba78u;
+        static constexpr uintptr_t kPauseScreenState  = 0x1c034u; // 2 = paused screen
+        static constexpr uintptr_t kPauseCutscene     = 0x1d520u;
+        static constexpr uintptr_t kPauseBossIntro    = 0x1d654u;
+        static constexpr uintptr_t kPauseConsoleOpen  = 0x25954u; // uint8
+        static constexpr uintptr_t kPauseFrames       = 0x264f4u;
+        static constexpr uintptr_t kFrameCount        = 0x264f8u;
+        static constexpr uintptr_t kSeedCurses        = 0x26550u;
+        static constexpr uintptr_t kGameModeFlags     = 0x26614u;
+        static constexpr uintptr_t kSoloMenuPause     = 0x68d78u;
     }
 
     namespace Room {
@@ -157,6 +159,7 @@ namespace Offsets {
         static constexpr uintptr_t kBottomRight   = 0x1cu;   // Vec2
         static constexpr uintptr_t kGridEntities  = 0x24u;   // GridEntity*[448]
         static constexpr uintptr_t kGridRawTypes  = 0x76cu;  // int32[448]
+        static constexpr uintptr_t kSpawnFrame    = 0x11f0u; // int32 (GetFrameCount = Game::FrameCount - SpawnFrame)
         static constexpr uintptr_t kEntityData    = 0x125cu; // Entity**
         static constexpr uintptr_t kEntityCount   = 0x1264u; // uint32
         static constexpr int kMaxGridCells        = 448;
@@ -179,6 +182,7 @@ namespace Offsets {
         static constexpr uintptr_t kSpawnerType   = 0x34u;
         static constexpr uintptr_t kSprite        = 0x48u;  // inline Sprite
         static constexpr uintptr_t kSpriteOffset  = 0xdcu;  // Vec2
+        static constexpr uintptr_t kSpriteScale   = 0xe4u;  // Vec2 (0x42d9b0)
         static constexpr uintptr_t kFlags         = 0x168u; // uint64
         static constexpr uintptr_t kExists        = 0x172u; // uint8
         static constexpr uintptr_t kDead          = 0x173u; // uint8
@@ -196,6 +200,7 @@ namespace Offsets {
         static constexpr uintptr_t kMaxHitPoints  = 0x384u; // float
         static constexpr uintptr_t kCollDamage    = 0x388u; // float
         static constexpr uintptr_t kTimeScale     = 0x39cu; // float
+        static constexpr uintptr_t kPrevAgeFloat  = 0x3a0u; // float
         static constexpr uintptr_t kAgeFloat      = 0x3a4u; // float
         static constexpr uintptr_t kParent        = 0x3bcu; // ptr
         static constexpr uintptr_t kChild         = 0x3c0u; // ptr
@@ -209,12 +214,26 @@ namespace Offsets {
         static constexpr uintptr_t kControlsCooldown = 0x414u; // int32
         static constexpr uintptr_t kPlayerType       = 0x13c0u;// int32
         static constexpr uintptr_t kMaxFireDelay     = 0x1460u;// float
+        static constexpr uintptr_t kDamage           = 0x1470u;// float (0x86a0f3)
         static constexpr uintptr_t kMoveSpeed        = 0x1568u;// float
         static constexpr uintptr_t kCanFly           = 0x1570u;// uint8
         static constexpr uintptr_t kControllerIndex  = 0x1618u;// int32
         static constexpr uintptr_t kSubPlayerSlot    = 0x161cu;// int32 (<0 -> IsSubPlayer)
         static constexpr uintptr_t kSubPlayer        = 0x1d98u;// ptr
         static constexpr uintptr_t kIsCoopGhost      = 0x20a9u;// uint8
+    }
+
+    namespace Familiar {
+        static constexpr uintptr_t kPlayer = 0x410u; // EntityPlayer* (0x4361f0)
+    }
+
+    namespace Tear {
+        static constexpr uintptr_t kHeight       = 0x410u; // float
+        static constexpr uintptr_t kFallingSpeed = 0x414u; // float
+        static constexpr uintptr_t kFallingAccel = 0x418u; // float
+        static constexpr uintptr_t kBaseDamage   = 0x41cu; // float
+        static constexpr uintptr_t kFlagsLo      = 0x428u; // uint64 (BitSet128 lo)
+        static constexpr uintptr_t kFlagsHi      = 0x430u; // uint64 (BitSet128 hi)
     }
 
     namespace Projectile {
@@ -249,6 +268,8 @@ namespace Offsets {
         static constexpr uintptr_t kAngleDeg           = 0x41cu; // float
         static constexpr uintptr_t kLastAngleDeg       = 0x420u; // float
         static constexpr uintptr_t kTimeout            = 0x458u; // int32
+        static constexpr uintptr_t kFirstUpdate        = 0x45cu; // uint8
+        static constexpr uintptr_t kShrink             = 0x45eu; // uint8
         static constexpr uintptr_t kLaserLength        = 0x460u; // float
         static constexpr uintptr_t kSamplesBegin       = 0x480u; // Vec2*
         static constexpr uintptr_t kSamplesEnd         = 0x484u; // Vec2*
@@ -260,13 +281,14 @@ namespace Offsets {
         static constexpr uintptr_t kRotationSpd        = 0x4ccu; // float
         static constexpr uintptr_t kEndPoint           = 0x4d8u; // Vec2
         static constexpr uintptr_t kDisableFollowParent= 0x4e4u; // uint8
+        static constexpr uintptr_t kOneHit             = 0x515u; // uint8
     }
 
     namespace Bomb {
-        static constexpr uintptr_t kExplosionCountdown = 0x410u; // int32
-        static constexpr uintptr_t kExplosionDamage    = 0x418u; // float
-        static constexpr uintptr_t kFlags              = 0x438u; // uint64
-        static constexpr uintptr_t kRadiusMultiplier   = 0x44cu; // float
+        static constexpr uintptr_t kFuse             = 0x410u; // int32 (GLOSSARY: fuse / 引信)
+        static constexpr uintptr_t kExplosionDamage  = 0x418u; // float
+        static constexpr uintptr_t kFlags            = 0x438u; // uint64
+        static constexpr uintptr_t kRadiusMultiplier = 0x44cu; // float
     }
 
     namespace Effect {
@@ -276,6 +298,7 @@ namespace Offsets {
         static constexpr uintptr_t kMaxRadius = 0x458u; // float
         static constexpr uintptr_t kTimeout   = 0x45cu; // int32
         static constexpr uintptr_t kLifeSpan  = 0x460u; // int32
+        static constexpr uintptr_t kScale     = 0x478u; // float (0x4d7770)
     }
 
     namespace Pickup {
@@ -296,12 +319,17 @@ namespace Offsets {
 namespace IsaacEnums {
     // EntityType IDs
     static constexpr int kEntPlayer     = 1;
+    static constexpr int kEntTear       = 2;
+    static constexpr int kEntFamiliar   = 3;
     static constexpr int kEntBomb       = 4;
     static constexpr int kEntPickup     = 5;
     static constexpr int kEntLaser      = 7;
+    static constexpr int kEntKnife      = 8;
     static constexpr int kEntProjectile = 9;
     static constexpr int kEntMulligan   = 16;
+    static constexpr int kEntShopkeeper = 17;
     static constexpr int kEntBoomFly    = 25;
+    static constexpr int kEntFireplace  = 33;
     static constexpr int kEntVis        = 39;
     static constexpr int kEntMonstro2   = 43;
     static constexpr int kEntMom        = 45;
@@ -313,6 +341,7 @@ namespace IsaacEnums {
     static constexpr int kEntSatan      = 84;
     static constexpr int kEntBlackMaw   = 225;
     static constexpr int kEntRageCreep  = 241;
+    static constexpr int kEntEmbryo     = 245;
     static constexpr int kEntTickingSpd = 250;
     static constexpr int kEntTheHaunt   = 260;
     static constexpr int kEntDarkOne    = 267;
@@ -321,14 +350,25 @@ namespace IsaacEnums {
     static constexpr int kEntMegaSatan  = 274;
     static constexpr int kEntBlackBony  = 277;
     static constexpr int kEntRedGhost   = 285;
+    static constexpr int kEntMovingBox  = 292;
     static constexpr int kEntPoisonMind = 301;
     static constexpr int kEntFlyBomb    = 819;
     static constexpr int kEntPon        = 840;
     static constexpr int kEntGrudge     = 877;
+    static constexpr int kEntGideon     = 885;
     static constexpr int kEntMother     = 912;
     static constexpr int kEntDogma      = 950;
     static constexpr int kEntBeast      = 951;
+    static constexpr int kEntGenericPrp = 960;
+    static constexpr int kEntMinecart   = 965;
     static constexpr int kEntEffect     = 1000;
+
+    // EntityCollisionClass IDs
+    static constexpr int kEntCollNone          = 0;
+    static constexpr int kEntCollPlayerOnly    = 1;
+    static constexpr int kEntCollPlayerObjects = 2;
+    static constexpr int kEntCollEnemies       = 3;
+    static constexpr int kEntCollAll           = 4;
 
     // GridCollisionClass IDs
     static constexpr int kGridCollNone       = 0;
@@ -342,7 +382,16 @@ namespace IsaacEnums {
     static constexpr int kGridSpikes      = 8;
     static constexpr int kGridSpikesOnOff = 9;
     static constexpr int kGridLock        = 11;
+    static constexpr int kGridTNT         = 12;
     static constexpr int kGridPoop        = 14;
+    static constexpr int kGridRockBomb    = 15;
+    static constexpr int kGridRockSpiked  = 17;
+
+    // TearFlags (BitSet128)
+    static constexpr uint64_t kTearLoExplosive   = 1ULL << 12;
+    static constexpr uint64_t kTearLoAcid        = 1ULL << 50;
+    static constexpr uint64_t kTearHiRock        = 1ULL << (70 - 64);
+    static constexpr uint64_t kTearHiFetusBomber = 1ULL << (113 - 64);
 
     // ProjectileFlags (uint64)
     static constexpr uint64_t kProjSmart            = 1ULL << 0;
@@ -371,11 +420,12 @@ namespace IsaacEnums {
     static constexpr uint64_t kProjSmartPerfect     = 1ULL << 48;
 
     // EntityFlags (uint64)
+    static constexpr uint64_t kEntFlagCharmed      = 1ULL << 8;
+    static constexpr uint64_t kEntFlagInterpUpdate = 1ULL << 14;
     static constexpr uint64_t kEntFlagDead         = 1ULL << 18;
     static constexpr uint64_t kEntFlagBossDeath    = 1ULL << 20;
-    static constexpr uint64_t kEntFlagFriendly     = 1ULL << 29;
-    static constexpr uint64_t kEntFlagCharmed      = 1ULL << 8;
     static constexpr uint64_t kEntFlagSlippery     = 1ULL << 27;
+    static constexpr uint64_t kEntFlagFriendly     = 1ULL << 29;
     static constexpr uint64_t kEntFlagNoQuery      = 1ULL << 46;
     static constexpr uint64_t kEntFlagIceFrozen    = 1ULL << 49;
 }

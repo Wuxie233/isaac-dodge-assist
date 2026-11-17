@@ -63,23 +63,26 @@ int main(){
     assert(!reusable(&rawBase,1003000,counterFrequency));
     lastPollValid=false;
     // Inactive IPC (lobby, F7, host closed): every query reads the original
-    // function live, with no 3ms snapshot in between.
+    // function live, with no 3ms snapshot in between, and clears nativeMode to 0.
     Shared idleShared{};shared=&idleShared;
+    idleShared.extMagic=Shared::kExtMagic;idleShared.nativeMode=1;
     ValueFn volatile liveValue=reinterpret_cast<ValueFn>(valueHook);
     BoolFn volatile livePressed=reinterpret_cast<BoolFn>(pressedHook);
     originalValue=changingValue;originalPressed=changingPressed;
     mutableValue[0]=0.25f;mutablePressed[0]=false;
     assert(liveValue(&rawBase,0)==0.25f && !livePressed(&rawBase,0));
+    assert(idleShared.nativeMode==0); // cleared on inactive poll
     mutableValue[0]=1.f;mutablePressed[0]=true;
     assert(liveValue(&rawBase,0)==1.f && livePressed(&rawBase,0)); // no stale snapshot
     assert(!lastPollValid); // nothing was sampled or cached
     // Active, fresh plan: the window snapshot still applies (0.4.2 contract).
-    idleShared.magic=0x32444149;idleShared.version=1;idleShared.active=1;idleShared.stamp=GetTickCount();
+    idleShared.magic=Shared::kMagic;idleShared.version=1;idleShared.active=1;idleShared.stamp=GetTickCount();
     mutableValue[0]=0.5f;
     assert(liveValue(&rawBase,0)==0.5f);
     mutableValue[0]=0.75f;
     assert(liveValue(&rawBase,0)==0.5f); // same poll window answers alike
-    idleShared.active=0;assert(liveValue(&rawBase,0)==0.75f);
+    idleShared.active=0;idleShared.nativeMode=2;
+    assert(liveValue(&rawBase,0)==0.75f && idleShared.nativeMode==0);
     lastPollValid=false;
     Shared sample{};shared=&sample;originalValue=fakeValue;originalPressed=fakePressed;
     ValueFn volatile value=reinterpret_cast<ValueFn>(valueHook);
@@ -90,25 +93,42 @@ int main(){
     asm volatile("mov %%esp,%0":"=r"(after));
     assert(before==after);
 
-    // V2 ABI + native decision fusion + mirror checks
+    // V2 ABI + native decision fusion + mirror + AUTO wall-block & soft-warning checks
     assert(sizeof(Shared)==192 && offsetof(Shared,extMagic)==128 && offsetof(Shared,nativeMode)==148);
     {
         iad::PlanResult pr{};
         pr.valid=true; pr.danger=true; pr.bestDir=1; // world Left
-        pr.scores[0]=0.0; pr.scores[1]=-10.0; pr.scores[2]=1e6;
-        float idle[8]{};
-        Decision d1=fuseNativeDecision(pr, 0, idle, false);
+        for(int i=0;i<9;++i){pr.straightScores[i]=iad::PlanResult::kHard; pr.scores[i]=iad::PlanResult::kHard;}
+        pr.straightScores[0]=100.0 * iad::PlanResult::kScale; pr.scores[0]=pr.straightScores[0];
+        pr.straightScores[1]=-10.0; pr.scores[1]=-10.0;
+        float idleR[8]{};
+        Decision d1=fuseNativeDecision(pr, 0, idleR, false);
         assert(d1.move==1 && d1.fire==-1);
-        Decision dMirror=fuseNativeDecision(pr, 0, idle, true);
+        Decision dMirror=fuseNativeDecision(pr, 0, idleR, true);
         assert(dMirror.move==2 && dMirror.fire==-1); // local Right moves world Left in mirror
-        // AUTO wants local Right (move=2) -> world Right (dir=2, unsafe 1e6) => dodges Left (1)
-        Decision dAuto=fuseNativeDecision(pr, 2u|(2u<<2)|(1u<<6)|(1u<<9), idle, false);
+        // AUTO wants local Right (move=2) -> world Right (dir=2, hard danger) => dodges Left (1)
+        Decision dAuto=fuseNativeDecision(pr, 2u|(2u<<2)|(1u<<6)|(1u<<9), idleR, false);
         assert(dAuto.move==1 && dAuto.fire==1);
         // When bestDir==-1 (idle 0 is safe) and AUTO wants unsafe dir 2 => hold still (move=0)
-        iad::PlanResult prHold{}; prHold.valid=true; prHold.danger=true; prHold.bestDir=-1; prHold.scores[2]=1e6;
-        Decision dHold=fuseNativeDecision(prHold, 2u|(2u<<2), idle, false);
+        iad::PlanResult prHold{}; prHold.valid=true; prHold.danger=true; prHold.bestDir=-1;
+        prHold.straightScores[0]=-10.0; prHold.straightScores[2]=iad::PlanResult::kHard;
+        Decision dHold=fuseNativeDecision(prHold, 2u|(2u<<2), idleR, false);
         assert(dHold.move==0);
-        // When manual Right key is pressed in safe AUTO case vs unsafe AUTO case
+        // Stale AUTO move into wall when !danger must NOT drive into blocked wall
+        iad::PlanResult prWall{}; prWall.valid=true; prWall.danger=false; prWall.bestDir=-1; prWall.blockedMask=(1<<2);
+        Decision dWall=fuseNativeDecision(prWall, 2u|(2u<<2), idleR, false);
+        assert(dWall.move==0);
+        // Soft-warning-only zone (all directions in [10..50]*kScale): AUTO keeps walking instead of freezing at 0!
+        iad::PlanResult prSoft{}; prSoft.valid=true; prSoft.danger=true; prSoft.bestDir=1;
+        for(int i=0;i<9;++i){prSoft.straightScores[i]=20.0*iad::PlanResult::kScale; prSoft.scores[i]=prSoft.straightScores[i];}
+        prSoft.straightScores[1]=10.0*iad::PlanResult::kScale; prSoft.scores[1]=prSoft.straightScores[1];
+        Decision dSoft=fuseNativeDecision(prSoft, 2u|(3u<<2), idleR, false);
+        assert(dSoft.move==3);
+        // Crossed AUTO-avoid cell (600000*kScale) exceeds +500*kScale slack -> AUTO detours!
+        prSoft.straightScores[3]=600000.0*iad::PlanResult::kScale;
+        Decision dPed=fuseNativeDecision(prSoft, 2u|(3u<<2), idleR, false);
+        assert(dPed.move==1);
+        // Manual Right key in safe AUTO case passes through (-1)
         float rightHeld[8]{0.f,1.f};
         iad::PlanResult prRightSafe{}; prRightSafe.valid=true; prRightSafe.danger=false; prRightSafe.bestDir=-1;
         Decision dMan=fuseNativeDecision(prRightSafe, 2u|(1u<<2), rightHeld, false);

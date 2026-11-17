@@ -64,7 +64,8 @@ local frame, sequence, previousCount = 0, 0, -1
 local state = "WAITING"
 local loggedState = nil
 local runEnded = false
-local beastRoom, roomFloorCache = false, {}
+local beastRoom, deathmatch, roomFloorCache = false, false, {}
+local NATIVE_ENABLED, NATIVE_MIRROR, NATIVE_DEATHMATCH, NATIVE_BEAST, NATIVE_PAUSED = 1, 2, 4, 8, 16
 -- Candidate order is part of the IAD1 protocol: idle, L, R, U, D, LU, RU, LD, RD.
 local directions = {Vector(0,0), Vector(-1,0), Vector(1,0), Vector(0,-1), Vector(0,1),
     Vector(-1,-1):Normalized(), Vector(1,-1):Normalized(), Vector(-1,1):Normalized(), Vector(1,1):Normalized()}
@@ -105,11 +106,11 @@ local function emit(active, scores, blocked)
     if active then
         local seedOut = math.floor(tonumber(boundSeed) or 0) % 4294967296
         if seedOut < 0 then seedOut = seedOut + 4294967296 end
-        local nativeFlags = 1 -- kFlagNativeEnabled
-        if mirror then nativeFlags = nativeFlags + 2 end
-        if deathmatch then nativeFlags = nativeFlags + 4 end
-        if beastRoom then nativeFlags = nativeFlags + 8 end
-        if paused then nativeFlags = nativeFlags + 16 end
+        local nativeFlags = NATIVE_ENABLED
+        if mirror then nativeFlags = nativeFlags | NATIVE_MIRROR end
+        if deathmatch then nativeFlags = nativeFlags | NATIVE_DEATHMATCH end
+        if beastRoom then nativeFlags = nativeFlags | NATIVE_BEAST end
+        if paused then nativeFlags = nativeFlags | NATIVE_PAUSED end
         local qDelay = math.floor(tonumber(inputs and inputs.delay) or 0)
         if qDelay < 0 then qDelay = 0 end
         Isaac.DebugString(string.format("IAD3|%d|%.0f|%d|%d", nextSeq, seedOut, nativeFlags, qDelay))
@@ -235,7 +236,6 @@ end
 -- Repentance+ Deathmatch (the Online versus room after a win): the other
 -- players are the opponents, and only our own player's side is friendly.
 -- 2026-11-06: 17 hits there from the partner's tears, all counted as ours.
-local deathmatch = false
 local DEATHMATCH = RoomType and RoomType.ROOM_DEATHMATCH or 30
 local function playerOwned(entity)
     local seen = {}

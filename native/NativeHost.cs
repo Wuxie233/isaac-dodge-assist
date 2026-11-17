@@ -12,6 +12,35 @@ using System.Windows.Forms;
 internal static class NativeHost
 {
     const string ExpectedHash="210cade2a1de98550cef52d012174108189d1a0d3926a22c3a1ec12fb3ae4831";
+    const int SharedMappingBytes = 192;
+    const uint SharedMagic = 0x32444149u;    // "IAD2"
+    const uint SharedExtMagic = 0x4E415432u; // "NAT2"
+
+    // Shared memory byte offsets (must match iad::Shared in game_structs.hpp)
+    const int OffsetMagic         = 0;
+    const int OffsetVersion       = 4;
+    const int OffsetPid           = 8;
+    const int OffsetStamp         = 12;
+    const int OffsetActive        = 16;
+    const int OffsetBlocked       = 20;
+    const int OffsetSequence      = 24;
+    const int OffsetCombat        = 28;
+    const int OffsetRisk          = 32;
+    const int OffsetStatus        = 104;
+    const int OffsetPolls         = 108;
+    const int OffsetOverrides     = 112;
+    const int OffsetShots         = 120;
+    const int OffsetExtMagic      = 128;
+    const int OffsetBoundSeed     = 132;
+    const int OffsetLuaFlags      = 136;
+    const int OffsetHorizonMs     = 140;
+    const int OffsetQueueDelay    = 144;
+    const int OffsetNativeMode    = 148;
+    const int OffsetNativeThreats = 152;
+    const int OffsetNativeMicros  = 156;
+    const int OffsetNativeFrames  = 160;
+    const int OffsetNativeChosen  = 164;
+
     static MemoryMappedViewAccessor view;
     static Mutex ipcLock;
     static int gamePid;
@@ -47,22 +76,22 @@ internal static class NativeHost
         calibration.Reset();
         ResetPairing();
     }
-    static void Publish(bool active,double[] risk,int blocked,uint combat=0,bool hasMeta=false,uint boundSeed=0,uint luaFlags=0,int horizonMs=450,int queueDelay=0)
+    static void Publish(bool active, double[] risk, int blocked, uint combat = 0, NativeMeta meta = default(NativeMeta), int horizonMs = 450)
     {
         bool acquired=false;
         try {
             try { acquired=ipcLock.WaitOne(50); } catch(AbandonedMutexException){acquired=true;}
             if(!acquired)return;
-            view.Write(0,0x32444149u);view.Write(4,1u);view.Write(8,(uint)gamePid);
-            view.Write(12,unchecked((uint)Environment.TickCount));view.Write(16,active?1u:0u);
-            view.Write(20,(uint)blocked);view.Write(24,++sequence);view.Write(28,active?combat:0u);
-            if(risk!=null)for(int i=0;i<9;i++)view.Write(32+i*8,risk[i]);
-            view.Write(128,0x4E415432u);
-            view.Write(132,(active && hasMeta)?boundSeed:0u);
-            view.Write(136,(active && hasMeta)?luaFlags:0u);
-            view.Write(140,horizonMs);
-            view.Write(144,queueDelay);
-            if(!active)view.Write(148,0);
+            view.Write(OffsetMagic,SharedMagic);view.Write(OffsetVersion,1u);view.Write(OffsetPid,(uint)gamePid);
+            view.Write(OffsetStamp,unchecked((uint)Environment.TickCount));view.Write(OffsetActive,active?1u:0u);
+            view.Write(OffsetBlocked,(uint)blocked);view.Write(OffsetSequence,++sequence);view.Write(OffsetCombat,active?combat:0u);
+            if(risk!=null)for(int i=0;i<9;i++)view.Write(OffsetRisk+i*8,risk[i]);
+            view.Write(OffsetExtMagic,SharedExtMagic);
+            view.Write(OffsetBoundSeed,(active && meta.Present)?meta.BoundSeed:0u);
+            view.Write(OffsetLuaFlags,(active && meta.Present)?meta.Flags:0u);
+            view.Write(OffsetHorizonMs,horizonMs);
+            view.Write(OffsetQueueDelay,meta.Present?meta.QueueDelay:0);
+            if(!active)view.Write(OffsetNativeMode,0);
         } finally {if(acquired)ipcLock.ReleaseMutex();}
     }
     static void ReadLog(string path)
@@ -98,9 +127,8 @@ internal static class NativeHost
         if(!calibration.Accept(unchecked((uint)(long)stamp),seq,clock.ElapsedMilliseconds)){rejected++;ResetPairing();Publish(false,null,0);note="校准时钟或等待实时数据";return;}
         received=clock.ElapsedMilliseconds;packets++;
         uint combat=pairing.Take(seq);lastCombat=combat;
-        uint boundSeed,luaFlags;int queueDelay;
-        bool hasMeta=nativeMeta.Take(seq,out boundSeed,out luaFlags,out queueDelay);
-        Publish(enabled && f[3]=="1",risk,blocked,combat,hasMeta,boundSeed,luaFlags,horizonMs,queueDelay);note="传感器已连接，原生键盘输入入口";
+        NativeMeta meta=nativeMeta.Take(seq);
+        Publish(enabled && f[3]=="1",risk,blocked,combat,meta,horizonMs);note="传感器已连接，原生键盘输入入口";
     }
     static string DelaySummary()
     {
@@ -149,8 +177,8 @@ internal static class NativeHost
             lock(sync){
                 line=String.Format(CultureInfo.InvariantCulture,"{0:o} reason={1} packets={2} rejected={3} sameClock={4} otherClock={5} jitterMs={6} polls={7} overrides={8} shots={10} nativeMode={11} nativeThreats={12} nativeMicros={13} nativeFrames={14} {9}",
                     DateTime.Now,reason,packets,rejected,sameClock,otherClock,calibration.Delay,
-                    view!=null?view.ReadInt32(108):-1,view!=null?view.ReadInt32(112):-1,DelaySummary(),view!=null?view.ReadInt32(120):-1,
-                    view!=null?view.ReadInt32(148):-1,view!=null?view.ReadInt32(152):0,view!=null?view.ReadInt32(156):0,view!=null?view.ReadInt32(160):0);
+                    view!=null?view.ReadInt32(OffsetPolls):-1,view!=null?view.ReadInt32(OffsetOverrides):-1,DelaySummary(),view!=null?view.ReadInt32(OffsetShots):-1,
+                    view!=null?view.ReadInt32(OffsetNativeMode):-1,view!=null?view.ReadInt32(OffsetNativeThreats):0,view!=null?view.ReadInt32(OffsetNativeMicros):0,view!=null?view.ReadInt32(OffsetNativeFrames):0);
             }
             File.AppendAllText(file,line+Environment.NewLine);
         }catch(Exception){}
@@ -178,7 +206,7 @@ internal static class NativeHost
             string dll=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"IsaacDodgeNative.dll");
             if(!File.Exists(dll))throw new Exception("缺少 IsaacDodgeNative.dll");
             ipcLock=new Mutex(false,"Local\\IsaacDodgeNativeLock-"+gamePid);
-            using(var mapping=MemoryMappedFile.CreateOrOpen("Local\\IsaacDodgeNative-"+gamePid,192)){
+            using(var mapping=MemoryMappedFile.CreateOrOpen("Local\\IsaacDodgeNative-"+gamePid,SharedMappingBytes)){
                 view=mapping.CreateViewAccessor();Publish(false,null,0);
                 bool loaded=false;
                 foreach(ProcessModule module in game.Modules)if(module.ModuleName.Equals("IsaacDodgeNative.dll",StringComparison.OrdinalIgnoreCase)){
@@ -206,19 +234,17 @@ internal static class NativeHost
                         if(game.HasExited){form.Close();return;}
                         int status;string text;
                         lock(sync){
-                            status=view.ReadInt32(104);
-                            int nMode=view.ReadInt32(148);
-                            int nThreats=view.ReadInt32(152);
-                            int nMicros=view.ReadInt32(156);
-                            int nFrames=view.ReadInt32(160);
-                            int nChosen=view.ReadInt32(164);
+                            status=view.ReadInt32(OffsetStatus);
+                            int nMode=view.ReadInt32(OffsetNativeMode);
+                            int nThreats=view.ReadInt32(OffsetNativeThreats);
+                            int nChosen=view.ReadInt32(OffsetNativeChosen);
                             string[] modes={"关","自动瞄准","自动战斗","?"};
-                            string[] engines={"待命","60Hz 内存直读","Lua 回退"};
-                            string engineText=(nMode>=0 && nMode<engines.Length)?engines[nMode]:("?"+nMode);
-                            string turnText=(nMode==1 && (nChosen & 16)!=0)?" · 二段转弯":"";
-                            text=String.Format("{0}\nHook状态 {1} · 收到 {2} 帧 · 拒收 {3}\n预测引擎：{10}（威胁 {11} · 耗时 {12}us · {13} 帧{14}）\n{4}\n移动输入读取 {5} 次 · 返回替代输入 {6} 次 · 射击替代 {7} 次\n战斗模式（游戏内 F10）：{8}\n{9}\n关闭窗口或在游戏内按 ` 键（Esc 下方）暂停接管；计数不代表角色实际位移。",
-                                note,status,packets,rejected,DelaySummary(),view.ReadInt32(108),view.ReadInt32(112),view.ReadInt32(120),modes[lastCombat&3],archiveNote,
-                                engineText,nThreats,nMicros,nFrames,turnText);
+                            string[] dodgeStates={"待命","运行中","兼容模式"};
+                            string dodgeText=(nMode>=0 && nMode<dodgeStates.Length)?dodgeStates[nMode]:"待命";
+                            string turnText=(nMode==1 && (nChosen & 16)!=0)?" · 连续变向闪避":"";
+                            text=String.Format("{0}\nHook状态 {1} · 收到 {2} 帧 · 拒收 {3}\n躲避状态：{10}（当前周边威胁 {11} 处{12}）\n{4}\n移动输入读取 {5} 次 · 返回替代输入 {6} 次 · 射击替代 {7} 次\n战斗模式（游戏内 F10）：{8}\n{9}\n关闭窗口或在游戏内按 ` 键（Esc 下方）暂停接管；计数不代表角色实际位移。",
+                                note,status,packets,rejected,DelaySummary(),view.ReadInt32(OffsetPolls),view.ReadInt32(OffsetOverrides),view.ReadInt32(OffsetShots),modes[lastCombat&3],archiveNote,
+                                dodgeText,nThreats,turnText);
                         }
                         label.Text=text;
                         if(status<0){enabled=false;toggle.Checked=false;lock(sync)note="Hook校验失败："+status;}

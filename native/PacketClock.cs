@@ -58,23 +58,35 @@ internal sealed class CombatPairing
     }
 }
 
+// Paired IAD3 metadata payload for one matching IAD1 sequence.
+internal struct NativeMeta
+{
+    internal bool Present;
+    internal uint BoundSeed;
+    internal uint Flags;
+    internal int QueueDelay;
+}
+
 // One IAD3 word may precede IAD2/IAD1 packets with the same sequence.
 // Format: IAD3|<seq>|<boundSeed>|<flags>|<queueDelay>
 internal sealed class NativeMetaPairing
 {
     long sequence = -1;
-    uint boundSeed;
-    uint flags;
-    int queueDelay;
+    NativeMeta pending;
 
-    internal void Reset() { sequence = -1; boundSeed = 0; flags = 0; queueDelay = 0; }
+    internal void Reset()
+    {
+        sequence = -1;
+        pending = default(NativeMeta);
+    }
 
     internal void Receive(long seq, uint seed, uint fl, int qd)
     {
         sequence = seq;
-        boundSeed = seed;
-        flags = fl;
-        queueDelay = qd;
+        pending.Present = true;
+        pending.BoundSeed = seed;
+        pending.Flags = fl;
+        pending.QueueDelay = qd;
     }
 
     internal bool ReceiveLine(string line)
@@ -96,14 +108,10 @@ internal sealed class NativeMetaPairing
         return false;
     }
 
-    internal bool Take(long seq, out uint seed, out uint fl, out int qd)
+    internal NativeMeta Take(long seq)
     {
-        bool ok = sequence == seq;
-        seed = ok ? boundSeed : 0;
-        fl = ok ? flags : 0;
-        qd = ok ? queueDelay : 0;
+        NativeMeta result = sequence == seq ? pending : default(NativeMeta);
         Reset();
-        return ok;
+        return result;
     }
 }
-
