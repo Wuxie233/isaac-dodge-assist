@@ -1,27 +1,45 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
 #include <cstdint>
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include "game_structs.hpp"
+#include "native_planner.hpp"
 
-// One supported executable build. No network-device or entity-state writes.
+// One supported executable build. Zero network-device or game-entity writes.
 // combat (former reserved field, 0 from hosts before 0.4) is the Lua IAD2
 // word: bits 0-1 mode (1 aim, 2 auto), 2-5 move (0-8, 15 none),
 // 6-8 shoot (0 none, 1-4 = actions 4-7), 9 hold fire.
-struct Shared {
-    uint32_t magic, version, pid, stamp, active, blocked, sequence, combat;
-    double risk[9];
-    volatile LONG status, polls, overrides, chosen, shots;
-};
-static_assert(offsetof(Shared, risk)==32 && offsetof(Shared,status)==104 && offsetof(Shared,shots)==120, "IPC layout");
+// Extended v2 fields (bytes 128..191) activate 60Hz direct memory prediction
+// when extMagic == Shared::kExtMagic and host maps >= sizeof(Shared).
+using iad::Shared;
 static Shared* shared;
+static void* mappedView;
+static SIZE_T mappedViewBytes;
+static uintptr_t exeBase;
+static bool peMatched;
 static HANDLE mutexHandle;
+static iad::LocalProcessReader localMem;
+static iad::ThreatScene cachedScene;
 using ValueFn = float (__attribute__((thiscall)) *)(void*, int);
 using BoolFn = bool (__attribute__((thiscall)) *)(void*, int);
 static ValueFn originalValue;
 static BoolFn originalPressed;
 static const int dx[]={0,-1,1,0,0,-1,1,-1,1}, dy[]={0,0,0,-1,1,-1,-1,1,1};
 static const int masks[]={0,1,2,4,8,5,6,9,10};
+static const int mirrorPerm[]={0,2,1,3,4,6,5,8,7};
 static SRWLOCK decisionLock=SRWLOCK_INIT;
 // move: candidate index or -1 (original input); fire: bitmask over the
 // shoot actions 4-7 or -1 (original input).
@@ -100,6 +118,48 @@ static Decision decide(const double* risk, uint32_t blocked, uint32_t combat, co
 // share this snapshot. It does make every value and pressed answer (including
 // passthrough) come from one raw sample, which the 0.4.1 decision-only cache
 // did not.
+static int mirrorDir(int dir) {
+    return (dir >= 0 && dir < 9) ? mirrorPerm[dir] : dir;
+}
+
+static bool hasV2View() {
+    return shared && ((static_cast<const void*>(shared) != mappedView) || mappedViewBytes >= sizeof(Shared));
+}
+
+static Decision fuseNativeDecision(const iad::PlanResult& plan, uint32_t combat, const float* raw, bool mirror) {
+    int x = (raw[1] > 0.5f) - (raw[0] > 0.5f), y = (raw[3] > 0.5f) - (raw[2] > 0.5f), manualLocal = 0;
+    for (int i = 1; i < 9; ++i) if (dx[i] == x && dy[i] == y) manualLocal = i;
+    const bool hasManual = (x != 0 || y != 0);
+    int mode = combat & 3, autoLocalMove = (combat >> 2) & 15, shoot = (combat >> 6) & 7;
+    bool hold = (combat >> 9) & 1;
+
+    int localBest = (plan.bestDir >= 0 && plan.bestDir < 9)
+        ? (mirror ? mirrorDir(plan.bestDir) : plan.bestDir)
+        : -1;
+    Decision d{localBest, -1};
+
+    if (mode == 2 && autoLocalMove < 9) {
+        int manualWorld = mirror ? mirrorDir(manualLocal) : manualLocal;
+        int autoWorld = mirror ? mirrorDir(autoLocalMove) : autoLocalMove;
+        bool autoUnblocked = (autoWorld == 0) || ((plan.blockedMask & (1 << autoWorld)) == 0);
+        bool autoSafe = !plan.danger || (autoUnblocked && plan.scores[autoWorld] <= 0.0);
+        if (!hasManual) {
+            d.move = autoSafe ? autoLocalMove : (localBest >= 0 ? localBest : 0);
+        } else if (d.move >= 0 && plan.scores[manualWorld] > 0.0) {
+            d.move = d.move;
+        } else {
+            d.move = -1;
+        }
+    }
+
+    bool firing = raw[4] > 0.5f || raw[5] > 0.5f || raw[6] > 0.5f || raw[7] > 0.5f;
+    if (mode >= 1 && mode <= 2 && shoot >= 1 && shoot <= 4) {
+        if (firing) d.fire = 1 << (shoot - 1);
+        else if (mode == 2) d.fire = hold ? (1 << (shoot - 1)) : 0;
+    }
+    return d;
+}
+
 static Decision evaluate(void* device, DWORD now, const float* raw) {
     const Decision none{-1,-1};
     DWORD pid=0; GetWindowThreadProcessId(GetForegroundWindow(), &pid);
@@ -110,10 +170,55 @@ static Decision evaluate(void* device, DWORD now, const float* raw) {
     DWORD wait=WaitForSingleObject(mutexHandle,0);
     if (wait==WAIT_ABANDONED) { shared->active=0; ReleaseMutex(mutexHandle); return none; }
     if (wait!=WAIT_OBJECT_0) return none;
-    memcpy(&sample, shared, 104);
+    bool v2View = hasV2View();
+    memcpy(&sample, shared, v2View ? sizeof(Shared) : 104u);
     ReleaseMutex(mutexHandle);
-    if(sample.magic!=0x32444149 || sample.version!=1 || sample.pid!=pid || !sample.active || now-sample.stamp>120) return none;
+    if(sample.magic!=Shared::kMagic || sample.version!=1 || sample.pid!=pid || !sample.active || now-sample.stamp>120) return none;
     int previous=(lastDevice==device && now-lastAt<=120) ? lastChoice : -1;
+
+    if (v2View && sample.extMagic == Shared::kExtMagic) {
+        if ((sample.luaFlags & Shared::kFlagPaused) != 0) {
+            InterlockedExchange(&shared->nativeMode, 0);
+            return none;
+        }
+        bool canNative = peMatched && exeBase != 0 &&
+                         (sample.luaFlags & Shared::kFlagNativeEnabled) != 0 &&
+                         sample.boundSeed != 0;
+        if (canNative) {
+            LARGE_INTEGER t0{}, t1{};
+            QueryPerformanceCounter(&t0);
+            localMem.resetCache();
+            if (iad::collectThreatScene(localMem, exeBase, sample.boundSeed, sample.luaFlags,
+                                        sample.horizonMs, sample.queueDelay, 36, cachedScene)) {
+                int x = (raw[1] > 0.5f) - (raw[0] > 0.5f), y = (raw[3] > 0.5f) - (raw[2] > 0.5f), manualLocal = 0;
+                for (int i = 1; i < 9; ++i) if (dx[i] == x && dy[i] == y) manualLocal = i;
+                bool mirror = cachedScene.grid.mirror;
+                int rawWorld = mirror ? mirrorDir(manualLocal) : manualLocal;
+                int prevWorld = (previous >= 0 && previous < 9) ? (mirror ? mirrorDir(previous) : previous) : -1;
+                int mode = sample.combat & 3;
+                iad::PlanResult plan = iad::solveNativePlan(cachedScene, rawWorld, prevWorld, mode != 2);
+                Decision d = fuseNativeDecision(plan, sample.combat, raw, mirror);
+                QueryPerformanceCounter(&t1);
+                LONG micros = counterFrequency > 0
+                    ? static_cast<LONG>(((t1.QuadPart - t0.QuadPart) * 1000000LL) / counterFrequency)
+                    : 0;
+                LONG threats = static_cast<LONG>(cachedScene.bullets.size() + cachedScene.discs.size() + cachedScene.lasers.size());
+                LONG chosenFlag = (d.move >= 0 ? (d.move & 15) : 15) | (plan.usedTurn ? 16 : 0);
+                InterlockedExchange(&shared->nativeMode, 1);
+                InterlockedExchange(&shared->nativeThreats, threats);
+                InterlockedExchange(&shared->nativeMicros, micros);
+                InterlockedIncrement(&shared->nativeFrames);
+                InterlockedExchange(&shared->nativeChosen, chosenFlag);
+                return d;
+            }
+            if (cachedScene.paused) {
+                InterlockedExchange(&shared->nativeMode, 0);
+                return none;
+            }
+        }
+        InterlockedExchange(&shared->nativeMode, 2);
+    }
+
     return decide(sample.risk,sample.blocked,sample.combat,raw,previous);
 }
 static void sampleRaw(void* device, float* raw, bool* pressed) {
@@ -185,17 +290,26 @@ static DWORD WINAPI start(void*) {
     wchar_t name[96];swprintf(name,96,L"Local\\IsaacDodgeNative-%lu",GetCurrentProcessId());
     HANDLE mapping=OpenFileMappingW(FILE_MAP_ALL_ACCESS,FALSE,name);
     if(!mapping)return 1;
-    shared=static_cast<Shared*>(MapViewOfFile(mapping,FILE_MAP_ALL_ACCESS,0,0,sizeof(Shared)));
-    if(!shared){CloseHandle(mapping);return 2;}
+    mappedView=MapViewOfFile(mapping,FILE_MAP_ALL_ACCESS,0,0,0);
+    if(!mappedView){CloseHandle(mapping);return 2;}
+    MEMORY_BASIC_INFORMATION mbi{};
+    if(VirtualQuery(mappedView,&mbi,sizeof(mbi))==sizeof(mbi)) {
+        mappedViewBytes=mbi.RegionSize;
+    }
+    if(mappedViewBytes<128){UnmapViewOfFile(mappedView);mappedView=nullptr;CloseHandle(mapping);return 2;}
+    shared=static_cast<Shared*>(mappedView);
     swprintf(name,96,L"Local\\IsaacDodgeNativeLock-%lu",GetCurrentProcessId());
     mutexHandle=OpenMutexW(SYNCHRONIZE|MUTEX_MODIFY_STATE,FALSE,name);
     if(!mutexHandle){InterlockedExchange(&shared->status,-1);return 3;}
     auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     auto dos=reinterpret_cast<IMAGE_DOS_HEADER*>(base);
     auto pe=reinterpret_cast<IMAGE_NT_HEADERS*>(base+dos->e_lfanew);
-    if(pe->FileHeader.TimeDateStamp!=0x69e6e3a7 || pe->OptionalHeader.SizeOfImage!=0x92c000) {
+    if(pe->FileHeader.TimeDateStamp!=iad::Offsets::kExpectedTimestamp ||
+       pe->OptionalHeader.SizeOfImage!=iad::Offsets::kExpectedImageSize) {
         InterlockedExchange(&shared->status,-2);return 4;
     }
+    exeBase=base;
+    peMatched=true;
     // Keyboard vtable only: network device has a different table at RVA 0x778030.
     auto table=reinterpret_cast<void**>(base+0x7a1678);
     originalPressed=reinterpret_cast<BoolFn>(base+0x61e8d0);

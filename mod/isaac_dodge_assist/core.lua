@@ -3,7 +3,7 @@
 -- with a callback registrar, the state saved by the previous core (nil on a
 -- cold start) and the build id. The body is deliberately not indented so the
 -- history of every line survives the move from main.lua.
-local VERSION = "0.26.1"
+local VERSION = "0.27.0"
 return function(mod, saved, build)
 local game = Game()
 local LaserHazards = include("laser_hazards")
@@ -99,11 +99,24 @@ local function emit(active, scores, blocked)
         loggedState = state
     end
     -- Publish movement risks; the native host overrides local keyboard sampling.
-    -- The combat word precedes its IAD1 packet and carries that sequence;
-    -- hosts before 0.4 ignore it.
+    -- IAD3 (host 0.5+) and IAD2 (host 0.4+) precede their IAD1 packet with the
+    -- same sequence number; older hosts ignore them cleanly.
+    local nextSeq = sequence + 1
+    if active then
+        local seedOut = math.floor(tonumber(boundSeed) or 0) % 4294967296
+        if seedOut < 0 then seedOut = seedOut + 4294967296 end
+        local nativeFlags = 1 -- kFlagNativeEnabled
+        if mirror then nativeFlags = nativeFlags + 2 end
+        if deathmatch then nativeFlags = nativeFlags + 4 end
+        if beastRoom then nativeFlags = nativeFlags + 8 end
+        if paused then nativeFlags = nativeFlags + 16 end
+        local qDelay = math.floor(tonumber(inputs and inputs.delay) or 0)
+        if qDelay < 0 then qDelay = 0 end
+        Isaac.DebugString(string.format("IAD3|%d|%.0f|%d|%d", nextSeq, seedOut, nativeFlags, qDelay))
+    end
     local word = mirror and combatWord ~= 0 and Combat.mirror(combatWord) or combatWord
-    if active and word ~= 0 then Isaac.DebugString("IAD2|" .. (sequence + 1) .. "|" .. word) end
-    sequence = sequence + 1
+    if active and word ~= 0 then Isaac.DebugString("IAD2|" .. nextSeq .. "|" .. word) end
+    sequence = nextSeq
     Isaac.DebugString("IAD1|" .. sequence .. "|" .. math.floor(Isaac.GetTime()) .. "|" ..
         (active and "1" or "0") .. "|" .. selected .. "|" .. horizons[horizonIndex] .. "|" .. (scores or zeroScores) .. "|" .. (blocked or 0))
 end

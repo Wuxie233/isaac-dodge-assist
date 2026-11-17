@@ -58,3 +58,52 @@ internal sealed class CombatPairing
     }
 }
 
+// One IAD3 word may precede IAD2/IAD1 packets with the same sequence.
+// Format: IAD3|<seq>|<boundSeed>|<flags>|<queueDelay>
+internal sealed class NativeMetaPairing
+{
+    long sequence = -1;
+    uint boundSeed;
+    uint flags;
+    int queueDelay;
+
+    internal void Reset() { sequence = -1; boundSeed = 0; flags = 0; queueDelay = 0; }
+
+    internal void Receive(long seq, uint seed, uint fl, int qd)
+    {
+        sequence = seq;
+        boundSeed = seed;
+        flags = fl;
+        queueDelay = qd;
+    }
+
+    internal bool ReceiveLine(string line)
+    {
+        string[] f = line.Split('|');
+        long seq;
+        uint seed, fl;
+        int qd;
+        if (f.Length == 5 &&
+            long.TryParse(f[1], out seq) &&
+            uint.TryParse(f[2], out seed) &&
+            uint.TryParse(f[3], out fl) &&
+            int.TryParse(f[4], out qd))
+        {
+            Receive(seq, seed, fl, qd);
+            return true;
+        }
+        Reset();
+        return false;
+    }
+
+    internal bool Take(long seq, out uint seed, out uint fl, out int qd)
+    {
+        bool ok = sequence == seq;
+        seed = ok ? boundSeed : 0;
+        fl = ok ? flags : 0;
+        qd = ok ? queueDelay : 0;
+        Reset();
+        return ok;
+    }
+}
+

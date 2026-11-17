@@ -29,19 +29,25 @@ internal static class NativeHost
     static string pending="",note="等待新传感器数据";
     static long packets;
     static uint sequence;
-    // IAD2 (sensor 0.12+) precedes the IAD1 packet whose sequence it names.
+    // IAD2 (sensor 0.12+) and IAD3 (sensor 0.26+) precede the IAD1 packet whose sequence they name.
     static readonly CombatPairing pairing=new CombatPairing();
+    static readonly NativeMetaPairing nativeMeta=new NativeMetaPairing();
     static uint lastCombat;
     // Run archive (RunArchive.cs) runs on its own thread with its own file
     // handle, so archive IO can never stall or break the live input path.
     static volatile string archiveNote="日志存档：等待启动";
+    static void ResetPairing()
+    {
+        pairing.Reset();
+        nativeMeta.Reset();
+    }
     static void ResetStream()
     {
         pending="";
         calibration.Reset();
-        pairing.Reset();
+        ResetPairing();
     }
-    static void Publish(bool active,double[] risk,int blocked,uint combat=0)
+    static void Publish(bool active,double[] risk,int blocked,uint combat=0,bool hasMeta=false,uint boundSeed=0,uint luaFlags=0,int horizonMs=450,int queueDelay=0)
     {
         bool acquired=false;
         try {
@@ -51,6 +57,12 @@ internal static class NativeHost
             view.Write(12,unchecked((uint)Environment.TickCount));view.Write(16,active?1u:0u);
             view.Write(20,(uint)blocked);view.Write(24,++sequence);view.Write(28,active?combat:0u);
             if(risk!=null)for(int i=0;i<9;i++)view.Write(32+i*8,risk[i]);
+            view.Write(128,0x4E415432u);
+            view.Write(132,(active && hasMeta)?boundSeed:0u);
+            view.Write(136,(active && hasMeta)?luaFlags:0u);
+            view.Write(140,horizonMs);
+            view.Write(144,queueDelay);
+            if(!active)view.Write(148,0);
         } finally {if(acquired)ipcLock.ReleaseMutex();}
     }
     static void ReadLog(string path)
@@ -62,27 +74,33 @@ internal static class NativeHost
         while((count=log.Read(bytes,0,bytes.Length))>0) {
             pending+=Encoding.UTF8.GetString(bytes,0,count);
             int newline;
-            while((newline=pending.IndexOf('\n'))>=0){string line=pending.Substring(0,newline).Trim();pending=pending.Substring(newline+1);int start=line.IndexOf("IAD1|");if(start>=0)Parse(line.Substring(start));else{start=line.IndexOf("IAD2|");if(start>=0)ParseCombat(line.Substring(start));}}
-            if(pending.Length>16384){pending="";pairing.Reset();}
+            while((newline=pending.IndexOf('\n'))>=0){string line=pending.Substring(0,newline).Trim();pending=pending.Substring(newline+1);int start=line.IndexOf("IAD1|");if(start>=0)Parse(line.Substring(start));else{start=line.IndexOf("IAD2|");if(start>=0)ParseCombat(line.Substring(start));else{start=line.IndexOf("IAD3|");if(start>=0)ParseMeta(line.Substring(start));}}}
+            if(pending.Length>16384){pending="";ResetPairing();}
         }
     }
     static void ParseCombat(string line)
     {
         pairing.ReceiveLine(line);
     }
+    static void ParseMeta(string line)
+    {
+        nativeMeta.ReceiveLine(line);
+    }
     static void Parse(string line)
     {
-        string[] f=line.Split('|');long seq;double stamp;int blocked;
-        if(f.Length!=8 || !long.TryParse(f[1],out seq) || !double.TryParse(f[2],NumberStyles.Float,CultureInfo.InvariantCulture,out stamp) || double.IsNaN(stamp) || double.IsInfinity(stamp) || stamp<0 || !int.TryParse(f[7],out blocked)){pairing.Reset();return;}
-        string[] r=f[6].Split(',');if(r.Length!=9){pairing.Reset();return;}double[] risk=new double[9];
-        for(int i=0;i<9;i++)if(!double.TryParse(r[i],NumberStyles.Float,CultureInfo.InvariantCulture,out risk[i]) || double.IsNaN(risk[i]) || double.IsInfinity(risk[i])){pairing.Reset();return;}
+        string[] f=line.Split('|');long seq;double stamp;int horizonMs,blocked;
+        if(f.Length!=8 || !long.TryParse(f[1],out seq) || !double.TryParse(f[2],NumberStyles.Float,CultureInfo.InvariantCulture,out stamp) || double.IsNaN(stamp) || double.IsInfinity(stamp) || stamp<0 || !int.TryParse(f[5],out horizonMs) || !int.TryParse(f[7],out blocked)){ResetPairing();return;}
+        string[] r=f[6].Split(',');if(r.Length!=9){ResetPairing();return;}double[] risk=new double[9];
+        for(int i=0;i<9;i++)if(!double.TryParse(r[i],NumberStyles.Float,CultureInfo.InvariantCulture,out risk[i]) || double.IsNaN(risk[i]) || double.IsInfinity(risk[i])){ResetPairing();return;}
         long absolute=Stopwatch.GetTimestamp()*1000/Stopwatch.Frequency-(long)stamp;
         if(absolute>=0 && absolute<5000){sameClock++;delays[delayNext]=(int)absolute;delayNext=(delayNext+1)%delays.Length;if(delayCount<delays.Length)delayCount++;}
         else otherClock++;
-        if(!calibration.Accept(unchecked((uint)(long)stamp),seq,clock.ElapsedMilliseconds)){rejected++;pairing.Reset();Publish(false,null,0);note="校准时钟或等待实时数据";return;}
+        if(!calibration.Accept(unchecked((uint)(long)stamp),seq,clock.ElapsedMilliseconds)){rejected++;ResetPairing();Publish(false,null,0);note="校准时钟或等待实时数据";return;}
         received=clock.ElapsedMilliseconds;packets++;
         uint combat=pairing.Take(seq);lastCombat=combat;
-        Publish(enabled && f[3]=="1",risk,blocked,combat);note="传感器已连接，原生键盘输入入口";
+        uint boundSeed,luaFlags;int queueDelay;
+        bool hasMeta=nativeMeta.Take(seq,out boundSeed,out luaFlags,out queueDelay);
+        Publish(enabled && f[3]=="1",risk,blocked,combat,hasMeta,boundSeed,luaFlags,horizonMs,queueDelay);note="传感器已连接，原生键盘输入入口";
     }
     static string DelaySummary()
     {
@@ -100,8 +118,8 @@ internal static class NativeHost
                     if(view==null)return;
                     try{
                         ReadLog((string)path);
-                        if(clock.ElapsedMilliseconds-received>120){pairing.Reset();Publish(false,null,0);}
-                    }catch(IOException){pairing.Reset();Publish(false,null,0);if(log!=null)log.Dispose();log=null;note="等待游戏日志";}
+                        if(clock.ElapsedMilliseconds-received>120){ResetPairing();Publish(false,null,0);}
+                    }catch(IOException){ResetPairing();Publish(false,null,0);if(log!=null)log.Dispose();log=null;note="等待游戏日志";}
                 }
                 Thread.Sleep(1);
             }
@@ -129,9 +147,10 @@ internal static class NativeHost
             string file=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"IsaacDodgeAssist","native-0.4-stats.log");
             string line;
             lock(sync){
-                line=String.Format(CultureInfo.InvariantCulture,"{0:o} reason={1} packets={2} rejected={3} sameClock={4} otherClock={5} jitterMs={6} polls={7} overrides={8} shots={10} {9}",
+                line=String.Format(CultureInfo.InvariantCulture,"{0:o} reason={1} packets={2} rejected={3} sameClock={4} otherClock={5} jitterMs={6} polls={7} overrides={8} shots={10} nativeMode={11} nativeThreats={12} nativeMicros={13} nativeFrames={14} {9}",
                     DateTime.Now,reason,packets,rejected,sameClock,otherClock,calibration.Delay,
-                    view!=null?view.ReadInt32(108):-1,view!=null?view.ReadInt32(112):-1,DelaySummary(),view!=null?view.ReadInt32(120):-1);
+                    view!=null?view.ReadInt32(108):-1,view!=null?view.ReadInt32(112):-1,DelaySummary(),view!=null?view.ReadInt32(120):-1,
+                    view!=null?view.ReadInt32(148):-1,view!=null?view.ReadInt32(152):0,view!=null?view.ReadInt32(156):0,view!=null?view.ReadInt32(160):0);
             }
             File.AppendAllText(file,line+Environment.NewLine);
         }catch(Exception){}
@@ -159,7 +178,7 @@ internal static class NativeHost
             string dll=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"IsaacDodgeNative.dll");
             if(!File.Exists(dll))throw new Exception("缺少 IsaacDodgeNative.dll");
             ipcLock=new Mutex(false,"Local\\IsaacDodgeNativeLock-"+gamePid);
-            using(var mapping=MemoryMappedFile.CreateOrOpen("Local\\IsaacDodgeNative-"+gamePid,128)){
+            using(var mapping=MemoryMappedFile.CreateOrOpen("Local\\IsaacDodgeNative-"+gamePid,192)){
                 view=mapping.CreateViewAccessor();Publish(false,null,0);
                 bool loaded=false;
                 foreach(ProcessModule module in game.Modules)if(module.ModuleName.Equals("IsaacDodgeNative.dll",StringComparison.OrdinalIgnoreCase)){
@@ -169,9 +188,9 @@ internal static class NativeHost
                 }
                 if(!loaded)Inject(game,dll);
                 Application.EnableVisualStyles();
-                var form=new Form{Text="以撒原生输入躲避 0.4.6",Width=560,Height=290};
+                var form=new Form{Text="以撒原生输入躲避 0.5.0",Width=580,Height=325};
                 var toggle=new CheckBox{Text="启用原生移动接管",Checked=true,Left=20,Top=20,Width=300};
-                var label=new Label{Left=20,Top=60,Width=510,Height=180};
+                var label=new Label{Left=20,Top=60,Width=530,Height=215};
                 toggle.CheckedChanged+=delegate{enabled=toggle.Checked;if(!enabled)lock(sync)Publish(false,null,0);};
                 form.Controls.Add(toggle);form.Controls.Add(label);
                 var timer=new System.Windows.Forms.Timer{Interval=16};
@@ -188,9 +207,18 @@ internal static class NativeHost
                         int status;string text;
                         lock(sync){
                             status=view.ReadInt32(104);
+                            int nMode=view.ReadInt32(148);
+                            int nThreats=view.ReadInt32(152);
+                            int nMicros=view.ReadInt32(156);
+                            int nFrames=view.ReadInt32(160);
+                            int nChosen=view.ReadInt32(164);
                             string[] modes={"关","自动瞄准","自动战斗","?"};
-                            text=String.Format("{0}\nHook状态 {1} · 收到 {2} 帧 · 拒收 {3}\n{4}\n移动输入读取 {5} 次 · 返回替代输入 {6} 次 · 射击替代 {7} 次\n战斗模式（游戏内 F10）：{8}\n{9}\n关闭窗口或在游戏内按 ` 键（Esc 下方）暂停接管；计数不代表角色实际位移。",
-                                note,status,packets,rejected,DelaySummary(),view.ReadInt32(108),view.ReadInt32(112),view.ReadInt32(120),modes[lastCombat&3],archiveNote);
+                            string[] engines={"待命","60Hz 内存直读","Lua 回退"};
+                            string engineText=(nMode>=0 && nMode<engines.Length)?engines[nMode]:("?"+nMode);
+                            string turnText=(nMode==1 && (nChosen & 16)!=0)?" · 二段转弯":"";
+                            text=String.Format("{0}\nHook状态 {1} · 收到 {2} 帧 · 拒收 {3}\n预测引擎：{10}（威胁 {11} · 耗时 {12}us · {13} 帧{14}）\n{4}\n移动输入读取 {5} 次 · 返回替代输入 {6} 次 · 射击替代 {7} 次\n战斗模式（游戏内 F10）：{8}\n{9}\n关闭窗口或在游戏内按 ` 键（Esc 下方）暂停接管；计数不代表角色实际位移。",
+                                note,status,packets,rejected,DelaySummary(),view.ReadInt32(108),view.ReadInt32(112),view.ReadInt32(120),modes[lastCombat&3],archiveNote,
+                                engineText,nThreats,nMicros,nFrames,turnText);
                         }
                         label.Text=text;
                         if(status<0){enabled=false;toggle.Checked=false;lock(sync)note="Hook校验失败："+status;}

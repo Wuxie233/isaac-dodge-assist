@@ -88,5 +88,31 @@ int main(){
     asm volatile("mov %%esp,%0":"=r"(before));
     for(int i=0;i<200000;++i){int a=i%32;assert(value(&base,a)==base+a);assert(pressed(&base,a)==(a==2));}
     asm volatile("mov %%esp,%0":"=r"(after));
-    assert(before==after);puts("PASS ranking, combat decisions, raw/pressed poll snapshot, 3ms reuse boundary, inactive live passthrough, x87 float/bool return, 200000 thiscall/fastcall pairs, balanced stack");
+    assert(before==after);
+
+    // V2 ABI + native decision fusion + mirror checks
+    assert(sizeof(Shared)==192 && offsetof(Shared,extMagic)==128 && offsetof(Shared,nativeMode)==148);
+    {
+        iad::PlanResult pr{};
+        pr.valid=true; pr.danger=true; pr.bestDir=1; // world Left
+        pr.scores[0]=0.0; pr.scores[1]=-10.0; pr.scores[2]=1e6;
+        float idle[8]{};
+        Decision d1=fuseNativeDecision(pr, 0, idle, false);
+        assert(d1.move==1 && d1.fire==-1);
+        Decision dMirror=fuseNativeDecision(pr, 0, idle, true);
+        assert(dMirror.move==2 && dMirror.fire==-1); // local Right moves world Left in mirror
+        // AUTO wants local Right (move=2) -> world Right (dir=2, unsafe 1e6) => dodges Left (1)
+        Decision dAuto=fuseNativeDecision(pr, 2u|(2u<<2)|(1u<<6)|(1u<<9), idle, false);
+        assert(dAuto.move==1 && dAuto.fire==1);
+        // When bestDir==-1 (idle 0 is safe) and AUTO wants unsafe dir 2 => hold still (move=0)
+        iad::PlanResult prHold{}; prHold.valid=true; prHold.danger=true; prHold.bestDir=-1; prHold.scores[2]=1e6;
+        Decision dHold=fuseNativeDecision(prHold, 2u|(2u<<2), idle, false);
+        assert(dHold.move==0);
+        // When manual Right key is pressed in safe AUTO case vs unsafe AUTO case
+        float rightHeld[8]{0.f,1.f};
+        iad::PlanResult prRightSafe{}; prRightSafe.valid=true; prRightSafe.danger=false; prRightSafe.bestDir=-1;
+        Decision dMan=fuseNativeDecision(prRightSafe, 2u|(1u<<2), rightHeld, false);
+        assert(dMan.move==-1);
+    }
+    puts("PASS ranking, combat decisions, raw/pressed poll snapshot, 3ms reuse boundary, inactive live passthrough, v2 ABI & fusion, x87 float/bool return, 200000 thiscall/fastcall pairs, balanced stack");
 }

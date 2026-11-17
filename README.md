@@ -4,7 +4,7 @@
 
 An emergency dodge assist for The Binding of Isaac: Repentance+ on Windows: it takes over local keyboard movement only when your path is about to enter danger and a safer direction exists, with optional auto-aim and auto-combat modes.
 
-当前版本：Lua 传感器 0.26.0，原生输入程序 NativeHost 0.4.6。旧 SendInput 辅助已不再使用。
+当前版本：Lua 传感器 0.27.0，原生输入程序 NativeHost 0.5.0（60Hz 只读内存直读 + 二段转弯规划）。旧 SendInput 辅助已不再使用。
 
 ## 它做什么
 
