@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || { cd -- "$(dirname -- "$0")/.." && pwd; })"
+cd "$repo_root"
+
+tmp_bin="$(mktemp "${TMPDIR:-/tmp}/native_60hz_test.XXXXXX")"
+cleanup() {
+    rm -f "$tmp_bin"
+}
+trap cleanup EXIT
+
+echo "[pre-commit] Compiling and running native_60hz_test..."
+g++ -std=c++17 -O2 -Wall -Wextra -Werror native/tests/native_60hz_test.cpp -o "$tmp_bin"
+"$tmp_bin"
+
+echo "[pre-commit] Running planner_regression.py..."
+python3 native/tests/planner_regression.py

@@ -78,6 +78,15 @@ public:
     }
 };
 
+void assertLatencyBelow(const char* label, double actualUs, double limitUs) {
+    if (!(actualUs < limitUs)) {
+        std::fprintf(stderr, "FAIL latency %s: %.1f us/frame >= %.1f us limit\n",
+                     label, actualUs, limitUs);
+        std::fflush(stderr);
+        assert(actualUs < limitUs);
+    }
+}
+
 struct WorldFixture {
     MockMem m;
     uintptr_t mgr = 0;
@@ -709,7 +718,7 @@ void benchmarkCombatRoom() {
     double usPerFrame = collectUs + planUs;
     std::printf("BENCH 60Hz dense room (40 proj + 6 rot lasers + 8 npcs): %.1f us/frame (collect=%.1f plan=%.1f, sink=%d)\n",
                 usPerFrame, collectUs, planUs, static_cast<int>(sink));
-    assert(usPerFrame < 1000.0); // comfortably < 1ms/frame!
+    assertLatencyBelow("60Hz dense room", usPerFrame, 1000.0); // comfortably < 1ms/frame!
 }
 
 void testKrampusAttack2ChubberBoomerangAndTopWall() {
@@ -880,7 +889,7 @@ void testItLivesFamiliarEffectFloodThroughput() {
     collectUs /= 200.0;
     std::printf("BENCH 60Hz It Lives! flood (%zu entities: 40 fam + 80 fx + 40 tears + 10 dead + 19 proj): collect=%.1f us/frame\n",
                 f.entities.size(), collectUs);
-    assert(collectUs < 400.0);
+    assertLatencyBelow("60Hz It Lives! flood collect", collectUs, 400.0);
 }
 
 void testBatchedReadFallbackAndSanitizedPtrs() {
@@ -965,7 +974,9 @@ void testStandingOnBombNoLagOrTie() {
             auto t1 = std::chrono::steady_clock::now();
             double us = std::chrono::duration<double, std::micro>(t1 - t0).count() / kIters;
             assert(sink > 0);
-            assert(us < maxUs);
+            char label[64];
+            std::snprintf(label, sizeof(label), "standing on bomb (count=%d fuse=%d)", count, fuse);
+            assertLatencyBelow(label, us, maxUs);
         }
     };
     runCase(1, 40, 250.0);  // warn-only early fuse (~50 us)
