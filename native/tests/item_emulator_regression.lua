@@ -122,6 +122,12 @@ for _, c in ipairs({
   check(first == c[3], ("boss pedestal InitSeed as=%d"):format(c[1]))
   check(Emu.extraBossPickSeed(first) == c[4], ("co-op boss item seed as=%d"):format(c[1]))
 end
+-- 1c. Void (477) co-op boss absorption divergence (2026-11-19 Duke of Flies 5.2013):
+-- normal pickup uses pedestal->DropRNG (X30(0x13c9f5fa) = 2237562146), whereas Void
+-- uses activating player->DropRNG (X30(167906700) = 1605593133, InitSeed = 0x880aefd2).
+check(Emu.extraBossPickSeed(0x13c9f5fa) == 2237562146, "normal pickup uses pedestal->DropRNG")
+check(Emu.next(167906700, 30) == 1605593133, "Void boss replacement pick seed uses player->DropRNG")
+check(Emu.next(1605593133, 30) == 0x880aefd2, "Void boss replacement InitSeed uses player->DropRNG")
 
 -- 4. purity: predict must not change state -------------------------------------
 do

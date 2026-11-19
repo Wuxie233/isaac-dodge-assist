@@ -744,6 +744,13 @@ local function slotRun(variant, seed, n, c)
       else x = pay("nothing") end
     elseif variant == 16 then
       x = craneGame(r, c, st)
+    elseif variant == 17 then
+      -- Confessional (6.17): payment rolls X30 float < (hard and 0.25 or 0.30) * (luckyFoot and 1.5 or 1),
+      -- but its Prize branches depend on player broken hearts (0-RNG heal branch) and devilDeals
+      -- (Redemption vs Angel pool), plus direct non-pickup effects (soul/eternal heart, angel chance,
+      -- curse cleanse) not in FloorIntel's context or effect vocabulary. Keep slot(17) safely
+      -- unsupported to avoid false/empty predictions; slotExplode(17) still covers bombing it.
+      unsupported("slot variant 17")
     else
       unsupported("slot variant " .. tostring(variant))
     end

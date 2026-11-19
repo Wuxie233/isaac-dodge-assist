@@ -350,6 +350,24 @@ do
   end
   check((first[6] or 0) + (first[7] or 0) + (first[8] or 0) == 3000, "beggar first prize on hard not on payment 6-8")
   print(("PASS beggar on hard: first prize on payment 6 / 7 / 8 = %d / %d / %d of 3000"):format(first[6] or 0, first[7] or 0, first[8] or 0))
+
+  -- Confessional (6.17): slot() must stay safely unsupported (depends on broken hearts,
+  -- devilDeals, and non-pickup effects), while slotExplode() uses the default explosion
+  -- branch and X30 matches all 11 logged PayNothing transitions (2026-11-19).
+  local confChain = {
+    2249966921, 4255764257, 1642724799, 1481399650, 3012297938, 2098388718,
+    2900114798, 2526953527, 1615508913, 1413399461, 3667148333, 1859560668,
+  }
+  local confRes = DF.slot(17, confChain[1], { difficulty = 1 }, 6)
+  check(confRes and confRes.unsupported == "slot variant 17", "confessional slot should report unsupported")
+  local confBoom = DF.slotExplode(17, confChain[1], { difficulty = 1 })
+  check(confBoom and not confBoom.unsupported and confBoom.kind == "breaks" and type(confBoom.entries) == "table", "confessional slotExplode should work")
+  for i = 1, #confChain - 1 do
+    local nxt = DF.next(confChain[i], 30)
+    check(nxt == confChain[i + 1], ("confessional X30 step %d"):format(i))
+    check(nxt * (1 / 4294967296) >= 0.25, ("confessional PayNothing float >= 0.25 at step %d"):format(i))
+  end
+  print("PASS confessional (6.17): slot safely unsupported, slotExplode supported, 11 logged PayNothing X30 steps verified")
 end
 
 ---------------------------------------------------------------------------- 6. readContext purity

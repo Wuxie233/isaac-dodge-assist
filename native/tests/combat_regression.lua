@@ -96,12 +96,13 @@ b.Position=Vector(100,350);update(s,{a,b});assert(s.targetSeed==b.InitSeed,'kept
 b.Position=Vector(100,600);update(s,{a,b});assert(s.targetSeed==a.InitSeed,'switched')
 print('PASS combat word, aim lead with queue, target filters and hysteresis')
 
--- AUTO: goal on the target row/column with a clear lane.
+-- AUTO: goal on the target row/column with a clear lane (wide off-axis shot
+-- at (100,100)->(300,180) holds fire until aligned, then fires on-row).
 s=Combat.new();Combat.cycle(s);assert(s.mode==2)
 p.Position=Vector(100,100)
 local t=enemy(300,180)
 m,mv,sh,hold=update(s,{t})
-assert(m==2 and hold and s.info.goalX,'auto goal')
+assert(m==2 and not hold and s.info.goalX,'auto goal')
 assert(math.abs(s.info.goalX-300)<1 or math.abs(s.info.goalY-180)<1,'goal aligned')
 -- A rock between goal and target closes that lane.
 local gx,gy=s.info.goalX,s.info.goalY
@@ -684,3 +685,55 @@ assert(s.targetSeed==c1.InitSeed or s.targetSeed==c2.InitSeed or s.targetSeed==c
  'Haemolacria did not prefer clustered splash targets: solo='..solo.InitSeed..' picked='..tostring(s.targetSeed))
 items={}
 print('PASS 0.26+ combat: Deathmatch player, Brimstone standoff, Dr./Epic Fetus, Spirit Sword/Bone, Knife partial charge, Haemolacria')
+
+-- 0.27+ combat: target hysteresis (3-tick vote + rock grace), tear fire gating (rock & wide miss), firing-line deadband.
+-- 1) Marginal retarget needs 3 ticks after dwell; <0.5x threat switches immediately.
+s=Combat.new();Combat.cycle(s);p.Position,p.Velocity,p.Damage=Vector(100,180),Vector(0,0),3.5
+local curE,altE=enemy(340,180),enemy(250,180) -- cur=240, alt=150: 150 < 240*0.7-20=148? Use cur=350 (d=250, lim=155, half=125), alt=245 (d=145)
+curE.Position,altE.Position=Vector(350,180),Vector(245,180)
+update(s,{curE});s.tick=40
+update(s,{curE,altE});assert(s.targetSeed==curE.InitSeed,'marginal retarget switched on tick 1')
+update(s,{curE,altE});assert(s.targetSeed==curE.InitSeed,'marginal retarget switched on tick 2')
+update(s,{curE,altE});assert(s.targetSeed==altE.InitSeed,'marginal retarget failed to switch on tick 3')
+-- Urgent <0.5x switches on tick 1.
+local urgent=enemy(150,180) -- d=50 < 145*0.5=72.5
+update(s,{altE,urgent});assert(s.targetSeed==urgent.InitSeed,'urgent <0.5x target did not switch immediately')
+
+-- 2) Tear fire gating: solid rock blocks plain tears but not spectral; wide long-range miss gates unless another enemy is on-lane or homing.
+s=Combat.new();Combat.cycle(s);p.Position,p.Velocity=Vector(100,180),Vector(0,0)
+rocks[room:GetGridIndex(Vector(140,180))]=true;s.grid=nil
+local _,_,shBlk,holdBlk=update(s,{enemy(260,180)})
+assert(shBlk==2 and not holdBlk,'plain tear fired straight into rock ahead')
+for _=1,50 do
+ local _,_,_,hGated=update(s,{enemy(260,180)})
+ assert(not hGated,'rock-gated tear fired during sustained occlusion')
+end
+assert(s.streak==0 and s.quiet==0 and not s.stalled,
+ 'post-fireControl rock gate inflated streak/stall: streak='..tostring(s.streak)..' quiet='..tostring(s.quiet)..' stalled='..tostring(s.stalled))
+TearFlags=TearFlags or {TEAR_SPECTRAL=1,TEAR_HOMING=4}
+p.TearFlags=TearFlags.TEAR_SPECTRAL
+local _,_,shSpec,holdSpec=update(s,{enemy(260,180)})
+assert(shSpec==2 and holdSpec,'spectral tear blocked by rock gate')
+p.TearFlags=0;rocks={};s.grid=nil
+
+s=Combat.new();Combat.cycle(s);p.Position,p.Velocity=Vector(100,180),Vector(0,0)
+local wideT=enemy(300,260) -- d~215, miss=80 > size(13)+14
+local _,_,_,holdWide=update(s,{wideT})
+assert(not holdWide,'plain tear fired on wide long-range miss')
+local onLane=enemy(260,180) -- right along shoot=2 lane while still targeting wideT? keep wideT as current target inside dwell
+s=Combat.new();Combat.cycle(s);update(s,{wideT})
+local onLaneFar=enemy(320,180) -- further than wideT so wideT stays target, sits on shoot=2 lane
+local _,_,shLane,holdLane=update(s,{wideT,onLaneFar})
+assert(shLane==2 and holdLane,'wide-miss gate suppressed shot that hits another enemy on lane')
+TearFlags.TEAR_HOMING=TearFlags.TEAR_HOMING or 4
+p.TearFlags=TearFlags.TEAR_HOMING
+local _,_,_,holdHoming=update(s,{wideT})
+assert(holdHoming,'homing tear suppressed by wide-miss gate')
+p.TearFlags=0
+
+-- 3) Firing-line deadband: when aligned, clear, in range, and uncrowded, stay on the line instead of perpendicular grid jitter.
+s=Combat.new();Combat.cycle(s);p.Position,p.Velocity=Vector(100,192),Vector(0,0)
+local lineT=enemy(260,186) -- aligned right (miss=6 <= 19), d=160 <= 250, nearEnemy=160 >= 115
+local _,mvLine,shLine,holdLine=update(s,{lineT})
+assert(shLine==2 and holdLine and mvLine==0,'aligned tear lane jittered off-axis: mv='..tostring(mvLine))
+print('PASS 0.27+ combat: target hysteresis, rock/wide-miss tear gating, firing-line deadband')

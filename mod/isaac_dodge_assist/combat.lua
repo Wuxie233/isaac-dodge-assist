@@ -25,7 +25,7 @@ function M.new()
     return {mode=0, targetSeed=nil, goalX=nil, goalY=nil, lastMove=1, tick=0,
         held=0, streak=0, quiet=0, bias=0, releaseLeft=0, releasedAt=nil, checkAt=nil,
         seen={}, scanTick=-10, knives={}, autoFireAt=nil, provenAuto=false, stalled=false,
-        targetSince=0, goalSide=nil, aimLogs=0, stats=nil,
+        targetSince=0, targetBlocked=0, retargetVotes=0, goalSide=nil, aimLogs=0, stats=nil,
         hint="tears", hintTick=-100, weapon="tears", laserReach=nil, info=nil}
 end
 -- Drop pending fire decisions and attack history when play is interrupted
@@ -33,6 +33,7 @@ end
 -- previous room must not fire, release, or bias the next charge.
 local function clearAction(state)
     state.targetSeed, state.goalX, state.goalY, state.info = nil, nil, nil, nil
+    state.targetBlocked, state.retargetVotes = 0, 0
     state.held, state.streak, state.quiet = 0, 0, 0
     state.releaseLeft, state.releasedAt, state.checkAt, state.checkHeld = 0, nil, nil, nil
     state.beamWait, state.beamSeen = nil, nil
@@ -132,6 +133,12 @@ local function spectral(player)
     if not (TearFlags and TearFlags.TEAR_SPECTRAL) then return false end
     local ok, result = pcall(function()
         return player.TearFlags & TearFlags.TEAR_SPECTRAL == TearFlags.TEAR_SPECTRAL end)
+    return ok and result == true
+end
+local function homing(player)
+    if not (TearFlags and TearFlags.TEAR_HOMING) then return false end
+    local ok, result = pcall(function()
+        return player.TearFlags & TearFlags.TEAR_HOMING == TearFlags.TEAR_HOMING end)
     return ok and result == true
 end
 
@@ -530,9 +537,9 @@ local function aim(player, target, queueDelay, beam, opts)
     end
     if melee then
         local d = t:Distance(Vector(ox, oy))
-        return best, bestMiss <= target.Size + tol and d <= (opts.meleeReach or 88) + target.Size, bestX, bestY
+        return best, bestMiss <= target.Size + tol and d <= (opts.meleeReach or 88) + target.Size, bestX, bestY, bestMiss
     end
-    return best, bestMiss <= target.Size + tol, bestX, bestY
+    return best, bestMiss <= target.Size + tol, bestX, bestY, bestMiss
 end
 M.aim = aim -- exposed for tests
 
@@ -551,8 +558,13 @@ local function targetCost(state, player, e, g, room, ignoreRocks, chaser, haemo,
     local cost = t:Distance(p)
     local range = meleeWeapon(player) and 95 or (instantBeam(player) and not state.laserReach and 600) or (player.TearRange or 260)
     if cost > range then cost = cost + (cost - range)*2 end
-    if g and not laneClear(room, g, p.X, p.Y, t.X, t.Y, ignoreRocks) then cost = cost + 150 end
-    if entityHp(e) <= max(3.5, (player.Damage or 3.5)*2) then cost = cost - 60 end
+    local isCur = state.targetSeed ~= nil and e.InitSeed == state.targetSeed
+    if g and not laneClear(room, g, p.X, p.Y, t.X, t.Y, ignoreRocks) then
+        -- Grace brief rock-edge occlusion on the current target before applying
+        -- the full +150 penalty so dodging past a rock corner does not flip-flop.
+        cost = cost + ((isCur and (state.targetBlocked or 0) < 2) and 90 or 150)
+    end
+    if entityHp(e) <= max(3.5, (player.Damage or 3.5)*2) then cost = cost - (isCur and 90 or 60) end
     if chaser and chaser(e) and t:Distance(p) >= CHASER_EARLY then cost = cost - 40 end
     if haemo and enemies then
         for _, other in ipairs(enemies) do
@@ -570,10 +582,28 @@ local function pickTarget(state, player, enemies, g, room, chaser)
         if e.InitSeed == state.targetSeed then current, currentCost = e, cost end
         if not bestCost or cost < bestCost then best, bestCost = e, cost end
     end
+    if current then
+        local curClear = not g or laneClear(room, g, player.Position.X, player.Position.Y, current.Position.X, current.Position.Y, ignoreRocks)
+        state.targetBlocked = curClear and 0 or ((state.targetBlocked or 0) + 1)
+    else
+        state.targetBlocked = 0
+    end
     if current and best ~= current then
         local dwell = state.tick - (state.targetSince or 0) < DWELL
         local limit = dwell and currentCost*0.5 or currentCost*0.7 - 20
-        if bestCost >= limit then return current end
+        if bestCost >= limit then
+            state.retargetVotes = 0
+            return current
+        end
+        -- Urgent half-cost threats switch immediately; marginal retargets need
+        -- 3 consecutive ticks to filter swarming-mob flip-flop.
+        if bestCost >= currentCost*0.5 then
+            state.retargetVotes = (state.retargetVotes or 0) + 1
+            if state.retargetVotes < 3 then return current end
+        end
+        state.retargetVotes = 0
+    else
+        state.retargetVotes = 0
     end
     return best
 end
@@ -967,6 +997,7 @@ function M.update(state, ctx)
     local stats = state.mode == 2 and M.stats(state) or nil
     if target.InitSeed ~= previousSeed then
         state.targetSince, state.goalSide = state.tick, nil
+        state.targetBlocked, state.retargetVotes = 0, 0
         if stats and previousSeed then
             stats.switches = stats.switches + 1
             -- Leaving a target that is still alive is a retarget, not a kill.
@@ -985,7 +1016,7 @@ function M.update(state, ctx)
     local haemo = haemolacriaWeapon(p)
     local crosshair = rocket and findRocketTarget(ctx.entities, p) or nil
     ctx.crosshair = crosshair
-    local shoot, aligned, ax, ay = aim(p, target, ctx.queueDelay, beam, {
+    local shoot, aligned, ax, ay, aimMiss = aim(p, target, ctx.queueDelay, beam, {
         melee=melee, meleeReach=95, bomb=bomb, rocket=rocket, crosshair=crosshair,
         knife=knife, haemo=haemo,
     })
@@ -1021,9 +1052,46 @@ function M.update(state, ctx)
     state.lastShoot = shoot
     local wasHeld = state.held
     local hold = fireControl(state, ctx, p, aligned, safe)
+    local plainTears = state.weapon == "tears" and not (melee or bomb or rocket or knife or haemo)
+    local targetDist = target.Position:Distance(p.Position)
+    local ignoreTearRocks = spectral(p) or laserWeapon(p)
+    if hold and plainTears and shoot >= 1 and shoot <= 4 then
+        local axis = AXES[shoot]
+        local clear = laneClear(room, g, p.Position.X, p.Position.Y,
+            p.Position.X + axis[1]*min(targetDist, 110), p.Position.Y + axis[2]*min(targetDist, 110), ignoreTearRocks)
+        if not clear then
+            -- Do not waste fire delay shooting straight into a solid rock.
+            hold = false
+        elseif not homing(p) and targetDist > 110 and aimMiss and aimMiss > target.Size + 14 then
+            -- Suppress clearly wide long-range shots unless another enemy sits on the lane
+            -- so FireDelay stays ready for the aligned tick and lateral step-in is not penalized.
+            local hitOther = false
+            local pv = p.Velocity or ZERO
+            local spd = max(1, (p.ShotSpeed or 1)*10)
+            local along = pv.X*axis[1] + pv.Y*axis[2]
+            local speed = spd + INHERIT*max(0, along)
+            local dx, dy = (pv.X - along*axis[1])*INHERIT, (pv.Y - along*axis[2])*INHERIT
+            local maxRange = p.TearRange or 260
+            for _, oe in ipairs(enemies) do
+                if oe ~= target then
+                    local fwd = (oe.Position.X - p.Position.X)*axis[1] + (oe.Position.Y - p.Position.Y)*axis[2]
+                    if fwd > 0 and fwd <= maxRange then
+                        local ft = min(12, max(1.5, fwd/speed))
+                        local sx = oe.Position.X - p.Position.X - dx*ft
+                        local sy = oe.Position.Y - p.Position.Y - dy*ft
+                        if abs(sx*axis[2] - sy*axis[1]) <= oe.Size + 10 then hitOther = true; break end
+                    end
+                end
+            end
+            if not hitOther then hold = false end
+        end
+    end
     if melee and not aligned then hold = false end
     if bomb and (not safe or not aligned) then hold = false end
     if rocket and not safe then hold = false end
+    -- Any post-fireControl gate cancels the hold, so it must not count toward
+    -- fireControl's unbroken hold streak / silent-stall detector on the next tick.
+    if not hold then state.streak = 0 end
     -- Updates until the next beam can leave: the rest of the charge (a full
     -- one while a beam is out or just released), plus the online queue.
     state.releaseIn = max(0, need - state.held) + (ctx.queueDelay or 0)
@@ -1060,11 +1128,26 @@ function M.update(state, ctx)
         state.goalX, state.goalY = gx, gy
         info.goalX, info.goalY = gx, gy
         local field = flood(g, goal)
+        local nearEnemy = math.huge
+        for _, e in ipairs(enemies) do
+            local d = e.Position:Distance(p.Position)
+            if d < nearEnemy then nearEnemy = d end
+        end
+        -- Hold the firing line against 1-step perpendicular grid-center jitter when already
+        -- aligned, clear, in range, and uncrowded so lateral 1.3x tear drift stays down.
+        local holdLine = plainTears and aligned and nearEnemy >= 115
+            and targetDist <= (p.TearRange or 260) - 10
+            and laneClear(room, g, p.Position.X, p.Position.Y, target.Position.X, target.Position.Y, ignoreTearRocks)
         for i, dir in ipairs(ctx.directions) do
             local x, y, crossed = endpoint(ctx, g, dir, ctx.stride)
             local cell = cellOf(room, g, x, y)
             local steps = not crossed and cell and field[cell]
-            costs[i] = steps and (steps*40 + sqrt((x-gx)^2 + (y-gy)^2)*0.35) or 1e6
+            local stepCost = steps and (steps*40 + sqrt((x-gx)^2 + (y-gy)^2)*0.35) or 1e6
+            if holdLine and steps and steps <= 1 and i > 1 and shoot >= 1 and shoot <= 4 then
+                local axis = AXES[shoot]
+                if abs(dir.X*axis[2] - dir.Y*axis[1]) > 0.2 then stepCost = stepCost + 40 end
+            end
+            costs[i] = stepCost
         end
     else
         -- No reachable goal: keep distance from the target.

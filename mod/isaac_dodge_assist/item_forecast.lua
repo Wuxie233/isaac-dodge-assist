@@ -211,8 +211,11 @@ end
 
 -- In a cleared boss room with two or more people: the first reward
 -- pedestal (found by its InitSeed) and the item the next pedestal will hold
--- once it is taken. pedestals = {seed (InitSeed), ...}; nil when there is
--- none to tell.
+-- once it is taken normally (pedestal->DropRNG, X30(pedestal.seed)).
+-- Note: absorbing the pedestal with Void (477) instead rolls the next co-op
+-- boss item from the activating player's DropRNG (runtime action divergence),
+-- so pre-pickup forecasting stays on the normal pickup chain.
+-- pedestals = {seed (InitSeed), ...}; nil when there is none to tell.
 -- With Tainted Isaac also the next pedestal's second item.
 function M.bossNext(state, game, room, pedestals)
     if not state or room.type ~= 5 or M.bossItems(game, room) < 2 then return nil end
