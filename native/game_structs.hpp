@@ -337,8 +337,10 @@ namespace IsaacEnums {
     static constexpr int kEntLeech      = 55;
     static constexpr int kEntEye        = 60;
     static constexpr int kEntPin        = 62;
+    static constexpr int kEntPeep       = 68;
     static constexpr int kEntFallen     = 81;
     static constexpr int kEntSatan      = 84;
+    static constexpr int kEntDeathsHead = 212;
     static constexpr int kEntBlackMaw   = 225;
     static constexpr int kEntRageCreep  = 241;
     static constexpr int kEntEmbryo     = 245;
@@ -353,6 +355,7 @@ namespace IsaacEnums {
     static constexpr int kEntMovingBox  = 292;
     static constexpr int kEntPoisonMind = 301;
     static constexpr int kEntFlyBomb    = 819;
+    static constexpr int kEntWhipper    = 834;
     static constexpr int kEntPon        = 840;
     static constexpr int kEntGrudge     = 877;
     static constexpr int kEntGideon     = 885;

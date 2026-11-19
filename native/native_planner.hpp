@@ -43,22 +43,25 @@ struct PlayerKinematics {
     float fIdle  = 0.880f;
     float accel  = 0.5292f;
     int extraDelay60 = 0;
+    Vec2 extAccel{0.0f, 0.0f};
 
-    static PlayerKinematics fast(const PlayerState& pl) {
+    static PlayerKinematics fast(const PlayerState& pl, Vec2 ext = {0.0f, 0.0f}) {
         PlayerKinematics k{};
         k.fDrive = pl.slippery ? 0.980f : 0.874f;
         k.fIdle  = pl.slippery ? 0.980f : 0.880f;
         k.accel  = 4.2f * pl.moveSpeed * (1.0f - k.fDrive);
         k.extraDelay60 = 0;
+        k.extAccel = ext;
         return k;
     }
 
-    static PlayerKinematics slow(const PlayerState& pl) {
+    static PlayerKinematics slow(const PlayerState& pl, Vec2 ext = {0.0f, 0.0f}) {
         PlayerKinematics k{};
         k.fDrive = pl.slippery ? 0.987f : 0.894f;
         k.fIdle  = pl.slippery ? 0.987f : 0.895f;
         k.accel  = (4.2f * 0.97f) * pl.moveSpeed * (1.0f - k.fDrive);
         k.extraDelay60 = 2;
+        k.extAccel = ext;
         return k;
     }
 };
@@ -861,9 +864,9 @@ inline void stepPlayer60(const RoomGrid& grid, float playerSize, bool canFly,
                          bool originUnsafe, Vec2 dir, const PlayerKinematics& kin,
                          Vec2& pos, Vec2& vel, bool& moved) {
     if (dir.lengthSq() < 1e-6f) {
-        vel *= kin.fIdle;
+        vel = vel * kin.fIdle + kin.extAccel;
     } else {
-        vel = vel * kin.fDrive + dir * kin.accel;
+        vel = vel * kin.fDrive + dir * kin.accel + kin.extAccel;
     }
     Vec2 delta = vel;
     float distSq = delta.lengthSq();
@@ -907,9 +910,9 @@ inline void stepPlayer60Fast(const RoomGrid& grid, const GridFastInfo& gf,
                              bool dirZero, Vec2 dAccel, const PlayerKinematics& kin,
                              Vec2& pos, Vec2& vel, bool& moved) {
     if (dirZero) {
-        vel *= kin.fIdle;
+        vel = vel * kin.fIdle + kin.extAccel;
     } else {
-        vel = vel * kin.fDrive + dAccel;
+        vel = vel * kin.fDrive + dAccel + kin.extAccel;
     }
     float distSq = vel.lengthSq();
     if (distSq < 1e-8f) return;
@@ -2258,10 +2261,10 @@ inline PlanResult solveNativePlan(const ThreatScene& scene, int rawWorldDir,
     const RoomGrid& grid = scene.grid;
     int maxK = std::min(scene.steps60, BulletTrack::kMaxPts - 1);
 
-    auto kinFast = planner_detail::PlayerKinematics::fast(pl);
-    auto kinSlow = planner_detail::PlayerKinematics::slow(pl);
-    auto twinFast = scene.hasTwin ? planner_detail::PlayerKinematics::fast(scene.twin) : kinFast;
-    auto twinSlow = scene.hasTwin ? planner_detail::PlayerKinematics::slow(scene.twin) : kinSlow;
+    auto kinFast = planner_detail::PlayerKinematics::fast(pl, scene.extAccel);
+    auto kinSlow = planner_detail::PlayerKinematics::slow(pl, scene.extAccel);
+    auto twinFast = scene.hasTwin ? planner_detail::PlayerKinematics::fast(scene.twin, scene.extAccel) : kinFast;
+    auto twinSlow = scene.hasTwin ? planner_detail::PlayerKinematics::slow(scene.twin, scene.extAccel) : kinSlow;
 
     planner_detail::GridFastInfo gf;
     gf.init(grid);

@@ -263,6 +263,7 @@ struct ThreatScene {
     int frameCount30 = 0;
     int steps60 = 27;
     int queueDelay30 = 0;
+    Vec2 extAccel{0.0f, 0.0f}; // external 60Hz pull/wind applied to player velocity (e.g. Beast SuckLoop)
     RoomGrid grid;
     PlayerState player;
     PlayerState twin; // Shared-controller twin (e.g. Esau when bound to Jacob)
@@ -277,6 +278,7 @@ struct ThreatScene {
         deathmatch = false;
         hasTwin = false;
         entityPhase = 0.0f;
+        extAccel = {0.0f, 0.0f};
         bullets.clear();
         discs.clear();
         lasers.clear();
@@ -677,6 +679,7 @@ inline bool isChaserExploder(int type, int variant) {
     if (type == IsaacEnums::kEntMulligan && variant == 2) return true;
     if (type == IsaacEnums::kEntLeech && (variant == 1 || variant == 2)) return true;
     if (type == IsaacEnums::kEntTickingSpd) return true;
+    if (type == IsaacEnums::kEntPoisonMind) return true;
     return false;
 }
 
@@ -725,7 +728,9 @@ inline void simulateBulletCommon(Vec2 pos, Vec2 vel, float size, float timeScale
     float dtStep = 0.5f * timeScale;
     bool continuum = (flags & IsaacEnums::kProjContinuum) != 0;
     bool noWallCollide = (flags & IsaacEnums::kProjNoWallCollide) != 0;
-    bool ignoreFloorHeight = (scene.grid.type == 16 && !scene.grid.beast);
+    // Both side-view dungeons and the Beast arena (Type 16) clamp projectile height above -5.1
+    // rather than landing on a top-down floor; Beast magma landing is handled by beastGroundY below.
+    bool ignoreFloorHeight = (scene.grid.type == 16 || scene.grid.beast);
     bool enteredRoom = scene.grid.inBoundsPoint(pos.x, pos.y, 0.0f);
 
     // Helper advancing one 0.5-update step in-place.
@@ -792,6 +797,12 @@ inline void simulateBulletCommon(Vec2 pos, Vec2 vel, float size, float timeScale
             float blendAge = std::min(1.0f, nextSimAge / 20.0f);
             float factor = 1.0f + (accel - 1.0f) * blendAge;
             vel *= std::pow(std::max(0.05f, factor), dt);
+        }
+
+        // Beast side-view gravity: lava/Pestilence shots (fa > 0.05) accelerate downward in Y
+        // (CZTMRJ6J Hit #24: fa=1.0, vy -19.6 -> -12.1 over 6 updates = +1.25/update).
+        if (scene.grid.beast && fallAccel > 0.05f) {
+            vel.y += fallAccel * 1.25f * dt;
         }
 
         Vec2 nextPos = curPos + vel * dt;
@@ -1142,7 +1153,7 @@ inline void simulateChubberWorm(const MemReader& mem, uintptr_t entAddr, Vec2 eP
 
 inline void appendNpcIntentWarnings(const MemReader& mem, uintptr_t entAddr,
                                     int type, int variant, float size, Vec2 pos, Vec2 vel,
-                                    const ThreatScene& scene, float horizonUpdates,
+                                    ThreatScene& scene, float horizonUpdates,
                                     std::vector<DiscHazard>& discs,
                                     std::vector<LaserHazard>& lasers) {
     Vec2 sprOff{};
@@ -1358,6 +1369,123 @@ inline void appendNpcIntentWarnings(const MemReader& mem, uintptr_t entAddr,
                 }
             }
         }
+    } else if (type == IsaacEnums::kEntDeathsHead && variant == 3 && strStartsWith(anim, "Attack")) {
+        // Brimstone Death's Head (212.3): fires cardinal brimstone around frame 25 (CZTMRJ6J Hit #15).
+        const char* side = anim + 6;
+        if (std::strcmp(side, "Hori") == 0) {
+            addDirectedLaser(lasers, pos, vel, flipX ? 180.0f : 0.0f, roomDiag, 20.0f,
+                             std::max(0.5f, 24.0f - frame), false);
+        } else {
+            addCardStr(side, pos, 20.0f, 24.0f, false);
+        }
+    } else if (type == IsaacEnums::kEntPeep && variant == 1 && sprOff.y >= -5.0f) {
+        // The Bloat (68.1): zero-windup horizontal (y - 40) and downward brimstone (CZTMRJ6J Hit #8).
+        Vec2 eyeOrg{pos.x, pos.y - 40.0f};
+        addDirectedLaser(lasers, eyeOrg, vel, 0.0f, roomDiag, 24.0f, 0.0f, true);
+        addDirectedLaser(lasers, eyeOrg, vel, 180.0f, roomDiag, 24.0f, 0.0f, true);
+        addDirectedLaser(lasers, pos, vel, 90.0f, roomDiag, 24.0f, 0.0f, true);
+    } else if (type == IsaacEnums::kEntWhipper && strStartsWith(anim, "Attack") && frame <= 15.0f) {
+        // Whipper / Snapper / Flagellant (834.0/1/2): long-range (~200px) non-projectile whip (CZTMRJ6J Hit #16).
+        const char* side = anim + 6;
+        float ang = 0.0f;
+        bool matched = true;
+        if (std::strcmp(side, "Hori") == 0 || std::strcmp(side, "Horiz") == 0) ang = flipX ? 180.0f : 0.0f;
+        else if (std::strcmp(side, "Right") == 0) ang = 0.0f;
+        else if (std::strcmp(side, "Left") == 0) ang = 180.0f;
+        else if (std::strcmp(side, "Down") == 0) ang = 90.0f;
+        else if (std::strcmp(side, "Up") == 0) ang = 270.0f;
+        else matched = false;
+        if (matched) {
+            Vec2 dir = Vec2{1.0f, 0.0f}.rotatedDeg(ang);
+            float reach = 220.0f;
+            for (float s = 40.0f; s <= 220.0f; s += 40.0f) {
+                if (!scene.grid.inBoundsPoint(pos.x + dir.x * s, pos.y + dir.y * s, 0.0f)) {
+                    reach = std::max(80.0f, s);
+                    break;
+                }
+            }
+            addDirectedLaser(lasers, pos, vel, ang, reach, 18.0f, std::max(0.0f, 7.5f - frame), false);
+        }
+    } else if (type == IsaacEnums::kEntBeast && variant == 0 && strContainsCI(anim, "suck")) {
+        // The Beast (951.0) SuckStart/SuckLoop: strong suction pull toward mouth + standoff warning (CZTMRJ6J Hit #26-#28).
+        Vec2 toB = pos - scene.player.pos;
+        float dist = toB.length();
+        if (dist > 1.0f) {
+            float pull60 = std::max(0.35f, std::min(0.80f, 125.0f / std::max(150.0f, dist)));
+            scene.extAccel += toB * (pull60 / dist);
+        }
+        float dirX = (pos.x >= 320.0f) ? -1.0f : 1.0f;
+        addDirectedLaser(lasers, pos, {0.0f, 0.0f}, (dirX < 0.0f) ? 180.0f : 0.0f,
+                         size + 210.0f, 160.0f, 0.0f, true);
+    } else if (type == IsaacEnums::kEntBeast && variant == 31) {
+        // Ultra War Bomb (951.31): gravity-arcing NPC bomb with large blast envelope (CZTMRJ6J Hit #25).
+        discs.push_back(DiscHazard{pos + vel * 1.5f, {vel.x, vel.y + 3.0f}, size + 36.0f, 0.0f, horizonUpdates, 1});
+    }
+}
+
+struct FireJetSnap {
+    Vec2 pos;
+    uintptr_t spawnerAddr = 0;
+    int spawnerType = 0;
+    float frame = 0.0f;
+    float radius = 35.0f;
+};
+
+// Extrapolate propagating FIRE_JET (1000.147) / FIRE_WAVE (1000.148) chains (CZTMRJ6J Hit #12:
+// Black Knight 41.4 spawns vel=(0,0) jets every 2 frames spaced 30px apart = 15px/update).
+inline void appendPropagatingFireWaves(const std::vector<FireJetSnap>& jets,
+                                       const RoomGrid& grid, float horizonUpdates,
+                                       std::vector<DiscHazard>& discs) {
+    if (jets.size() < 2) return;
+    std::array<bool, 64> usedGroup{};
+    size_t n = std::min<size_t>(jets.size(), usedGroup.size());
+    for (size_t i = 0; i < n; ++i) {
+        if (usedGroup[i]) continue;
+        // Find newest jet in this spawner group
+        int newestIdx = -1;
+        for (size_t j = i; j < n; ++j) {
+            bool sameGroup = (jets[i].spawnerAddr != 0)
+                ? (jets[j].spawnerAddr == jets[i].spawnerAddr)
+                : (jets[j].spawnerType == jets[i].spawnerType && (jets[j].pos - jets[i].pos).lengthSq() <= 200.0f * 200.0f);
+            if (!sameGroup) continue;
+            usedGroup[j] = true;
+            if (newestIdx < 0 || jets[j].frame < jets[newestIdx].frame) {
+                newestIdx = static_cast<int>(j);
+            }
+        }
+        if (newestIdx < 0 || jets[newestIdx].frame > 8.5f) continue;
+        const FireJetSnap& head = jets[newestIdx];
+        // Pair with the closest older jet in the same group
+        int prevIdx = -1;
+        float bestDf = 1e9f;
+        for (size_t j = 0; j < n; ++j) {
+            if (static_cast<int>(j) == newestIdx) continue;
+            bool sameGroup = (head.spawnerAddr != 0)
+                ? (jets[j].spawnerAddr == head.spawnerAddr)
+                : (jets[j].spawnerType == head.spawnerType);
+            if (!sameGroup) continue;
+            float df = jets[j].frame - head.frame;
+            if (df < 0.5f || df > 8.0f) continue;
+            float d = (head.pos - jets[j].pos).length();
+            if (d >= 10.0f && d <= 80.0f && df < bestDf) {
+                bestDf = df;
+                prevIdx = static_cast<int>(j);
+            }
+        }
+        if (prevIdx < 0) continue;
+        Vec2 waveVel = (head.pos - jets[prevIdx].pos) * (1.0f / bestDf);
+        float spd = waveVel.length();
+        if (spd < 4.0f || spd > 25.0f) continue;
+        // Clip wave horizon to room bounds so it doesn't ghost past walls
+        float waveTo = std::min(horizonUpdates, 12.0f);
+        for (float t = 1.0f; t <= waveTo; t += 1.0f) {
+            Vec2 p = head.pos + waveVel * t;
+            if (!grid.inBoundsPoint(p.x, p.y, 0.0f)) {
+                waveTo = t;
+                break;
+            }
+        }
+        discs.push_back(DiscHazard{head.pos, waveVel, std::max(35.0f, head.radius), 0.0f, waveTo, 0});
     }
 }
 
@@ -2024,6 +2152,7 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
     std::vector<detail::PlayerShotTear> playerTears;
     std::vector<detail::PlayerShotBeam> playerBeams;
     std::vector<detail::ExploderSnap> exploders;
+    std::vector<detail::FireJetSnap> fireJets;
     std::vector<Vec2> activeNpcPos, activeNpcVel;
     std::vector<float> activeNpcSize;
 
@@ -2258,6 +2387,13 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
                 float maxT = (timeout > 0) ? std::min(horizonUpdates, static_cast<float>(timeout)) : horizonUpdates;
                 float hitR = eSize * std::max(std::abs(eSizeMulti.x), std::abs(eSizeMulti.y));
                 float r = std::max(hitR, (baseAreaR > 0.0f ? baseAreaR : 24.0f) * std::max(0.5f, effScale));
+                if ((eVar == 147 || eVar == 148) && !eDead && fireJets.size() < 64) {
+                    char fAnim[32]; float fFrame = 0.0f; bool fPlay = false, fFx = false;
+                    if (detail::readSpriteState(mem, e + Offsets::Entity::kSprite, fAnim, sizeof(fAnim), fFrame, fPlay, fFx)) {
+                        uintptr_t spAddr = mem.readPtr32(e + Offsets::Entity::kSpawnerEntity);
+                        fireJets.push_back(detail::FireJetSnap{ePos, spAddr, c.spawnerType, fFrame, r});
+                    }
+                }
                 if (nearAnyPlayer(ePos, r)) {
                     scene.discs.push_back(DiscHazard{ePos, eVel, r, 0.0f, maxT, static_cast<uint8_t>(warnEff ? 1 : 0)});
                 }
@@ -2382,12 +2518,42 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
 
         if (contactableColl && eCollDmg > 0.0f &&
             (eType == IsaacEnums::kEntFireplace || activeEnemy || (isBoss != 0))) {
-            if (nearAnyPlayer(ePos, eSize + 32.0f + eVel.length() * horizonUpdates)) {
-                scene.discs.push_back(DiscHazard{ePos, eVel, eSize + 3.0f, 0.0f, horizonUpdates, 0,
-                                                 {0, 0}, false, false, eType != IsaacEnums::kEntFireplace});
-                float spdBuf = std::min(16.0f, eVel.length() * 2.0f);
-                if (spdBuf > 1.0f) {
-                    scene.discs.push_back(DiscHazard{ePos, eVel, eSize + 5.0f + spdBuf, 0.0f, horizonUpdates, 1});
+            // Respect Entity::SizeMulti for anisotropic NPCs (e.g. Beast 166x215.8 and Stalactite 22x220).
+            float sx = (std::isfinite(eSizeMulti.x) && std::abs(eSizeMulti.x) > 0.01f) ? std::abs(eSizeMulti.x) : 1.0f;
+            float sy = (std::isfinite(eSizeMulti.y) && std::abs(eSizeMulti.y) > 0.01f) ? std::abs(eSizeMulti.y) : 1.0f;
+            float rx = eSize * sx;
+            float ry = eSize * sy;
+            float maxR = std::max(rx, ry);
+            if (nearAnyPlayer(ePos, maxR + 32.0f + eVel.length() * horizonUpdates)) {
+                if (std::abs(rx - ry) > 2.0f && scene.lasers.size() < 94) {
+                    float rMin = std::min(rx, ry);
+                    float span = maxR - rMin;
+                    LaserHazard cap{};
+                    cap.origin = ePos;
+                    cap.vel = eVel;
+                    cap.pts[0] = (ry > rx) ? Vec2{0.0f, -span} : Vec2{-span, 0.0f};
+                    cap.pts[1] = (ry > rx) ? Vec2{0.0f,  span} : Vec2{ span, 0.0f};
+                    cap.numPts = 2;
+                    cap.reach = span;
+                    cap.width = rMin + 3.0f;
+                    cap.activeFrom = 0.0f;
+                    cap.timeoutT = horizonUpdates;
+                    cap.warning = 0;
+                    scene.lasers.push_back(cap);
+                    float spdBuf = std::min(16.0f, eVel.length() * 2.0f);
+                    if (spdBuf > 1.0f && scene.lasers.size() < 95) {
+                        LaserHazard warnCap = cap;
+                        warnCap.width = rMin + 5.0f + spdBuf;
+                        warnCap.warning = 1;
+                        scene.lasers.push_back(warnCap);
+                    }
+                } else {
+                    scene.discs.push_back(DiscHazard{ePos, eVel, maxR + 3.0f, 0.0f, horizonUpdates, 0,
+                                                     {0, 0}, false, false, eType != IsaacEnums::kEntFireplace});
+                    float spdBuf = std::min(16.0f, eVel.length() * 2.0f);
+                    if (spdBuf > 1.0f) {
+                        scene.discs.push_back(DiscHazard{ePos, eVel, maxR + 5.0f + spdBuf, 0.0f, horizonUpdates, 1});
+                    }
                 }
             }
         }
@@ -2402,6 +2568,10 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
         }
 
         detail::appendNpcIntentWarnings(mem, e, eType, eVar, eSize, ePos, eVel, scene, horizonUpdates, scene.discs, scene.lasers);
+    }
+
+    if (!fireJets.empty()) {
+        detail::appendPropagatingFireWaves(fireJets, g, horizonUpdates, scene.discs);
     }
 
     // Resolve exploder death bursts & imminent killTime (npc_hazards.lua:345-390)

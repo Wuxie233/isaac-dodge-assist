@@ -975,6 +975,135 @@ void testStandingOnBombNoLagOrTie() {
     std::puts("PASS standing on bomb: immediate move-off (no wTier=9999 tie) & latency bounds");
 }
 
+void testBeastAndBlindSpotsCZTMRJ6J() {
+    // 1. Beast Stalactite (951.1 Size=220 SizeMulti={0.1,1.0}) -> thin vertical capsule, not 223px circle
+    {
+        WorldFixture f;
+        f.initBase();
+        f.m.w<int32_t>(f.room + iad::Offsets::Room::kType, 16);
+        f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {260.0f, 280.0f});
+        f.m.w<uint8_t>(f.player + iad::Offsets::Player::kCanFly, 1);
+        uintptr_t stal = f.addNpc(iad::IsaacEnums::kEntBeast, 1, {320.0f, 280.0f}, {0.0f, 0.0f}, "Idle", 0.0f);
+        f.m.w<float>(stal + iad::Offsets::Entity::kSize, 220.0f);
+        f.m.w<iad::Vec2>(stal + iad::Offsets::Entity::kSizeMulti, {0.1f, 1.0f});
+        iad::ThreatScene scene;
+        assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed,
+                                       iad::Shared::kFlagNativeEnabled | iad::Shared::kFlagBeastRoom, 450, 0, 60, scene));
+        iad::PlanResult plan = iad::solveNativePlan(scene, 0, -1, true);
+        assert(plan.valid && plan.bestDir == -1); // 60px away horizontally clears 22+3+13=38px half-width!
+    }
+
+    // 2. Beast (951.0) SuckLoop suction pull + SizeMulti=(1, 1.3): idle player at x=294 vx=+3.8 must steer left
+    {
+        WorldFixture f;
+        f.initBase();
+        f.m.w<int32_t>(f.room + iad::Offsets::Room::kType, 16);
+        f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {294.0f, 320.0f});
+        f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kVel, {3.8f, 0.0f});
+        f.m.w<uint8_t>(f.player + iad::Offsets::Player::kCanFly, 1);
+        uintptr_t beast = f.addNpc(iad::IsaacEnums::kEntBeast, 0, {520.0f, 320.0f}, {0.0f, 0.0f}, "SuckLoop", 4.0f);
+        f.m.w<float>(beast + iad::Offsets::Entity::kSize, 166.0f);
+        f.m.w<iad::Vec2>(beast + iad::Offsets::Entity::kSizeMulti, {1.0f, 1.3f});
+        f.m.w<uint8_t>(beast + iad::Offsets::NPC::kIsBoss, 1);
+        iad::ThreatScene scene;
+        assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed,
+                                       iad::Shared::kFlagNativeEnabled | iad::Shared::kFlagBeastRoom, 450, 0, 60, scene));
+        assert(scene.extAccel.x > 0.35f);
+        iad::PlanResult plan = iad::solveNativePlan(scene, 0, -1, true);
+        assert(plan.valid && plan.danger);
+        assert(plan.bestDir == 1 || plan.bestDir == 5 || plan.bestDir == 7); // retreats left!
+    }
+
+    // 3. Beast 2D gravity projectile (CZTMRJ6J Hit #24): must NOT prematurely land at h=-5 before reaching y=323
+    {
+        WorldFixture f;
+        f.initBase();
+        f.m.w<int32_t>(f.room + iad::Offsets::Room::kType, 16);
+        f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {238.0f, 323.0f});
+        f.m.w<uint8_t>(f.player + iad::Offsets::Player::kCanFly, 1);
+        uintptr_t proj = f.addProjectile({244.0f, 437.1f}, {0.0f, -19.6f}, 0, 5.0f, -21.9f, 1.1f, 1.0f);
+        (void)proj;
+        iad::ThreatScene scene;
+        assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed,
+                                       iad::Shared::kFlagNativeEnabled | iad::Shared::kFlagBeastRoom, 450, 0, 60, scene));
+        assert(scene.bullets.size() == 1 && scene.bullets[0].minY <= 330.0f);
+        iad::PlanResult plan = iad::solveNativePlan(scene, 0, -1, true);
+        assert(plan.valid && plan.danger && plan.bestDir > 0);
+    }
+
+    // 4. Snapper (834.1) AttackHori whip at 180px + Brimstone Death's Head (212.3) + Bloat (68.1) + Poison Mind (301.0)
+    {
+        WorldFixture f;
+        f.initBase();
+        f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {530.0f, 280.0f});
+        f.addNpc(iad::IsaacEnums::kEntWhipper, 1, {350.0f, 280.0f}, {0.0f, 0.0f}, "AttackHori", 5.0f);
+        iad::ThreatScene scene;
+        assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+        iad::PlanResult plan = iad::solveNativePlan(scene, 0, -1, true);
+        assert(plan.valid && plan.danger && (plan.bestDir == 3 || plan.bestDir == 4 || plan.bestDir == 5 || plan.bestDir == 6 || plan.bestDir == 7 || plan.bestDir == 8));
+    }
+    {
+        WorldFixture f;
+        f.initBase();
+        f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {320.0f, 340.0f});
+        f.addNpc(iad::IsaacEnums::kEntDeathsHead, 3, {320.0f, 240.0f}, {0.0f, 0.0f}, "AttackDown", 15.0f);
+        iad::ThreatScene scene;
+        assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+        iad::PlanResult plan = iad::solveNativePlan(scene, 0, -1, true);
+        assert(plan.valid && plan.danger && plan.bestDir != 0 && plan.bestDir != 3 && plan.bestDir != 4);
+    }
+    {
+        WorldFixture f;
+        f.initBase();
+        f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {220.0f, 272.0f});
+        f.addNpc(iad::IsaacEnums::kEntPeep, 1, {370.0f, 312.0f}, {0.0f, 0.0f}, "Idle", 0.0f);
+        iad::ThreatScene scene;
+        assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+        assert(scene.lasers.size() >= 3 && scene.lasers[0].warning == 1);
+        iad::PlanResult plan = iad::solveNativePlan(scene, 0, -1, true);
+        assert(plan.valid && plan.danger && plan.bestDir > 0);
+    }
+    {
+        WorldFixture f;
+        f.initBase();
+        f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {260.0f, 280.0f});
+        uintptr_t pm = f.addNpc(iad::IsaacEnums::kEntPoisonMind, 0, {320.0f, 280.0f}, {0.0f, 0.0f}, "Walk", 0.0f);
+        f.m.w<float>(pm + iad::Offsets::Entity::kHitPoints, 20.0f);
+        iad::ThreatScene scene;
+        assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+        bool sawWarn = false;
+        for (const auto& d : scene.discs) if (d.warning && d.radius >= 70.0f) sawWarn = true;
+        assert(sawWarn);
+    }
+
+    // 5. Propagating Fire Jet (1000.147) chain from Black Knight (41.4) extrapolates moving wave (-15 px/update)
+    {
+        WorldFixture f;
+        f.initBase();
+        f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {150.0f, 160.0f});
+        uintptr_t bk = f.addNpc(41, 4, {420.0f, 160.0f}, {0.0f, 0.0f}, "Idle", 0.0f);
+        uintptr_t j1 = f.addEffect(147, {270.0f, 160.0f}, 14.0f, 10.0f, 1.0f, 0.0f);
+        uintptr_t j2 = f.addEffect(147, {240.0f, 160.0f}, 14.0f, 10.0f, 1.0f, 0.0f);
+        f.m.wPtr(j1 + iad::Offsets::Entity::kSpawnerEntity, bk);
+        f.m.wPtr(j2 + iad::Offsets::Entity::kSpawnerEntity, bk);
+        f.m.w<int32_t>(j1 + iad::Offsets::Entity::kSpawnerType, 41);
+        f.m.w<int32_t>(j2 + iad::Offsets::Entity::kSpawnerType, 41);
+        f.m.writeSprite(j1 + iad::Offsets::Entity::kSprite, "Idle", 6.0f, true);
+        f.m.writeSprite(j2 + iad::Offsets::Entity::kSprite, "Idle", 4.0f, true);
+        iad::ThreatScene scene;
+        assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+        bool sawWave = false;
+        for (const auto& d : scene.discs) {
+            if (!d.warning && d.vel.x < -10.0f && d.vel.x > -20.0f) sawWave = true;
+        }
+        assert(sawWave);
+        iad::PlanResult plan = iad::solveNativePlan(scene, 0, -1, true);
+        assert(plan.valid && plan.danger && (plan.bestDir == 3 || plan.bestDir == 4 || plan.bestDir == 5 || plan.bestDir == 6 || plan.bestDir == 7 || plan.bestDir == 8));
+    }
+
+    std::puts("PASS Beast SizeMulti/SuckLoop/2D-gravity & Snapper/212.3/Bloat/FireJet/PoisonMind");
+}
+
 } // namespace
 
 int main() {
@@ -988,6 +1117,7 @@ int main() {
     testItLivesFamiliarEffectFloodThroughput();
     testBatchedReadFallbackAndSanitizedPtrs();
     testStandingOnBombNoLagOrTie();
+    testBeastAndBlindSpotsCZTMRJ6J();
     benchmarkCombatRoom();
     std::puts("PASS all native 60Hz memory-read & 2-stage planning tests");
     return 0;
