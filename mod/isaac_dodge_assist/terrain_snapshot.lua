@@ -17,18 +17,38 @@ function M.new(room,player,directions,opts)
         skyMaxY=br.Y+70
     end
     local floorCache=opts and opts.floorCache
+    local calls=beast and 8 or 6
     if floorCache then
         local key=width.."|"..size.."|"..origin.X.."|"..origin.Y.."|"..sx.."|"..sy
         if floorCache.key~=key then
             floorCache.key=key
             floorCache.roomWhole={}
+            floorCache.subWhole={}
+            floorCache.rect=nil
+        end
+        if floorCache.rect==nil then
+            local rect=false
+            local shape=not beast and room.GetRoomShape and room:GetRoomShape()
+            if shape and shape>=1 and shape<=8 and room.GetTopLeftPos and room.GetBottomRightPos and
+                (not (RoomType and RoomType.ROOM_DUNGEON and room.GetType) or room:GetType()~=RoomType.ROOM_DUNGEON) then
+                local tl,br=room:GetTopLeftPos(),room:GetBottomRightPos()
+                calls=calls+2
+                if room:IsPositionInRoom(tl,0) and room:IsPositionInRoom(br,0) then
+                    rect={minX=tl.X,maxX=br.X,minY=tl.Y,maxY=br.Y}
+                end
+            end
+            floorCache.rect=rect
         end
     end
+    local subHalfDiag=sx>0 and sy>0 and sqrt((sx*0.25)*(sx*0.25)+(sy*0.25)*(sy*0.25))*0.5+0.001 or 0
     return {room=room,width=width,size=size,sx=sx,sy=sy,ox=origin.X,oy=origin.Y,offsets=offsets,
-        cells={},radius=radius,flying=player.CanFly,beast=beast,
+        cells={},safeCache={},radius=radius,flying=player.CanFly,beast=beast,
         skyMinX=skyMinX,skyMaxX=skyMaxX,skyMinY=skyMinY,skyMaxY=skyMaxY,
         roomWhole=floorCache and floorCache.roomWhole or nil,
-        point=Vector(0,0),queries=0,nativeCalls=beast and 8 or 6}
+        subWhole=floorCache and floorCache.subWhole or nil,
+        rect=floorCache and floorCache.rect or nil,
+        subHalfDiag=subHalfDiag,
+        point=Vector(0,0),queries=0,nativeCalls=calls}
 end
 local function cell(ctx,index)
     local cached=ctx.cells[index]
@@ -62,14 +82,20 @@ local function cell(ctx,index)
     -- it. Boundary/door/L-room cells fall back to the original point queries.
     local whole=false
     if pass and ctx.sx>0 and ctx.sy>0 then
-        local cache=ctx.roomWhole
-        if cache and cache[index]~=nil then
-            whole=cache[index]
+        local rect=ctx.rect
+        if rect then
+            local hr=sqrt(ctx.sx*ctx.sx+ctx.sy*ctx.sy)*0.5+0.001
+            whole=px-hr>=rect.minX and px+hr<=rect.maxX and py-hr>=rect.minY and py+hr<=rect.maxY
         else
-            ctx.point.X,ctx.point.Y=px,py
-            whole=room:IsPositionInRoom(ctx.point,sqrt(ctx.sx*ctx.sx+ctx.sy*ctx.sy)*0.5+0.001)
-            ctx.nativeCalls=ctx.nativeCalls+1
-            if cache then cache[index]=whole end
+            local cache=ctx.roomWhole
+            if cache and cache[index]~=nil then
+                whole=cache[index]
+            else
+                ctx.point.X,ctx.point.Y=px,py
+                whole=room:IsPositionInRoom(ctx.point,sqrt(ctx.sx*ctx.sx+ctx.sy*ctx.sy)*0.5+0.001)
+                ctx.nativeCalls=ctx.nativeCalls+1
+                if cache then cache[index]=whole end
+            end
         end
     end
     cached={pass=pass,whole=whole,x=px,y=py}
@@ -110,14 +136,52 @@ local function beastPointSafe(ctx,px,py)
     end
     return true
 end
+local function cacheSafe(ctx,x,y,value)
+    local sc=ctx.safeCache
+    local row=sc[x]
+    if not row then row={};sc[x]=row end
+    row[y]=value
+    return value
+end
+local function subPointInRoom(ctx,at,tile,px,py)
+    local subCache=ctx.subWhole
+    if subCache and ctx.subHalfDiag>0 then
+        local sc=floor(((px-tile.x)/ctx.sx+0.5)*4)
+        local sr=floor(((py-tile.y)/ctx.sy+0.5)*4)
+        if sc<0 then sc=0 elseif sc>3 then sc=3 end
+        if sr<0 then sr=0 elseif sr>3 then sr=3 end
+        local key=at*16+sr*4+sc
+        local cached=subCache[key]
+        if cached==true then return true end
+        if cached==nil then
+            local point=ctx.point
+            point.X=tile.x+(sc-1.5)*(ctx.sx*0.25)
+            point.Y=tile.y+(sr-1.5)*(ctx.sy*0.25)
+            ctx.nativeCalls=ctx.nativeCalls+1
+            cached=ctx.room:IsPositionInRoom(point,ctx.subHalfDiag)
+            subCache[key]=cached
+            if cached then return true end
+        end
+    end
+    local point=ctx.point
+    point.X,point.Y=px,py
+    ctx.nativeCalls=ctx.nativeCalls+1
+    return ctx.room:IsPositionInRoom(point,0)
+end
 function M.safe(ctx,x,y)
     ctx.queries=ctx.queries+1
+    local sc=ctx.safeCache
+    local row=sc[x]
+    if row then
+        local cached=row[y]
+        if cached~=nil then return cached end
+    end
     if ctx.beast then
-        if not beastPointSafe(ctx,x,y) then return false end
+        if not beastPointSafe(ctx,x,y) then return cacheSafe(ctx,x,y,false) end
         for _,offset in ipairs(ctx.offsets) do
-            if not beastPointSafe(ctx,x+offset[1],y+offset[2]) then return false end
+            if not beastPointSafe(ctx,x+offset[1],y+offset[2]) then return cacheSafe(ctx,x,y,false) end
         end
-        return true
+        return cacheSafe(ctx,x,y,true)
     end
     local point,room=ctx.point,ctx.room
     -- The cell from the grid pitch, in Lua: one GetGridIndex per query was
@@ -125,50 +189,74 @@ function M.safe(ctx,x,y)
     local index
     if ctx.sx>0 and ctx.sy>0 then
         local column=floor((x-ctx.ox)/ctx.sx+0.5)
-        local row=floor((y-ctx.oy)/ctx.sy+0.5)
-        if column<0 or column>=ctx.width or row<0 then return false end
-        index=column+row*ctx.width
+        local rowIdx=floor((y-ctx.oy)/ctx.sy+0.5)
+        if column<0 or column>=ctx.width or rowIdx<0 then return cacheSafe(ctx,x,y,false) end
+        index=column+rowIdx*ctx.width
     else
         point.X,point.Y=x,y
         index=room:GetGridIndex(point)
         ctx.nativeCalls=ctx.nativeCalls+1
     end
-    if index<0 or index>=ctx.size then return false end
+    if index<0 or index>=ctx.size then return cacheSafe(ctx,x,y,false) end
     local center=cell(ctx,index)
-    if not center.pass then return false end
+    if not center.pass then return cacheSafe(ctx,x,y,false) end
     -- A fully clear 3x3 neighborhood covers the whole player footprint for
     -- every position within this center cell. Most open-floor queries end here.
-    if openNeighborhood(ctx,index,center) then return true end
-    local footprintInside
-    for _,offset in ipairs(ctx.offsets) do
+    if openNeighborhood(ctx,index,center) then return cacheSafe(ctx,x,y,true) end
+    local anyBorder=false
+    local offsets=ctx.offsets
+    local sx,sy,width,size=ctx.sx,ctx.sy,ctx.width,ctx.size
+    local usePitch=sx>0 and sy>0
+    local opx,opy,oat,otile={},{},{},{}
+    for i=1,#offsets do
+        local offset=offsets[i]
         local px,py=x+offset[1],y+offset[2]
         local at
-        if ctx.sx>0 and ctx.sy>0 then
-            local dx=floor((px-center.x)/ctx.sx+0.5)
-            local dy=floor((py-center.y)/ctx.sy+0.5)
-            local column=index%ctx.width+dx
-            at=index+dx+dy*ctx.width
-            if column<0 or column>=ctx.width or at<0 or at>=ctx.size then return false end
+        if usePitch then
+            local dx=floor((px-center.x)/sx+0.5)
+            local dy=floor((py-center.y)/sy+0.5)
+            local column=index%width+dx
+            at=index+dx+dy*width
+            if column<0 or column>=width or at<0 or at>=size then return cacheSafe(ctx,x,y,false) end
         else
             point.X,point.Y=px,py
             at=room:GetGridIndex(point);ctx.nativeCalls=ctx.nativeCalls+1
-            if at<0 or at>=ctx.size then return false end
+            if at<0 or at>=size then return cacheSafe(ctx,x,y,false) end
         end
         local tile=cell(ctx,at)
-        if not tile.pass then return false end
+        if not tile.pass then return cacheSafe(ctx,x,y,false) end
         if not tile.whole then
-            if footprintInside==nil then
-                point.X,point.Y=x,y
-                footprintInside=room:IsPositionInRoom(point,ctx.radius)
-                ctx.nativeCalls=ctx.nativeCalls+1
-            end
-            if not footprintInside then
-                point.X,point.Y=px,py
-                ctx.nativeCalls=ctx.nativeCalls+1
-                if not room:IsPositionInRoom(point,0) then return false end
-            end
+            anyBorder=true
+            opx[i],opy[i],oat[i],otile[i]=px,py,at,tile
         end
     end
-    return true
+    if not anyBorder then return cacheSafe(ctx,x,y,true) end
+    local rect=ctx.rect
+    if rect then
+        local r=ctx.radius
+        if x>=rect.minX+r and x<=rect.maxX-r and y>=rect.minY+r and y<=rect.maxY-r then
+            return cacheSafe(ctx,x,y,true)
+        end
+        for i=1,#offsets do
+            local px=opx[i]
+            if px then
+                local py=opy[i]
+                if px<rect.minX or px>rect.maxX or py<rect.minY or py>rect.maxY then
+                    return cacheSafe(ctx,x,y,false)
+                end
+            end
+        end
+        return cacheSafe(ctx,x,y,true)
+    end
+    point.X,point.Y=x,y
+    ctx.nativeCalls=ctx.nativeCalls+1
+    if room:IsPositionInRoom(point,ctx.radius) then return cacheSafe(ctx,x,y,true) end
+    for i=1,#offsets do
+        local px=opx[i]
+        if px and not subPointInRoom(ctx,oat[i],otile[i],px,opy[i]) then
+            return cacheSafe(ctx,x,y,false)
+        end
+    end
+    return cacheSafe(ctx,x,y,true)
 end
 return M

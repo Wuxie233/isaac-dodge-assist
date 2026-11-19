@@ -60,12 +60,101 @@ end
 -- Grudge (877): sits still in ambush until the player enters a cardinal line,
 -- then charges across at ~18/update (6LW23XWD f=238). Warn along clear cardinal
 -- lanes while stationary so the player does not walk blindly across its trigger.
-local GRUDGE_TYPE, PON_TYPE, MOTHER_TYPE = 877, 840, 912
+local GRUDGE_TYPE, PON_TYPE, MOTHER_TYPE, VIS_TYPE = 877, 840, 912, 39
+local CHUBBER_VARIANT, CHUBBER_WORM_VARIANT = 2, 22
+local CHUBBER_MAX_REACH, CHUBBER_RETURN_SPEED, CHUBBER_TURN_SPEED, CHUBBER_MIN_DIST = 260, 13.5, 4.0, 24
 local GRUDGE_AXES = {Vector(-1, 0), Vector(1, 0), Vector(0, -1), Vector(0, 1)}
+local CHUBBER_ANGLES = {Horiz={0, 180}, Left={180}, Right={0}, Down={90}, Up={270}}
 local function isNpcType(npc, key, rawId)
     local t = npc.Type
     local enumId = EntityType and EntityType[key]
     return t == rawId or (enumId ~= nil and t == enumId)
+end
+function M.isChubberWorm(npc)
+    return isNpcType(npc, "ENTITY_VIS", VIS_TYPE) and npc.Variant == CHUBBER_WORM_VARIANT
+end
+-- Chubber (39.2) fires a tethered charger (39.22) instead of Brimstone during Attack03<dir>.
+-- Keep the windup warning here so LaserHazards keeps excluding Chubber from hard beams.
+function M.chubberWindup(npc, room, lasers)
+    if not isNpcType(npc, "ENTITY_VIS", VIS_TYPE) or npc.Variant ~= CHUBBER_VARIANT then return end
+    local sprite = npc.GetSprite and npc:GetSprite()
+    if not sprite then return end
+    local side = sprite:GetAnimation():match("^Attack03(%a+)$")
+    local angles = side and CHUBBER_ANGLES[side]
+    if not angles or (sprite:GetFrame() or 0) > 30 then return end
+    for _, angle in ipairs(angles) do
+        local dir = Vector(1, 0):Rotated(angle)
+        local dist = CHUBBER_MAX_REACH
+        if room and room.IsPositionInRoom then
+            for step = 40, CHUBBER_MAX_REACH, 40 do
+                if not room:IsPositionInRoom(npc.Position + dir * step, 0) then dist = step; break end
+            end
+        end
+        if dist >= 40 then
+            lasers[#lasers+1] = {origin=npc.Position, velocity=Vector(0,0),
+                ring=false, width=16, points={Vector(0,0), dir * dist},
+                reach=dist, angularSpeed=0, delay=0, warning=true}
+        end
+    end
+end
+-- Chubber's launched grub (39.22.0, Parent=39.2.0): StateFrame=0..42 (dies >42),
+-- frac = 1 - sf/21; for frac >= 0 (or missing parent) vel = V1 * frac; on the
+-- return leg (frac < 0) it pulls back to Parent via max(0,d-20)/d * toParent / max(1,43-sf) * (-frac).
+function M.chubberWorm(npc, steps, areas, contactMargin)
+    if not M.isChubberWorm(npc) then return end
+    local cx, cy = npc.Position.X, npc.Position.Y
+    local vx, vy = npc.Velocity.X, npc.Velocity.Y
+    local speed = math.sqrt(vx*vx + vy*vy)
+    local parent = npc.Parent or npc.SpawnerEntity
+    local hasParent = parent and not (parent.IsDead and parent:IsDead()) and parent.Position ~= nil
+    local px, py = hasParent and parent.Position.X or 0, hasParent and parent.Position.Y or 0
+    local sf = npc.StateFrame
+    if sf == nil or (sf == 0 and hasParent) then
+        local ox, oy = cx - px, cy - py
+        local dist = math.sqrt(ox*ox + oy*oy)
+        if sf == nil then
+            sf = (hasParent and dist > CHUBBER_MIN_DIST and (ox*vx + oy*vy) < 0) and 35 or 1
+        elseif dist > CHUBBER_MIN_DIST and (ox*vx + oy*vy) < 0 then
+            sf = 35
+        end
+    end
+    if sf > 42 then return end
+    local maxT = math.min(steps, 42 - sf)
+    local f0 = 1 - sf / 21
+    local v1 = npc.V1
+    local v1x, v1y
+    if v1 and (v1.X ~= 0 or v1.Y ~= 0) then
+        v1x, v1y = v1.X, v1.Y
+    elseif f0 > 0.05 then
+        v1x, v1y = vx / f0, vy / f0
+    else
+        v1x, v1y = vx, vy
+    end
+    local pathX, pathY = {[0]=cx}, {[0]=cy}
+    for t = 1, maxT do
+        local nsf = sf + t
+        local frac = 1 - nsf / 21
+        if frac >= 0 or not hasParent then
+            cx, cy = cx + v1x * frac, cy + v1y * frac
+        else
+            local dx, dy = px - cx, py - cy
+            local d = math.sqrt(dx*dx + dy*dy)
+            if d > 20 then
+                local pull = (d - 20) / d / math.max(1, 43 - nsf) * (-frac)
+                cx, cy = cx + dx * pull, cy + dy * pull
+            end
+        end
+        pathX[t], pathY[t] = cx, cy
+    end
+    local size = npc.Size or 13
+    local v1Spd = math.sqrt(v1x*v1x + v1y*v1y)
+    local effSpeed = math.max(speed, sf >= 16 and math.max(8, v1Spd * 0.6) or 0)
+    areas[#areas+1] = {position=npc.Position, velocity=Vector(0,0), pathX=pathX, pathY=pathY,
+        from=0, to=maxT, radius=size + (contactMargin or 3)}
+    if effSpeed > 0.5 then
+        areas[#areas+1] = {position=npc.Position, velocity=Vector(0,0), pathX=pathX, pathY=pathY,
+            from=0, to=maxT, radius=size + 5 + math.min(16, effSpeed * 2), warning=true}
+    end
 end
 function M.grudge(npc, room, lasers)
     if not isNpcType(npc, "ENTITY_GRUDGE", GRUDGE_TYPE) or not npc:IsActiveEnemy(false) then return end
@@ -139,6 +228,11 @@ local function friction(bomb)
     return BombVariant and bomb.Variant == BombVariant.BOMB_SUPERTROLL and 1 or FRICTION
 end
 -- Displacement after t updates.
+function M.driftXY(bomb, t)
+    local f = friction(bomb)
+    local scale = f >= 1 and t or ((1 - f^t)/(1 - f))
+    return bomb.Velocity.X * scale, bomb.Velocity.Y * scale
+end
 function M.drift(bomb, t)
     local f = friction(bomb)
     if f >= 1 then return bomb.Velocity*t end
@@ -320,13 +414,30 @@ local function killTime(npc, tears, beams, steps)
     end
     local beamFrom
     for _, beam in ipairs(beams) do
-        local a, b = beam.Position, beam:GetEndPoint()
         local last = (beam.Timeout or 0) > 0 and math.min(steps, beam.Timeout) or steps
-        for t = 1, last do
-            local x, y = npc.Position.X + npc.Velocity.X*t, npc.Position.Y + npc.Velocity.Y*t
-            if segmentGap(x, y, a, b) <= npc.Size + beam.Size then
-                damage[t] = (damage[t] or 0) + beam.CollisionDamage
-                beamFrom = beamFrom or t
+        if beam.IsCircleLaser and beam:IsCircleLaser() then
+            local r = beam.Radius or 0
+            local follow = beam.Parent and not beam.DisableFollowParent and beam.Parent or nil
+            local pos = follow and follow.Position or beam.Position
+            local vel = (follow and follow.Velocity) or beam.Velocity
+            local bvx, bvy = vel and vel.X or 0, vel and vel.Y or 0
+            local reach = (npc.Size or 0) + (beam.Size or 0)
+            for t = 1, last do
+                local dx = npc.Position.X + npc.Velocity.X*t - (pos.X + bvx*t)
+                local dy = npc.Position.Y + npc.Velocity.Y*t - (pos.Y + bvy*t)
+                if math.abs(math.sqrt(dx*dx + dy*dy) - r) <= reach then
+                    damage[t] = (damage[t] or 0) + beam.CollisionDamage
+                    beamFrom = beamFrom or t
+                end
+            end
+        else
+            local a, b = beam.Position, beam:GetEndPoint()
+            for t = 1, last do
+                local x, y = npc.Position.X + npc.Velocity.X*t, npc.Position.Y + npc.Velocity.Y*t
+                if segmentGap(x, y, a, b) <= npc.Size + beam.Size then
+                    damage[t] = (damage[t] or 0) + beam.CollisionDamage
+                    beamFrom = beamFrom or t
+                end
             end
         end
     end

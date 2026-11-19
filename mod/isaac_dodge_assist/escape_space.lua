@@ -7,9 +7,17 @@ local math_min, math_max, math_sqrt, math_floor = math.min, math.max, math.sqrt,
 -- results are shared by every straight/turning candidate in that update.
 -- safeFn accepts either gridSafeXY(room, player, x, y) or gridSafe(room, player, Vector(x, y)).
 function EscapeSpace.build(room, player, contacts, steps, forecast, safeFn, isXY)
+    local width, size = room:GetGridWidth(), room:GetGridSize()
+    local ox, oy, sx, sy = 0, 0, 0, 0
+    if room.GetGridPosition and width > 1 and size > width then
+        local p0, p1, pw = room:GetGridPosition(0), room:GetGridPosition(1), room:GetGridPosition(width)
+        ox, oy = p0.X, p0.Y
+        sx, sy = p1.X - ox, pw.Y - oy
+    end
     local context = {room=room, player=player, safe=safeFn, isXY=isXY == true,
-        width=room:GetGridWidth(), size=room:GetGridSize(),
-        nodes={}, costs={}, enemies={}, count=0}
+        width=width, size=size, ox=ox, oy=oy, sx=sx, sy=sy,
+        nodes={}, costs={}, edges={}, queue={}, depths={}, seen={}, stamp=0,
+        enemies={}, count=0}
     local pr = player.Size
     for _, enemy in ipairs(contacts) do
         local radius = pr + enemy.Size + 7
@@ -30,8 +38,14 @@ local function node(context, index)
     if index < 0 or index >= context.size then return nil end
     local cached = context.nodes[index]
     if cached ~= nil then return cached or nil end
-    local position = context.room:GetGridPosition(index)
-    local px, py = position.X, position.Y
+    local px, py
+    if context.sx > 0 and context.sy > 0 then
+        px = context.ox + (index % context.width) * context.sx
+        py = context.oy + math_floor(index / context.width) * context.sy
+    else
+        local position = context.room:GetGridPosition(index)
+        px, py = position.X, position.Y
+    end
     if not isSafe(context, px, py) then
         context.nodes[index] = false
         return nil
@@ -50,7 +64,7 @@ local function node(context, index)
             end
         end
     end
-    cached = {x=px, y=py, clearance=clearance, edges={}}
+    cached = {x=px, y=py, clearance=clearance}
     context.nodes[index] = cached
     return cached
 end
@@ -79,7 +93,9 @@ local function neighbor(context, index, direction)
     local nextIndex = index + direction[1] + direction[2]*context.width
     local current, nextNode = node(context, index), node(context, nextIndex)
     if not current or not nextNode then return nil end
-    local connected = current.edges[nextIndex]
+    local lo, hi = index < nextIndex and index or nextIndex, index < nextIndex and nextIndex or index
+    local edgeKey = lo * context.size + hi
+    local connected = context.edges[edgeKey]
     if connected == nil then
         connected = isSafe(context, (current.x + nextNode.x)*0.5, (current.y + nextNode.y)*0.5)
         if connected then
@@ -90,17 +106,19 @@ local function neighbor(context, index, direction)
                 end
             end
         end
-        current.edges[nextIndex] = connected
-        nextNode.edges[index] = connected
+        context.edges[edgeKey] = connected
     end
     if connected then return nextIndex end
 end
 
 local function spaceCost(context, index)
     if context.costs[index] then return context.costs[index] end
-    local queue, depths, seen = {index}, {0}, {[index]=true}
-    local head, exits, reach = 1, 0, 0
-    while head <= #queue do
+    local queue, depths, seen = context.queue, context.depths, context.seen
+    local stamp = context.stamp + 1
+    context.stamp = stamp
+    queue[1], depths[1], seen[index] = index, 0, stamp
+    local head, tail, exits, reach = 1, 1, 0, 0
+    while head <= tail do
         local current, depth = queue[head], depths[head]
         head = head + 1
         -- A bounded four-connected flood: at most 41 nodes per endpoint.
@@ -111,10 +129,10 @@ local function spaceCost(context, index)
                 local nextIndex = neighbor(context, current, NEIGHBORS[d])
                 if nextIndex then
                     if depth == 0 then exits = exits + 1 end
-                    if not seen[nextIndex] then
-                        seen[nextIndex] = true
-                        local n = #queue + 1
-                        queue[n], depths[n] = nextIndex, depth + 1
+                    if seen[nextIndex] ~= stamp then
+                        seen[nextIndex] = stamp
+                        tail = tail + 1
+                        queue[tail], depths[tail] = nextIndex, depth + 1
                     end
                 end
             end
@@ -128,10 +146,22 @@ end
 -- This is a tie-break cost, never a damage score or a reason to take over
 -- manual input. The caller must rank actual path collisions ahead of it.
 function EscapeSpace.cost(context, endpoint)
-    local index = context.room:GetGridIndex(endpoint)
+    local ex, ey = endpoint.X, endpoint.Y
+    local index
+    if context.sx > 0 and context.sy > 0 then
+        local column = math_floor((ex - context.ox)/context.sx + 0.5)
+        local row = math_floor((ey - context.oy)/context.sy + 0.5)
+        if column >= 0 and column < context.width and row >= 0 then
+            local candidate = column + row * context.width
+            index = candidate < context.size and candidate or -1
+        else
+            index = -1
+        end
+    else
+        index = context.room:GetGridIndex(endpoint)
+    end
     local anchor = node(context, index)
     if not anchor then return 999 end
-    local ex, ey = endpoint.X, endpoint.Y
     local pressure = 0
     for i = 1, context.count do
         local enemy = context.enemies[i]

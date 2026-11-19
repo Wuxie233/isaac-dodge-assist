@@ -119,5 +119,48 @@ do
  local tb=Terrain.new(beastRoom,pf,directions,{beast=true})
  assert(Terrain.safe(tb,566,464),'Beast sky must be traversable when opts.beast=true')
  assert(not Terrain.safe(tb,566,492),'Beast deep void below screen floor must remain blocked')
+
+ -- Rectangular room fast-path (GetRoomShape=1) must match groundTruth near walls/doors with minimal IsPositionInRoom calls.
+ local wallCalls=0
+ local rectRoom={
+  GetGridWidth=function()return 15 end,
+  GetGridSize=function()return 135 end,
+  GetRoomShape=function()return 1 end,
+  GetTopLeftPos=function()return Vector(60,140)end,
+  GetBottomRightPos=function()return Vector(580,420)end,
+  GetGridPosition=function(_,i)return Vector(40+(i%15)*40,120+math.floor(i/15)*40)end,
+  GetGridIndex=function(_,v)
+   local cx,cy=math.floor((v.X-20)/40),math.floor((v.Y-100)/40)
+   if cx<0 or cy<0 or cx>=15 or cy>=9 then return -1 end
+   return cx+cy*15
+  end,
+  GetGridCollision=function(_,i)
+   local cx,cy=i%15,math.floor(i/15)
+   return (cx==0 or cx==14 or cy==0 or cy==8) and GridCollisionClass.COLLISION_WALL or 0
+  end,
+  IsPositionInRoom=function(_,v,m)
+   wallCalls=wallCalls+1
+   m=m or 0
+   return v.X>=60+m and v.X<=580-m and v.Y>=140+m and v.Y<=420-m
+  end,
+ }
+ local savedRoom=room
+ room=rectRoom
+ local fc={}
+ local pWall={Size=10,CanFly=false}
+ local tr=Terrain.new(rectRoom,pWall,directions,{floorCache=fc})
+ local terrainCalls=wallCalls
+ local edgePts={60,64,68,69,70,75,90,320,550,570,571,575,580}
+ local edgeYs={140,144,148,149,150,155,280,405,410,411,415,420}
+ for _,x in ipairs(edgePts) do
+  for _,y in ipairs(edgeYs) do
+   local t0=wallCalls
+   local got=Terrain.safe(tr,x,y)
+   terrainCalls=terrainCalls+(wallCalls-t0)
+   assert(got==old(pWall,Vector(x,y)),'rect fast-path mismatch at '..x..','..y)
+  end
+ end
+ assert(terrainCalls<=10,'rect fast-path should only probe boundary once per room, got calls='..terrainCalls)
+ room=savedRoom
 end
 print('PASS terrain cache vs original: '..checked..' random footprints, exact grid edges, L rooms, flight, SOLID/GRID_LOCK, Beast sky')

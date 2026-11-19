@@ -338,4 +338,167 @@ do
  print('PASS 1ASNDQW3 hazards: Tainted Boom Fly 25.6.0 burst & Dogma 950.0.0 Brimstone warnings')
 end
 
+-- 2026-11-19 Hit #1: Krampus (81.1.0) Attack2 (state=10) cardinal cross when I1==0 and diagonal when I1~=0.
+do
+ EntityType.ENTITY_FALLEN = EntityType.ENTITY_FALLEN or 81
+ local LaserHazards = require('mod.isaac_dodge_assist.laser_hazards')
+ local krampusRoom = {GetTopLeftPos=function()return Vector(60,140) end,GetBottomRightPos=function()return Vector(580,420) end}
+ local savedSpeed = p.MoveSpeed
+ p.MoveSpeed = 1.6
+ -- L54213/54214 window (Attack2:18, 11 ticks before beam fires): staying put gets hit, stepping perpendicular escapes.
+ local krampus = entity(EntityType.ENTITY_FALLEN,1,'Attack2',18)
+ krampus.Position = Vector(391.0,255.7); krampus.Velocity = Vector(0,0); krampus.Size = 20; krampus.I1 = 0
+ function krampus:ToNPC()return self end;function krampus:IsBoss()return true end
+ local sc,bl = replay(Vector(557.0,257.4),Vector(0,0),{krampus})
+ check('Krampus Attack2 I1==0 hit #1 (f=515)',sc,bl,1)
+ -- Exact L54217 state (Attack2:28, 1 tick before beam fires): idle must score as a hit.
+ krampus.frame = 28; krampus.Position = Vector(388.1,261.1)
+ sc = replay(Vector(554.8,259.6),Vector(0,0),{krampus})
+ assert(sc[1]>=HARD,'Krampus Attack2:28 must still predict imminent hit')
+ p.MoveSpeed = savedSpeed
+
+ local kDiag = entity(EntityType.ENTITY_FALLEN,1,'Attack2',28)
+ kDiag.Position = Vector(320,280); kDiag.I1 = 1
+ local shapes = {}
+ LaserHazards.appendWarnings(kDiag,krampusRoom,shapes)
+ assert(#shapes==4 and shapes[1].activeFrom==1,'Krampus Attack2 I1~=0 should emit 4 beams')
+ assert(LaserHazards.clearanceXY(shapes[1],420,380,420,380,1,10)<0 or
+        LaserHazards.clearanceXY(shapes[2],420,380,420,380,1,10)<0 or
+        LaserHazards.clearanceXY(shapes[3],420,380,420,380,1,10)<0 or
+        LaserHazards.clearanceXY(shapes[4],420,380,420,380,1,10)<0,
+        'Krampus Attack2 I1~=0 must emit diagonal beams')
+ assert(LaserHazards.clearanceXY(shapes[1],460,280,460,280,1,10)>0 and
+        LaserHazards.clearanceXY(shapes[2],460,280,460,280,1,10)>0 and
+        LaserHazards.clearanceXY(shapes[3],460,280,460,280,1,10)>0 and
+        LaserHazards.clearanceXY(shapes[4],460,280,460,280,1,10)>0,
+        'Krampus Attack2 I1~=0 diagonal beams must leave cardinal safe')
+
+ local fallen = entity(EntityType.ENTITY_FALLEN,0,'Attack2',28);fallen.Position = Vector(320,280)
+ shapes = {}; LaserHazards.appendWarnings(fallen,krampusRoom,shapes)
+ assert(#shapes==0,'The Fallen (variant 0) must not inherit Krampus Attack2 beam')
+ print('PASS Krampus 81.1.0 Attack2 (I1==0 cardinal Hit #1, I1~=0 diagonal, Fallen excluded)')
+end
+
+-- 2026-11-19 Hits #3 & #4: Chubber (39.2.0) + tethered boomerang grub (39.22.0, StateFrame=0..42).
+do
+ EntityType.ENTITY_VIS = EntityType.ENTITY_VIS or 39
+ local savedSpeed = p.MoveSpeed
+ p.MoveSpeed = 1.8
+ local parent = entity(EntityType.ENTITY_VIS,2,'Attack03Horiz',10)
+ parent.Position = Vector(160,214.6)
+ function parent:ToNPC()return self end
+
+ local outWorm = entity(EntityType.ENTITY_VIS,22,'Side',1)
+ outWorm.Position = Vector(188.0,214.6); outWorm.Velocity = Vector(13.9,0); outWorm.V1 = Vector(14.6,0)
+ outWorm.StateFrame = 1; outWorm.Parent = parent; outWorm.SpawnerEntity = parent; outWorm.Size = 13
+ function outWorm:ToNPC()return self end
+ local areas = {}
+ NpcHazards.chubberWorm(outWorm,15,areas,3)
+ assert(#areas>=1 and areas[1].pathX,'chubberWorm must produce tethered path')
+ local maxX = 0
+ for t=0,areas[1].to do maxX = math.max(maxX,areas[1].pathX[t]) end
+ assert(maxX<360,'outgoing Chubber worm must turn back instead of linear unbounded flight: '..maxX)
+ local sc,bl = replay(Vector(293.2,193.3),Vector(0,0),{parent,outWorm})
+ check('Chubber Hit #3 outgoing',sc,bl,1)
+
+ local apexWorm = entity(EntityType.ENTITY_VIS,22,'Side',1)
+ apexWorm.Position = Vector(350,172.7); apexWorm.Velocity = Vector(0,0); apexWorm.V1 = Vector(14.6,0)
+ apexWorm.StateFrame = 21; apexWorm.Parent = entity(EntityType.ENTITY_VIS,2,'Headless',0)
+ apexWorm.Parent.Position = Vector(160,172.7); apexWorm.SpawnerEntity = apexWorm.Parent; apexWorm.Size = 13
+ function apexWorm.Parent:ToNPC()return self end
+ function apexWorm:ToNPC()return self end
+ -- Player stands between parent (160) and apex (350) when vel==0 at turnaround: must still predict return!
+ sc,bl = replay(Vector(319.2,155.0),Vector(0,0),{apexWorm.Parent,apexWorm})
+ check('Chubber Hit #4 turnaround apex',sc,bl,1)
+ p.MoveSpeed = savedSpeed
+
+ local retWorm = entity(EntityType.ENTITY_VIS,22,'Side',2)
+ retWorm.Position = Vector(260,172.7); retWorm.Velocity = Vector(-12.8,0); retWorm.V1 = Vector(14.6,0)
+ retWorm.StateFrame = 38; retWorm.Parent = apexWorm.Parent; retWorm.SpawnerEntity = apexWorm.Parent; retWorm.Size = 13
+ function retWorm:ToNPC()return self end
+ areas = {}
+ NpcHazards.chubberWorm(retWorm,15,areas,3)
+ assert(areas[1].to==4,'Chubber worm dies after StateFrame 42, expected horizon cap 4 got '..tostring(areas[1].to))
+ assert(areas[1].pathX[4]>=175,'returning Chubber worm must clamp near parent, not overshoot: '..tostring(areas[1].pathX[4]))
+
+ local winds = {}
+ NpcHazards.chubberWindup(parent,room,winds)
+ assert(#winds==2 and winds[1].warning,'Chubber Attack03Horiz windup warning missing')
+ local LaserHazards = require('mod.isaac_dodge_assist.laser_hazards')
+ local hbeams = {}; LaserHazards.appendWarnings(parent,room,hbeams)
+ assert(#hbeams==0,'Chubber must remain excluded from hard LaserHazards beams')
+ print('PASS Chubber 39.22.0 boomerang (Hit #3/#4, apex turnaround, StateFrame<=42 clamp, Attack03 windup)')
+end
+
+-- Circle lasers (Maw Of The Void / Tech X) must feed deathBursts / IAD BURST prediction.
+do
+ local maw = entity(EntityType.ENTITY_LASER,1,'Loop',0)
+ maw.Position = p.Position; maw.Velocity = Vector(0,0); maw.Radius = 90; maw.Size = 16; maw.CollisionDamage = 6
+ maw.Parent = p; maw.SpawnerEntity = p; maw.SpawnerType = EntityType.ENTITY_PLAYER
+ function maw:ToLaser()return self end;function maw:IsCircleLaser()return true end
+ function maw:GetSamples()return {Count=0} end;function maw:GetEndPoint()return maw.Position end
+ local mawAreas,mawLasers = {},{}
+ local mawFly = entity(EntityType.ENTITY_BOOMFLY,0,'Fly',0)
+ mawFly.Position = Vector(p.Position.X+90,p.Position.Y); mawFly.Velocity = Vector(0,0); mawFly.HitPoints = 10
+ local pred = NpcHazards.deathBursts({mawFly},{},{maw},p,15,mawAreas,mawLasers)
+ assert(pred[mawFly.InitSeed]~=nil,'circle laser must predict deathBurst killTime')
+
+ callbacks[ModCallbacks.MC_POST_NEW_ROOM]()
+ scene = {}; p.Position,p.Velocity = Vector(320,280),Vector(0,0)
+ for _=1,5 do callbacks[ModCallbacks.MC_POST_UPDATE]() end
+ maw.Position = p.Position
+ mawFly.InitSeed = 77777; mawFly.Position = Vector(p.Position.X+90,p.Position.Y); mawFly.HitPoints = 10
+ function mawFly:ToNPC()return self end
+ scene = {maw, mawFly}
+ callbacks[ModCallbacks.MC_POST_UPDATE]()
+ callbacks[ModCallbacks.MC_POST_NPC_DEATH](nil, mawFly)
+ assert(logs[#logs]:find('IAD BURST:',1,true) and not logs[#logs]:find('late=none',1,true),
+  'core loop must include player IsCircleLaser for IAD BURST: '..tostring(logs[#logs]))
+ print('PASS Maw Of The Void IsCircleLaser IAD BURST tracking')
+end
+
+-- Room attribution on MC_POST_NEW_ROOM flush (reason=room room=<prevType.Variant>).
+do
+ local rLogs, rCallbacks = {}, {}
+ local rRoomData = {Type=1, Variant=1081}
+ local savedGame, savedIsaac, savedReg = Game, Isaac, RegisterMod
+ local rRoom = room
+ local rScene = {}
+ Game = function()
+  return {
+   GetNumPlayers=function()return 1 end,
+   GetRoom=function()return rRoom end,
+   IsPaused=function()return false end,
+   GetLevel=function()return {GetCurrentRoomDesc=function()return {Data=rRoomData,ListIndex=5,SpawnSeed=123,AwardSeed=456} end} end,
+  }
+ end
+ Isaac = {
+  GetTime=savedIsaac.GetTime, GetPlayer=function()return p end,
+  GetRoomEntities=function()return rScene end,
+  DebugString=function(s)rLogs[#rLogs+1]=s end,
+  RenderText=function()end, WorldToScreen=function(v)return v end,
+ }
+ RegisterMod = function()return {AddCallback=function(_,k,fn)rCallbacks[k]=fn end} end
+ local okCore, errCore = pcall(function()
+  local core = dofile('mod/isaac_dodge_assist/core.lua')
+  local m = RegisterMod()
+  core(m, nil, 'test')
+  rCallbacks[ModCallbacks.MC_POST_GAME_STARTED](nil, false)
+  rCallbacks[ModCallbacks.MC_POST_NEW_ROOM]()
+  local foe = entity(EntityType.ENTITY_GAPER or 10,0,'Walk',0); foe.Position = Vector(340,280); foe.Velocity = Vector(-2,0)
+  function foe:ToNPC()return self end
+  rScene = {foe}
+  for _=1,6 do rCallbacks[ModCallbacks.MC_POST_UPDATE]() end
+  rRoomData = {Type=8, Variant=31}
+  rCallbacks[ModCallbacks.MC_POST_NEW_ROOM]()
+ end)
+ Game, Isaac, RegisterMod = savedGame, savedIsaac, savedReg
+ assert(okCore, tostring(errCore))
+ local perfLine
+ for _,line in ipairs(rLogs) do if line:find('IAD PERF:',1,true) and line:find('reason=room',1,true) then perfLine = line end end
+ assert(perfLine and perfLine:find('reason=room room=1.1081',1,true),
+  'MC_POST_NEW_ROOM flush must attribute previous room (1.1081), got: '..tostring(perfLine))
+ print('PASS reason=room previous-room attribution (1.1081 -> 8.31)')
+end
+
 for _,line in ipairs(logs)do assert(not line:find('IAD LOADER: core error',1,true),line)end

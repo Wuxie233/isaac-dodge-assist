@@ -13,12 +13,14 @@ local function progressToward(target,x,y,nx,ny)
     return dx*dx+dy*dy < ox*ox+oy*oy - 0.0001
 end
 local function traversable(ctx,x,y,nx,ny)
+    if x==nx and y==ny then return safe(ctx,x,y) end
     if ctx.escapeTarget and not safe(ctx,x,y) and progressToward(ctx.escapeTarget,x,y,nx,ny) then
         return true
     end
+    if not safe(ctx,nx,ny) then return false end
     local dx,dy=nx-x,ny-y
     local count=max(1,math.ceil(math.sqrt(dx*dx+dy*dy)/6))
-    for i=1,count do
+    for i=1,count-1 do
         local u=i/count
         if not safe(ctx,x+dx*u,y+dy*u) then return false end
     end
@@ -157,7 +159,14 @@ function M.solve(ctx,directions,spaceCost)
         -- Space can only break a tie within the minimum integer risk tier.
         -- Native hysteresis also cannot retain an input in a worse risk tier.
         if danger and item.risk==bestRisk and not (a.blocked and b.blocked) then
-            cost=spaceCost and max(spaceCost(a.endpoint),spaceCost(b.endpoint)) or 0
+            if spaceCost then
+                local ae,be=a.endpoint,b.endpoint
+                if ae.X==be.X and ae.Y==be.Y then
+                    cost=spaceCost(ae)
+                else
+                    cost=max(spaceCost(ae),spaceCost(be))
+                end
+            end
             -- Combine terminal clearance with the reachable endpoint space.
             local gap=min(a.clearance,b.clearance)
             cost=min(999,floor(cost*0.6+max(0,24-gap)*8))

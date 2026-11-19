@@ -126,6 +126,38 @@ end
 lasers(2,0);run('4 straight lasers',10)
 lasers(16,0);run('4 curved lasers',10)
 lasers(16,2);run('4 rotating curved lasers',10)
+do
+ local oldPos=p.Position
+ local oldShape,oldTL,oldBR,oldIn,oldGC=room.GetRoomShape,room.GetTopLeftPos,room.GetBottomRightPos,room.IsPositionInRoom,room.GetGridCollision
+ function room:GetRoomShape()return 1 end
+ function room:GetTopLeftPos()return Vector(40,120)end
+ function room:GetBottomRightPos()return Vector(960,960)end
+ function room:GetGridCollision(i)
+  counts.GetGridCollision=(counts.GetGridCollision or 0)+1
+  local w=self:GetGridWidth()
+  local cx,cy=i%w,math.floor(i/w)
+  return (cx==0 or cx==w-1 or cy<=2 or cy==w-1) and GridCollisionClass.COLLISION_WALL or 0
+ end
+ function room:IsPositionInRoom(v,m)
+  counts.IsPositionInRoom=(counts.IsPositionInRoom or 0)+1
+  m=m or 0
+  return v.X>=40+m and v.X<=960-m and v.Y>=120+m and v.Y<=960-m
+ end
+ callbacks[ModCallbacks.MC_POST_NEW_ROOM]()
+ for i=1,5 do tick()end
+ p.Position=Vector(46,280);p.Velocity=Vector(0,0)
+ local proj=entity(EntityType.ENTITY_PROJECTILE,0)
+ function proj:ToProjectile()return self end;function proj:HasProjectileFlags()return false end
+ proj.Position=Vector(160,280);proj.Velocity=Vector(-12,0);proj.Size=4
+ proj.Height=-20;proj.FallingSpeed=0;proj.FallingAccel=-0.1;proj.InitSeed=2999
+ scene={proj}
+ run('wall hugging rect',10)
+ assert((counts.IsPositionInRoom or 0)/10<5,'wall-hugging rectangular room must keep IsPositionInRoom near zero')
+ assert((counts.GetGridCollision or 0)>0,'wall-hugging scene did not run terrain planner')
+ for _,line in ipairs(logs)do assert(not line:find('IAD LOADER: core error',1,true),line)end
+ p.Position=oldPos
+ room.GetRoomShape,room.GetTopLeftPos,room.GetBottomRightPos,room.IsPositionInRoom,room.GetGridCollision=oldShape,oldTL,oldBR,oldIn,oldGC
+end
 -- Optional release artifact: compare every transmitted score and blocked mask
 -- with the prior version, excluding sequence/time/diagnostic text.
 if os.getenv('IAD_SCORE_OUTPUT') then

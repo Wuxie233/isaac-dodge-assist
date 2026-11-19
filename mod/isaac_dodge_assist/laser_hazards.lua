@@ -30,29 +30,44 @@ local function segments(points,angle)
     local result={}
     local c,s=math.cos(math.rad(angle)),math.sin(math.rad(angle))
     local ax,ay
+    local minX,maxX,minY,maxY=math.huge,-math.huge,math.huge,-math.huge
     for i=1,#points do
         local p=points[i]
         local bx,by=p.X*c-p.Y*s,p.X*s+p.Y*c
         if ax then
+            local lx0,lx1=min(ax,bx),max(ax,bx)
+            local ly0,ly1=min(ay,by),max(ay,by)
+            if lx0<minX then minX=lx0 end
+            if lx1>maxX then maxX=lx1 end
+            if ly0<minY then minY=ly0 end
+            if ly1>maxY then maxY=ly1 end
             result[#result+1]={ax=ax,ay=ay,bx=bx,by=by,
-                minX=min(ax,bx),maxX=max(ax,bx),minY=min(ay,by),maxY=max(ay,by)}
+                minX=lx0,maxX=lx1,minY=ly0,maxY=ly1}
         end
         ax,ay=bx,by
     end
+    result.minX,result.maxX,result.minY,result.maxY=minX,maxX,minY,maxY
     return result
 end
 
 -- A rectangle distance is a lower bound on the enclosed segment distance.
 -- Only skip a segment when it cannot improve the exact closest distance.
-local function nearestSquared(lines,ax,ay,bx,by)
-    local best=math.huge
+local function nearestSquared(lines,ax,ay,bx,by,limitSq)
+    local best=limitSq or math.huge
     local x0,x1,y0,y1=min(ax,bx),max(ax,bx),min(ay,by),max(ay,by)
+    if #lines>0 and limitSq then
+        local bdx,bdy=max(x0-lines.maxX,lines.minX-x1,0),max(y0-lines.maxY,lines.minY-y1,0)
+        if bdx*bdx+bdy*bdy>=best then return math.huge end
+    end
     for i=1,#lines do
         local l=lines[i]
         local dx,dy=max(x0-l.maxX,l.minX-x1,0),max(y0-l.maxY,l.minY-y1,0)
-        if dx*dx+dy*dy<=best then
-            best=min(best,segmentSquared(ax,ay,bx,by,l.ax,l.ay,l.bx,l.by))
-            if best==0 then return 0 end
+        if dx*dx+dy*dy<best then
+            local d=segmentSquared(ax,ay,bx,by,l.ax,l.ay,l.bx,l.by)
+            if d<best then
+                best=d
+                if best==0 then return 0 end
+            end
         end
     end
     return best
@@ -165,8 +180,8 @@ end
 -- down; his hand beams curve and leave the middle open), Mega Satan
 -- "Shoot1" 5 (down); 2026-11-05 The Haunt without its skin "LaserNoSkin" 17
 -- (down, drifting sideways as it fires, which the shape's velocity
--- carries), Krampus "Attack2Alt" 30 (the cardinal cross, which may turn a
--- quarter later), an Eye "Shoot" 11 (a thin laser at the player; a
+-- carries), Krampus "Attack2Alt" / "Attack2" 30 (the cardinal cross, which
+-- may turn a quarter later), an Eye "Shoot" 11 (a thin laser at the player; a
 -- Bloodshot Eye fires brimstone the same way); 2026-11-06 Red Ghost
 -- "ShootLeft" 14 (its beam along the side the animation names). aim =
 -- toward the target; prefix = the animation ends in the direction.
@@ -180,7 +195,8 @@ local function appendBossBeam(npc, room, shapes, target)
             ENTITY_THE_HAUNT = {{animation="LaserNoSkin", frame=16, angles={90}}},
             ENTITY_SATAN = {{variant=0, animation="Attack02", frame=20, angles={90}}},
             ENTITY_MEGA_SATAN = {{variant=0, animation="Shoot1", frame=4, angles={90}, width=36}},
-            ENTITY_FALLEN = {{variant=1, animation="Attack2Alt", frame=29, angles={0, 90, 180, 270}}},
+            ENTITY_FALLEN = {{variant=1, animation="Attack2Alt", frame=29, angles={0, 90, 180, 270}},
+                {variant=1, animation="Attack2", frame=29, angles={0, 90, 180, 270}, diagAngles={45, 135, 225, 315}, diagOnI1=true}},
             ENTITY_EYE = {{variant=0, animation="Shoot", frame=10, aim=true, width=12},
                 {variant=1, animation="Shoot", frame=10, aim=true}},
             ENTITY_RED_GHOST = {{prefix="Shoot", frame=13}},
@@ -196,7 +212,9 @@ local function appendBossBeam(npc, room, shapes, target)
         local side = beam.prefix and animation:sub(1, #beam.prefix) == beam.prefix and animation:sub(#beam.prefix + 1)
         local angles = side and brimstoneAngles[side] or beam.angles
         if (animation == beam.animation or (side and angles)) and (not beam.variant or beam.variant == npc.Variant) then
-            if beam.aim then
+            if beam.diagOnI1 and (npc.I1 or 0) ~= 0 then
+                angles = beam.diagAngles
+            elseif beam.aim then
                 if not target then return end
                 local to = target - npc.Position
                 angles = {math.deg(math.atan(to.Y, to.X))}
@@ -347,7 +365,8 @@ local function baseCone(shape)
     -- needs the polyline to start at the snapshot origin; every shape the mod
     -- builds does, but never assume it for a foreign one.
     local anchor = points[1]
-    shape.baseCone = {center = (lo+hi)*0.5, half = (hi-lo)*0.5, far = far or 0,
+    local maxReach = max(shape.reach, far or 0)
+    shape.baseCone = {center = (lo+hi)*0.5, half = (hi-lo)*0.5, far = far or 0, maxReach = maxReach,
         anchored = anchor ~= nil and anchor.X*anchor.X + anchor.Y*anchor.Y <= 1e-12}
     return shape.baseCone
 end
@@ -364,16 +383,19 @@ end
 -- only overstate the safety of a query that is already at least CLEAR away.
 local function broadGap(shape, ax, ay, bx, by, firstTime, lastTime, radius)
     local cone = baseCone(shape)
-    local inner = sqrt(pointSegmentSquared(0,0,ax,ay,bx,by))
-    local radial = inner - math.max(shape.reach, cone.far) - radius
-    if radial >= CLEAR then return radial end
-    if not cone.anchored then return nil end
-    if inner <= radius or ax*bx + ay*by <= 0 then return nil end
+    local innerSq = pointSegmentSquared(0,0,ax,ay,bx,by)
+    local radialLimit = cone.maxReach + radius + CLEAR
+    if innerSq >= radialLimit * radialLimit then
+        return sqrt(innerSq) - cone.maxReach - radius
+    end
+    if not cone.anchored or cone.half >= pi*0.5 then return nil end
+    if innerSq <= radius*radius or ax*bx + ay*by <= 0 then return nil end
     local speed = shape.angularSpeed or 0
     local a0 = speed*math.max(0,firstTime-shape.delay)
     local a1 = speed*math.max(0,lastTime-shape.delay)
     local half = cone.half + math.abs(a1-a0)*0.5
     if half >= pi*0.5 then return nil end
+    local inner = sqrt(innerSq)
     local center = cone.center + (a0+a1)*0.5
     -- The angular distance of a straight segment to a cone peaks at one of its
     -- endpoints only when the cone axis is outside the segment's angular
@@ -401,22 +423,22 @@ local function sweepSlices(shape, step)
     local cached = shape.sweeps[step]
     if cached then return cached end
     local firstTime, lastTime = step-1, step
-    local function angle(t)
-        return shape.angularSpeed*math.max(0,t-shape.delay)
-    end
-    local startAngle,endAngle = angle(firstTime),angle(lastTime)
+    local speed, delay = shape.angularSpeed, shape.delay
+    local startAngle = speed*max(0, firstTime - delay)
+    local endAngle = speed*max(0, lastTime - delay)
     -- Widen each angular interval to about 10 units of endpoint travel. The
     -- margin is the exact half-arc, so a wider slice stays conservative: it
     -- can only report a smaller clearance, never a larger one.
-    local arc = shape.reach*math.rad(math.abs(endAngle-startAngle))
-    local subdivisions = math.max(1,math.min(8,math.ceil(arc/10)))
+    local arc = shape.reach*math.rad(abs(endAngle-startAngle))
+    local subdivisions = max(1,min(8,math.ceil(arc/10)))
     local slices = {}
     for j=1,subdivisions do
         local u,v = (j-1)/subdivisions,j/subdivisions
         local t0,t1 = firstTime+u,firstTime+v
-        local lo,hi = angle(t0),angle(t1)
+        local lo = speed*max(0, t0 - delay)
+        local hi = speed*max(0, t1 - delay)
         local midAngle = (lo+hi)*0.5
-        local sweepMargin = shape.reach*math.rad(math.abs(hi-lo))*0.5
+        local sweepMargin = shape.reach*math.rad(abs(hi-lo))*0.5
         slices[j] = {u=u,v=v,margin=sweepMargin,segments=segments(shape.points,midAngle)}
     end
     shape.sweeps[step] = slices
@@ -449,10 +471,18 @@ function M.clearanceXY(shape,ox,oy,px,py,step,playerRadius)
     local far=broadGap(shape,ax,ay,bx,by,firstTime,lastTime,radius)
     if far then return far end
     local clearance = math.huge
-    for _,slice in ipairs(sweepSlices(shape,step)) do
-        local dx,dy=bx-ax,by-ay
-        local distance=nearestSquared(slice.segments,ax+dx*slice.u,ay+dy*slice.u,ax+dx*slice.v,ay+dy*slice.v)
-        clearance=min(clearance,sqrt(distance)-radius-slice.margin)
+    local dx,dy=bx-ax,by-ay
+    local slices = sweepSlices(shape,step)
+    for i=1,#slices do
+        local slice = slices[i]
+        local limit = clearance < math.huge and (clearance + radius + slice.margin) or nil
+        if not limit or limit > 0 then
+            local limitSq = limit and limit*limit or nil
+            local distance=nearestSquared(slice.segments,ax+dx*slice.u,ay+dy*slice.u,ax+dx*slice.v,ay+dy*slice.v,limitSq)
+            if distance < (limitSq or math.huge) then
+                clearance=min(clearance,sqrt(distance)-radius-slice.margin)
+            end
+        end
     end
     return clearance
 end

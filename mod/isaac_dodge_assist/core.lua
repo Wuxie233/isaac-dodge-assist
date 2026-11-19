@@ -64,7 +64,7 @@ local frame, sequence, previousCount = 0, 0, -1
 local state = "WAITING"
 local loggedState = nil
 local runEnded = false
-local beastRoom, deathmatch, roomFloorCache = false, false, {}
+local beastRoom, deathmatch, roomFloorCache, activeRoomId = false, false, {}, nil
 local NATIVE_ENABLED, NATIVE_MIRROR, NATIVE_DEATHMATCH, NATIVE_BEAST, NATIVE_PAUSED = 1, 2, 4, 8, 16
 -- Candidate order is part of the IAD1 protocol: idle, L, R, U, D, LU, RU, LD, RD.
 local directions = {Vector(0,0), Vector(-1,0), Vector(1,0), Vector(0,-1), Vector(0,1),
@@ -129,6 +129,7 @@ if saved then
     kinematics, inputs, binding = saved.kinematics, saved.inputs, saved.binding
     frame, sequence, state = saved.frame, saved.sequence, saved.state
     runEnded = saved.runEnded or false
+    activeRoomId = saved.roomId
     if saved.intel then intel = FloorIntel.adopt(saved.intel); intel.scanAt = -100 end
     if saved.overlay ~= Overlay.enabled() then Overlay.toggle() end
     for _, key in ipairs({"mode", "bias", "hint", "weapon", "provenAuto", "autoFireAt", "aimLogs"}) do
@@ -140,8 +141,23 @@ local function snapshot()
     return {enabled=enabled, paused=paused, horizonIndex=horizonIndex,
         selected=selected, boundSeed=boundSeed, manualUntil=manualUntil, previousCount=previousCount,
         kinematics=kinematics, inputs=inputs, binding=binding,
-        frame=frame, sequence=sequence, state=state, runEnded=runEnded, overlay=Overlay.enabled(), combat=combat,
+        frame=frame, sequence=sequence, state=state, runEnded=runEnded, roomId=activeRoomId,
+        overlay=Overlay.enabled(), combat=combat,
         intel=intel}
+end
+local function readRoomId()
+    local ok, label = pcall(function()
+        local level = game.GetLevel and game:GetLevel()
+        local desc = level and level:GetCurrentRoomDesc()
+        local data = desc and desc.Data
+        if data and data.Type ~= nil and data.Variant ~= nil then
+            return tostring(data.Type) .. "." .. tostring(data.Variant)
+        end
+    end)
+    return ok and label or nil
+end
+local function roomReason(base)
+    return activeRoomId and (base .. " room=" .. activeRoomId) or base
 end
 local function reset()
     Diagnostics.reset("game-start")
@@ -151,6 +167,7 @@ local function reset()
     motion = {}
     frame, state = 0, "WAITING"
     beastRoom, roomFloorCache = false, {}
+    activeRoomId = readRoomId()
     emit(false)
 end
 local function unsupported(p)
@@ -218,12 +235,16 @@ local function spikesActive(grid, kind)
         (sprite:IsFinished(animation) or sprite:GetFrame() >= 11) then return false end
     return kind == GridEntityType.GRID_SPIKES or grid.State == 0
 end
+local function segmentDistanceXY(ax, ay, bx, by)
+    local dx, dy = bx - ax, by - ay
+    local length = dx*dx + dy*dy
+    if length < 0.0001 then return math.sqrt(ax*ax + ay*ay) end
+    local t = math.max(0, math.min(1, -(ax*dx + ay*dy) / length))
+    local x, y = ax + dx * t, ay + dy * t
+    return math.sqrt(x*x + y*y)
+end
 local function segmentDistance(a, b)
-    local delta = b - a
-    local length = delta:LengthSquared()
-    if length < 0.0001 then return a:Length() end
-    local t = math.max(0, math.min(1, -a:Dot(delta) / length))
-    return (a + delta * t):Length()
+    return segmentDistanceXY(a.X, a.Y, b.X, b.Y)
 end
 -- Non-colliding NPCs are not contact walls. Explicit airborne/jump cues
 -- retain a separate landing warning without treating burrowing as a jump.
@@ -378,58 +399,107 @@ local function forecast(entity, step)
 end
 local function buildField(p,steps,bullets,contacts,bombs,areas,lasers)
     local field=ThreatField.new(steps,p.Size,lasers,LaserHazards)
-    -- Blood/creep patches are usually stationary: index them once, not once
-    -- per future tick. Moving effects retain their time-indexed sweeps.
-    -- A timed area (from/to) is a hit only in those future updates.
-    local function static(area) return not area.from and area.velocity:LengthSquared()<0.000001 end
-    for _,area in ipairs(areas) do
-        if static(area) then
-            ThreatField.add(field,nil,area.position,area.position,area.radius,area.warning)
-        end
-    end
-    for t=0,steps do
-        local previous=math.max(0,t-1)
-        for _,enemy in ipairs(contacts) do
-            local sample=motion[enemy.InitSeed]
-            local speed=sample and sample.speed or enemy.Velocity:Length()
-            -- Only the engine contact circle is a hit. The speed buffer is a
-            -- proximity warning: when it counted as a hit, a chasing enemy
-            -- made every direction look like an immediate collision.
-            local hard,near=enemy.Size+CONTACT_MARGIN,enemy.Size+5+math.min(16,speed*2)
-            local a,b=forecast(enemy,previous),forecast(enemy,t)
-            ThreatField.add(field,t,a,b,hard)
-            ThreatField.add(field,t,a,b,near,true)
-            -- A fast enemy can stop accelerating or change its turn. Retain
-            -- constant velocity as a second hypothesis, without doubling risk.
-            if sample and sample.acceleration:LengthSquared()>0.01 then
-                a,b=enemy.Position+enemy.Velocity*previous,enemy.Position+enemy.Velocity*t
-                ThreatField.add(field,t,a,b,hard)
-                ThreatField.add(field,t,a,b,near,true)
+    local addXY=ThreatField.addXY
+    local heightIntersects=ThreatField.heightIntersects
+    local max,min=math.max,math.min
+    for i=1,#areas do
+        local area=areas[i]
+        if area.pathX then
+            local pathX,pathY=area.pathX,area.pathY
+            local r,warn=area.radius,area.warning
+            local t0,t1=max(0,area.from or 0),min(steps,area.to or steps)
+            for t=t0,t1 do
+                local previous=max(0,t-1)
+                addXY(field,t,pathX[previous],pathY[previous],pathX[t],pathY[t],r,warn)
+            end
+        elseif not area.from and area.velocity.X==0 and area.velocity.Y==0 then
+            local ax,ay=area.position.X,area.position.Y
+            addXY(field,nil,ax,ay,ax,ay,area.radius,area.warning)
+        elseif not area.from and area.velocity:LengthSquared()<0.000001 then
+            local ax,ay=area.position.X,area.position.Y
+            addXY(field,nil,ax,ay,ax,ay,area.radius,area.warning)
+        else
+            local ax,ay=area.position.X,area.position.Y
+            local vx,vy=area.velocity.X,area.velocity.Y
+            local sx=area.sweep and area.sweep.X or 0
+            local sy=area.sweep and area.sweep.Y or 0
+            local r,warn=area.radius,area.warning
+            local t0,t1=max(0,area.from or 0),min(steps,area.to or steps)
+            for t=t0,t1 do
+                local previous=max(0,t-1)
+                addXY(field,t,ax+vx*previous,ay+vy*previous,ax+vx*t+sx,ay+vy*t+sy,r,warn)
             end
         end
-        for _,bullet in ipairs(bullets) do
-            if ThreatField.heightIntersects(bullet,t) then
-                local r = bullet.Size + 3 + (curvingBullet(bullet) and 6 or 0)
-                ThreatField.add(field,t,forecast(bullet,previous),forecast(bullet,t),r)
-                local sample=motion[bullet.InitSeed]
-                if sample and sample.acceleration:LengthSquared()>0.01 then
-                    ThreatField.add(field,t,bullet.Position+bullet.Velocity*previous,
-                        bullet.Position+bullet.Velocity*t,r)
+    end
+    for i=1,#contacts do
+        local enemy=contacts[i]
+        local sample=motion[enemy.InitSeed]
+        local speed=sample and sample.speed or enemy.Velocity:Length()
+        -- Only the engine contact circle is a hit. The speed buffer is a
+        -- proximity warning: when it counted as a hit, a chasing enemy
+        -- made every direction look like an immediate collision.
+        local hard,near=enemy.Size+CONTACT_MARGIN,enemy.Size+5+min(16,speed*2)
+        local acc=sample and sample.acceleration
+        local hasNZ=acc and (acc.X~=0 or acc.Y~=0)
+        local hasAccel=hasNZ and acc:LengthSquared()>0.01
+        if hasNZ then forecast(enemy,steps) end
+        local path=hasNZ and sample.path
+        local ex,ey,evx,evy=enemy.Position.X,enemy.Position.Y,enemy.Velocity.X,enemy.Velocity.Y
+        for t=0,steps do
+            local previous=max(0,t-1)
+            local ax,ay,bx,by
+            if path then
+                local a,b=path[previous],path[t]
+                ax,ay,bx,by=a.X,a.Y,b.X,b.Y
+            else
+                ax,ay,bx,by=ex+evx*previous,ey+evy*previous,ex+evx*t,ey+evy*t
+            end
+            addXY(field,t,ax,ay,bx,by,hard)
+            addXY(field,t,ax,ay,bx,by,near,true)
+            -- A fast enemy can stop accelerating or change its turn. Retain
+            -- constant velocity as a second hypothesis, without doubling risk.
+            if hasAccel then
+                ax,ay,bx,by=ex+evx*previous,ey+evy*previous,ex+evx*t,ey+evy*t
+                addXY(field,t,ax,ay,bx,by,hard)
+                addXY(field,t,ax,ay,bx,by,near,true)
+            end
+        end
+    end
+    for i=1,#bullets do
+        local bullet=bullets[i]
+        local r=bullet.Size+3+(curvingBullet(bullet) and 6 or 0)
+        local sample=motion[bullet.InitSeed]
+        local acc=sample and sample.acceleration
+        local hasNZ=acc and (acc.X~=0 or acc.Y~=0)
+        local hasAccel=hasNZ and acc:LengthSquared()>0.01
+        if hasNZ then forecast(bullet,steps) end
+        local path=hasNZ and sample.path
+        local bx0,by0,bvx,bvy=bullet.Position.X,bullet.Position.Y,bullet.Velocity.X,bullet.Velocity.Y
+        for t=0,steps do
+            if heightIntersects(bullet,t) then
+                local previous=max(0,t-1)
+                local ax,ay,bx,by
+                if path then
+                    local a,b=path[previous],path[t]
+                    ax,ay,bx,by=a.X,a.Y,b.X,b.Y
+                else
+                    ax,ay,bx,by=bx0+bvx*previous,by0+bvy*previous,bx0+bvx*t,by0+bvy*t
+                end
+                addXY(field,t,ax,ay,bx,by,r)
+                if hasAccel then
+                    addXY(field,t,bx0+bvx*previous,by0+bvy*previous,bx0+bvx*t,by0+bvy*t,r)
                 end
             end
         end
-        for _,bomb in ipairs(bombs) do
-            ThreatField.add(field,t,bomb.Position+NpcHazards.drift(bomb,previous),
-                bomb.Position+NpcHazards.drift(bomb,t),bombRadius(bomb),true)
-        end
-        for _,area in ipairs(areas) do
-            if not static(area) and (not area.from or (t>=area.from and t<=area.to)) then
-                -- A pushed bomb may blast anywhere along its sweep.
-                local finish=area.position+area.velocity*t
-                if area.sweep then finish=finish+area.sweep end
-                ThreatField.add(field,t,area.position+area.velocity*previous,
-                    finish,area.radius,area.warning)
-            end
+    end
+    for i=1,#bombs do
+        local bomb=bombs[i]
+        local bx,by,br=bomb.Position.X,bomb.Position.Y,bombRadius(bomb)
+        for t=0,steps do
+            local previous=max(0,t-1)
+            local dx0,dy0=NpcHazards.driftXY(bomb,previous)
+            local dx1,dy1=NpcHazards.driftXY(bomb,t)
+            addXY(field,t,bx+dx0,by+dy0,bx+dx1,by+dy1,br,true)
         end
     end
     return field
@@ -512,7 +582,7 @@ local function flushKinematics(reason)
 end
 -- The update counter restarts with every room: so does the grid rescan
 -- clock (a new room must never wait out the last room's long timer).
-mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() flushKinematics("room"); Combat.flushStats(combat, "room"); frame = 0; gridRoom, gridScanAt = nil, -GRID_RESCAN; motion = {}; deathAt = {}; gridLogged = false; beastRoom, roomFloorCache = false, {}; Diagnostics.reset("room"); pcall(FloorIntel.newRoom, intel, game); calibrationRoom(); emit(false) end)
+mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() local why = roomReason("room"); flushKinematics(why); Combat.flushStats(combat, why); frame = 0; gridRoom, gridScanAt = nil, -GRID_RESCAN; motion = {}; deathAt = {}; gridLogged = false; beastRoom, roomFloorCache = false, {}; Diagnostics.reset(why); activeRoomId = readRoomId(); pcall(FloorIntel.newRoom, intel, game); calibrationRoom(); emit(false) end)
 mod:AddCallback(ModCallbacks.MC_POST_NEW_LEVEL, function() FloorIntel.newLevel(intel) end)
 -- Calibration for predicting unvisited rooms' items (see
 -- native/research/api-map-items.md 3.6): the room seeds (calibrationRoom)
@@ -532,7 +602,8 @@ if ModCallbacks.MC_PRE_GET_COLLECTIBLE then
     end)
 end
 mod:AddCallback(ModCallbacks.MC_PRE_GAME_EXIT, function(_, shouldSave)
-    flushKinematics("game-exit"); Combat.flushStats(combat, "game-exit"); Diagnostics.flushPerformance("game-exit"); emit(false); selected = -1
+    local why = roomReason("game-exit")
+    flushKinematics(why); Combat.flushStats(combat, why); Diagnostics.flushPerformance(why); emit(false); selected = -1
     -- A saving exit can be continued later; leaving without a save ends it
     -- (after a death or victory the run has already ended).
     if shouldSave then runMarker("pause")
@@ -618,18 +689,67 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     local stride = PlayerMotion.reach(kinematics,p)
     -- Queued online input is committed; plan the selected window after it.
     local entities = Isaac.GetRoomEntities()
-    deathmatch = RoomType ~= nil and game:GetRoom():GetType() == DEATHMATCH
+    local room = game:GetRoom()
+    if not activeRoomId then activeRoomId = readRoomId() end
+    deathmatch = RoomType ~= nil and room:GetType() == DEATHMATCH
     -- A fuse that ends past the window must still be planned for: by the time
     -- a 14-update window saw the 0.12.6 troll bomb, the player was cornered.
     local steps = math.min(22,math.max(math.ceil(horizons[horizonIndex]*30/1000),
         math.ceil((p.Size+22)/math.max(2,stride))+3,NpcHazards.blastHorizon(entities,p,22))+#pending)
     effectiveHorizon=math.floor(steps*1000/30+0.5)
     local reach=stride*steps+p.Size
-    motion = MotionPrediction.track(entities,motion)
+    hazardCells = {}
     -- Exploders and the player side's shots that may kill them.
     local exploders, tears, beams, fusedBombs, liveBombs = {}, {}, {}, {}, {}
-    for _, entity in ipairs(entities) do
-        if entity.Type == EntityType.ENTITY_EFFECT then
+    local trackable, rawBullets, rawContacts, rawLandings = {}, {}, {}, {}
+    local tEffect = EntityType and EntityType.ENTITY_EFFECT
+    local tPlayer = EntityType and EntityType.ENTITY_PLAYER
+    local tFamiliar = EntityType and EntityType.ENTITY_FAMILIAR
+    local tSlot = EntityType and EntityType.ENTITY_SLOT
+    local tPickup = EntityType and EntityType.ENTITY_PICKUP
+    local tTear = EntityType and EntityType.ENTITY_TEAR
+    local tBomb = EntityType and EntityType.ENTITY_BOMB
+    local tLaser = EntityType and EntityType.ENTITY_LASER
+    local tKnife = EntityType and EntityType.ENTITY_KNIFE
+    local tProj = EntityType and EntityType.ENTITY_PROJECTILE
+    local spikedChest = PickupVariant and (PickupVariant.PICKUP_SPIKEDCHEST or 52)
+    local mimicChest = PickupVariant and (PickupVariant.PICKUP_MIMICCHEST or 54)
+    local collectible = PickupVariant and PickupVariant.PICKUP_COLLECTIBLE
+    local px, py = p.Position.X, p.Position.Y
+    local function handleBomb(bomb)
+        if not bomb:IsDead() then
+            liveBombs[#liveBombs+1] = bomb
+            if bomb.ExplosionDamage > 0 then
+                fusedBombs[#fusedBombs+1] = bomb
+                if bomb.Position:Distance(p.Position) < bombRadius(bomb) + reach + bomb.Velocity:Length() * steps then
+                    bombs[#bombs+1] = bomb
+                end
+            end
+        end
+    end
+    local function handleLaser(laser)
+        if not playerOwned(laser) then
+            local shape = LaserHazards.snapshot(laser)
+            lasers[#lasers+1] = shape
+            lasers[#lasers+1] = LaserHazards.followBand(laser, shape)
+        elseif not laser:IsDead() then
+            beams[#beams+1] = laser
+        end
+    end
+    local function handleProjectile(projectile)
+        trackable[#trackable+1] = projectile
+        if not projectile:IsDead() then
+            if projectile:HasProjectileFlags(ProjectileFlags.EXPLODE) and not playerOwned(projectile) then
+                areas[#areas+1]={position=projectile.Position,velocity=projectile.Velocity,
+                    radius=100,warning=true}
+            end
+            rawBullets[#rawBullets+1] = projectile
+        end
+    end
+    for i = 1, #entities do
+        local entity = entities[i]
+        local et = entity.Type
+        if et == tEffect then
             -- Effects are most of a busy room (a familiar's creep trail is
             -- dozens) and nothing below applies to them; player creep and
             -- puffs never hurt us in ordinary rooms, so they are not even looked at.
@@ -645,85 +765,119 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
                         areas[#areas+1] = {position=effect.Position,velocity=effect.Velocity,radius=envelope,
                             warning=warningEffects[effect.Variant]}
                     end
-                    if swirl then LaserHazards.appendEffectWarnings(effect,game:GetRoom(),lasers) end
+                    if swirl then LaserHazards.appendEffectWarnings(effect,room,lasers) end
                 end
             end
-        else
-            local npc = entity:ToNPC()
-            if entity.Type == beastType then beastRoom = true end
-            if npc and not npc:IsDead() and not playerOwned(npc) then
-                local npcRoom = game:GetRoom()
-                LaserHazards.appendWarnings(npc,npcRoom,lasers,p.Position)
-                NpcHazards.momArm(npc,npcRoom,areas)
-                NpcHazards.wormwood(npc,areas)
-                NpcHazards.satanStomp(npc,areas)
-                NpcHazards.grudge(npc,npcRoom,lasers)
-                NpcHazards.pon(npc,areas)
-                NpcHazards.mother(npc,npcRoom,areas)
-                if NpcHazards.exploder(npc) then exploders[#exploders+1] = npc end
-            elseif npc and npc:IsDead() and not playerOwned(npc) and NpcHazards.exploder(npc) then
-                local sprite = npc.GetSprite and npc:GetSprite()
-                if sprite and sprite:GetAnimation() == "Explode" then
-                    exploders[#exploders+1] = npc
-                end
-            end
-            if entity.Type == EntityType.ENTITY_TEAR and not entity:IsDead() and playerOwned(entity) then
-                tears[#tears+1] = (entity.ToTear and entity:ToTear()) or entity
-            end
-            local bomb = entity:ToBomb()
-            if bomb and not bomb:IsDead() then
-                liveBombs[#liveBombs+1] = bomb
-                if bomb.ExplosionDamage > 0 then
-                    -- A distant bomb can still push a near one: chain them all.
-                    fusedBombs[#fusedBombs+1] = bomb
-                    if bomb.Position:Distance(p.Position) < bombRadius(bomb) + reach + bomb.Velocity:Length() * steps then
-                        bombs[#bombs+1] = bomb
+        elseif et == tPlayer or et == tFamiliar or et == tSlot then
+            -- Never enemy hazards or tracked kinematics.
+        elseif et == tPickup then
+            if PickupVariant and entity.ToPickup then
+                local pickup = entity:ToPickup()
+                if pickup then
+                    local v = pickup.Variant
+                    if (v == collectible and pickup.SubType ~= 0) or (pickup.Price or 0) ~= 0 or
+                        ((v == spikedChest or v == mimicChest) and pickup.SubType ~= 0) then
+                        local index = room:GetGridIndex(pickup.Position)
+                        if index >= 0 then hazardCells[index] = true end
                     end
                 end
             end
+        elseif et == tTear then
+            if not entity:IsDead() then
+                if playerOwned(entity) then
+                    tears[#tears+1] = (entity.ToTear and entity:ToTear()) or entity
+                elseif deathmatch and entity.Position:Distance(p.Position) < reach+entity.Size+16+entity.Velocity:Length()*steps then
+                    bullets[#bullets+1] = tearAsBullet(entity.ToTear and entity:ToTear() or entity)
+                end
+            end
+        elseif et == tBomb then
+            local bomb = entity:ToBomb()
+            if bomb then handleBomb(bomb) end
+        elseif et == tLaser then
             local laser = entity:ToLaser()
-            if laser and not playerOwned(laser) then
-                local shape = LaserHazards.snapshot(laser)
-                lasers[#lasers+1] = shape
-                lasers[#lasers+1] = LaserHazards.followBand(laser, shape)
-            elseif laser then
-                if not laser:IsDead() and not laser:IsCircleLaser() then beams[#beams+1] = laser end
-            elseif entity.Type == EntityType.ENTITY_KNIFE and not playerOwned(entity) and not entity:IsDead() then
+            if laser then handleLaser(laser) end
+        elseif et == tKnife then
+            if not playerOwned(entity) and not entity:IsDead() then
                 areas[#areas+1] = {position=entity.Position,velocity=entity.Velocity,radius=math.max(24,entity.Size)}
             end
+        elseif et == tProj then
             local projectile = entity:ToProjectile()
-            -- EXPLODE can damage outside the projectile body, including on ground
-            -- impact while direct player collision is disabled. Use a conservative
-            -- warning envelope (not an assertion about exact blast radius/timing).
-            if projectile and not projectile:IsDead() and
-                projectile:HasProjectileFlags(ProjectileFlags.EXPLODE) and not playerOwned(projectile) then
-                areas[#areas+1]={position=projectile.Position,velocity=projectile.Velocity,
-                    radius=100,warning=true}
+            if projectile then handleProjectile(projectile) end
+        else
+            if et == beastType then beastRoom = true end
+            local npc = entity:ToNPC()
+            if npc then
+                trackable[#trackable+1] = npc
+                if not npc:IsDead() and not playerOwned(npc) then
+                    if NpcHazards.isChubberWorm(npc) then
+                        NpcHazards.chubberWorm(npc,steps,areas,CONTACT_MARGIN)
+                    else
+                        LaserHazards.appendWarnings(npc,room,lasers,p.Position)
+                        NpcHazards.momArm(npc,room,areas)
+                        NpcHazards.wormwood(npc,areas)
+                        NpcHazards.satanStomp(npc,areas)
+                        NpcHazards.grudge(npc,room,lasers)
+                        NpcHazards.pon(npc,areas)
+                        NpcHazards.mother(npc,room,areas)
+                        NpcHazards.chubberWindup(npc,room,lasers)
+                        if contactThreat(npc) then
+                            rawContacts[#rawContacts+1] = npc
+                        elseif landingThreat(npc) then
+                            rawLandings[#rawLandings+1] = npc
+                        end
+                    end
+                    if NpcHazards.exploder(npc) then exploders[#exploders+1] = npc end
+                elseif npc:IsDead() and not playerOwned(npc) and NpcHazards.exploder(npc) then
+                    local sprite = npc.GetSprite and npc:GetSprite()
+                    if sprite and sprite:GetAnimation() == "Explode" then
+                        exploders[#exploders+1] = npc
+                    end
+                end
+            else
+                local bomb = entity:ToBomb()
+                if bomb then
+                    handleBomb(bomb)
+                else
+                    local laser = entity:ToLaser()
+                    if laser then
+                        handleLaser(laser)
+                    else
+                        local projectile = entity:ToProjectile()
+                        if projectile then handleProjectile(projectile) end
+                    end
+                end
             end
-            local coll = projectile and projectile.EntityCollisionClass
-            local collidable = coll ~= EntityCollisionClass.ENTCOLL_NONE and
-                coll ~= EntityCollisionClass.ENTCOLL_ENEMIES
-            local arcing = coll == EntityCollisionClass.ENTCOLL_NONE and (projectile.FallingAccel or 0) > 0.05
-            if projectile and not projectile:IsDead() and
-                (collidable or arcing) and
-                not projectile:HasProjectileFlags(ProjectileFlags.CANT_HIT_PLAYER) and
-                projectile.Position:Distance(p.Position) < reach+projectile.Size+16+MotionPrediction.reach(motion,projectile,steps) then
-                bullets[#bullets+1] = projectile
-            elseif deathmatch and entity.Type == EntityType.ENTITY_TEAR and not entity:IsDead() and
-                not playerOwned(entity) and
-                entity.Position:Distance(p.Position) < reach+entity.Size+16+entity.Velocity:Length()*steps then
-                bullets[#bullets+1] = tearAsBullet(entity.ToTear and entity:ToTear() or entity)
-            elseif entity:ToNPC() and not entity:IsDead() and contactThreat(entity) and not playerOwned(entity) and
-                entity.Position:Distance(p.Position) < reach+entity.Size+32+MotionPrediction.reach(motion,entity,steps) then
-                contacts[#contacts+1] = entity
-            elseif npc and not npc:IsDead() and not playerOwned(npc) and landingThreat(npc) and
-                npc.Position:Distance(p.Position) < reach+npc.Size+32+MotionPrediction.reach(motion,npc,steps) then
-                areas[#areas+1] = {position=npc.Position,velocity=npc.Velocity,
-                    radius=npc.Size+23,warning=true}
-            end
-            if projectile and not projectile:IsDead() and ((projectile.FrameCount or 0) <= 6 or bullets[#bullets] ~= projectile) then
-                Diagnostics.shot(frame, projectile, p, bullets[#bullets] == projectile)
-            end
+        end
+    end
+    motion = MotionPrediction.track(trackable,motion)
+    for i = 1, #rawBullets do
+        local projectile = rawBullets[i]
+        local coll = projectile.EntityCollisionClass
+        local collidable = coll ~= EntityCollisionClass.ENTCOLL_NONE and
+            coll ~= EntityCollisionClass.ENTCOLL_ENEMIES
+        local arcing = coll == EntityCollisionClass.ENTCOLL_NONE and (projectile.FallingAccel or 0) > 0.05
+        local included = false
+        if (collidable or arcing) and
+            not projectile:HasProjectileFlags(ProjectileFlags.CANT_HIT_PLAYER) and
+            projectile.Position:Distance(p.Position) < reach+projectile.Size+16+MotionPrediction.reach(motion,projectile,steps) then
+            bullets[#bullets+1] = projectile
+            included = true
+        end
+        if (projectile.FrameCount or 0) <= 6 or not included then
+            Diagnostics.shot(frame, projectile, p, included)
+        end
+    end
+    for i = 1, #rawContacts do
+        local npc = rawContacts[i]
+        if npc.Position:Distance(p.Position) < reach+npc.Size+32+MotionPrediction.reach(motion,npc,steps) then
+            contacts[#contacts+1] = npc
+        end
+    end
+    for i = 1, #rawLandings do
+        local npc = rawLandings[i]
+        if npc.Position:Distance(p.Position) < reach+npc.Size+32+MotionPrediction.reach(motion,npc,steps) then
+            areas[#areas+1] = {position=npc.Position,velocity=npc.Velocity,
+                radius=npc.Size+23,warning=true}
         end
     end
     for seed, t in pairs(NpcHazards.deathBursts(exploders,tears,beams,p,steps,areas,lasers)) do
@@ -733,16 +887,13 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     Diagnostics.bombs(frame,liveBombs)
     Diagnostics.observe(frame,entities,p,playerOwned,#lasers)
     -- Grid damage exists even when the room has no enemy entities.
-    local room = game:GetRoom()
-    if gridRoom ~= room or #gridCells > 0 or frame - gridScanAt >= GRID_RESCAN then
-        -- A room that already has hazards is re-listed every update, so a
-        -- retracting spike or a spent TNT is always current. A clean room is
-        -- re-listed at least every GRID_RESCAN updates to catch a hazard that
-        -- appears mid-fight.
+    if gridRoom ~= room or frame - gridScanAt >= GRID_RESCAN then
+        -- Cached cells are re-read each update, so a retracting spike or a
+        -- spent TNT is never stale; only a hazard that appears mid-room waits
+        -- for the next rescan.
         rescanGrid(room, frame)
         logGrid(room)
     end
-    hazardCells = {}
     -- Sacrifice Room spikes hurt flying characters too; keep them and high-cost
     -- pickups/closed spiked chests out of AUTO pathing via hazardCells.
     local sacrifice = RoomType and room:GetType() == RoomType.ROOM_SACRIFICE
@@ -777,24 +928,6 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
             end
         end
     end
-    -- AUTO never walks over an item or closed spiked/mimic chest.
-    if PickupVariant then
-        local spikedChest = PickupVariant.PICKUP_SPIKEDCHEST or 52
-        local mimicChest = PickupVariant.PICKUP_MIMICCHEST or 54
-        for _, entity in ipairs(entities) do
-            local pickup = entity.Type == EntityType.ENTITY_PICKUP and entity.ToPickup and entity:ToPickup()
-            if pickup then
-                local v = pickup.Variant
-                if (v == PickupVariant.PICKUP_COLLECTIBLE and pickup.SubType ~= 0) or (pickup.Price or 0) ~= 0 then
-                    local index = room:GetGridIndex(pickup.Position)
-                    if index >= 0 then hazardCells[index] = true end
-                elseif (v == spikedChest or v == mimicChest) and pickup.SubType ~= 0 then
-                    local index = room:GetGridIndex(pickup.Position)
-                    if index >= 0 then hazardCells[index] = true end
-                end
-            end
-        end
-    end
     if beastRoom then
         -- Beast arena bottom magma (Room 16.666: Hit #33/#37/#40/#41 at y=448.5..466.2).
         for mx = 120, 680, 80 do
@@ -810,11 +943,26 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     -- Conservative reach bound retains every area any candidate can reach.
     local nearbyAreas = {}
     for _,area in ipairs(areas) do
-        if segmentDistance(area.position-p.Position,
-            area.position+area.velocity*steps-p.Position) <=
-            reach+area.radius+(area.sweep and area.sweep:Length() or 0) then
-            nearbyAreas[#nearbyAreas+1] = area
+        local keep = false
+        if area.pathX then
+            local rLimit = reach + area.radius
+            local rLimitSq = rLimit * rLimit
+            local pathX, pathY = area.pathX, area.pathY
+            for t = area.from or 0, area.to or steps do
+                local dx, dy = pathX[t] - px, pathY[t] - py
+                if dx*dx + dy*dy <= rLimitSq then keep = true; break end
+            end
+        else
+            local ax, ay = area.position.X - px, area.position.Y - py
+            local vx, vy = area.velocity.X, area.velocity.Y
+            local limit = reach + area.radius + (area.sweep and area.sweep:Length() or 0)
+            if vx == 0 and vy == 0 then
+                keep = ax*ax + ay*ay <= limit*limit
+            else
+                keep = segmentDistanceXY(ax, ay, ax + vx*steps, ay + vy*steps) <= limit
+            end
         end
+        if keep then nearbyAreas[#nearbyAreas+1] = area end
     end
     if Overlay.enabled() then
         local view={bullets={},contacts={},areas={},lasers=lasers}

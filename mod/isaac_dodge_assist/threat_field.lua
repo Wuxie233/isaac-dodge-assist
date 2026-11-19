@@ -2,35 +2,41 @@
 -- keeps its own shared cache. No threat-count cutoff, even in dense rooms.
 local M = {}
 local CELL, NEAR = 80, 24
-local floor,min,max,sqrt=math.floor,math.min,math.max,math.sqrt
+local floor,min,max,sqrt,abs=math.floor,math.min,math.max,math.sqrt,math.abs
+local function cellKey(x,y)
+    return (x+32768)*65536+(y+32768)
+end
 local function cell(layer,x,y,create)
-    local row=layer.rows[x]
-    if not row and create then row={};layer.rows[x]=row end
-    if not row then return nil end
-    local bucket=row[y]
-    if not bucket and create then bucket={};row[y]=bucket end
+    local cells=layer.cells
+    local key=cellKey(x,y)
+    local bucket=cells[key]
+    if not bucket and create then bucket={};cells[key]=bucket end
     return bucket
 end
 function M.new(steps,playerRadius,lasers,laserGeometry)
-    local ctx={steps=steps,radius=playerRadius,layers={},lasers=lasers or {},
+    local layers={}
+    for t=0,steps do layers[t]={cells={},global={}} end
+    return {steps=steps,radius=playerRadius,layers=layers,lasers=lasers or {},
         laserGeometry=laserGeometry,queries=0,checks=0,records=0,serial=0,seen={},
-        static={rows={},global={}}}
-    for t=0,steps do ctx.layers[t]={rows={},global={}} end
-    return ctx
+        static={cells={},global={}}}
 end
-function M.add(ctx,t,a,b,r,warning)
+function M.addXY(ctx,t,ax,ay,bx,by,r,warning)
     local layer=t and ctx.layers[t] or ctx.static
     ctx.records=ctx.records+1
-    local item={id=ctx.records,ax=a.X,ay=a.Y,vx=b.X-a.X,vy=b.Y-a.Y,
-        radius=r+ctx.radius,warning=warning}
-    local broad=item.radius+NEAR
-    local x0,x1=floor((min(a.X,b.X)-broad)/CELL),floor((max(a.X,b.X)+broad)/CELL)
-    local y0,y1=floor((min(a.Y,b.Y)-broad)/CELL),floor((max(a.Y,b.Y)+broad)/CELL)
+    local radius=r+ctx.radius
+    local item={id=ctx.records,ax=ax,ay=ay,vx=bx-ax,vy=by-ay,
+        radius=radius,warning=warning}
+    local broad=radius+NEAR
+    local x0,x1=floor((min(ax,bx)-broad)/CELL),floor((max(ax,bx)+broad)/CELL)
+    local y0,y1=floor((min(ay,by)-broad)/CELL),floor((max(ay,by)+broad)/CELL)
     -- Very long sweeps/huge effects cannot explode the number of buckets.
     if (x1-x0+1)*(y1-y0+1)>64 then layer.global[#layer.global+1]=item;return end
     for x=x0,x1 do for y=y0,y1 do
         local bucket=cell(layer,x,y,true);bucket[#bucket+1]=item
     end end
+end
+function M.add(ctx,t,a,b,r,warning)
+    M.addXY(ctx,t,a.X,a.Y,b.X,b.Y,r,warning)
 end
 -- Narrow phase for one bucket. A plain function (not a per-query closure)
 -- keeps each query allocation-free.
@@ -73,8 +79,12 @@ function M.sampleXY(ctx,ox,oy,px,py,t)
     end
     hard,warning,clearance=visit(ctx,layer.global,stamp,ox,oy,pdx,pdy,hard,warning,clearance)
     hard,warning,clearance=visit(ctx,static.global,stamp,ox,oy,pdx,pdy,hard,warning,clearance)
-    for _,shape in ipairs(ctx.lasers) do
-        local gap=ctx.laserGeometry.clearanceXY(shape,ox,oy,px,py,t,ctx.radius)
+    local lasers=ctx.lasers
+    local laserGeometry=ctx.laserGeometry
+    local radius=ctx.radius
+    for i=1,#lasers do
+        local shape=lasers[i]
+        local gap=laserGeometry.clearanceXY(shape,ox,oy,px,py,t,radius)
         if shape.rankingOnly then preference=max(preference,-gap)
         elseif shape.warning then warning=max(warning,-gap)
         else hard=max(hard,-gap);clearance=min(clearance,gap) end
@@ -92,14 +102,17 @@ end
 local BAND = -60
 function M.heightIntersects(bullet,t)
     if bullet:HasProjectileFlags(ProjectileFlags.ANY_HEIGHT_ENTITY_HIT) then return true end
-    local a=(bullet.FallingAccel+0.1)*0.5
-    local function height(u) return bullet.Height+bullet.FallingSpeed*u+a*u*u end
+    local h,v,a=bullet.Height,bullet.FallingSpeed,(bullet.FallingAccel+0.1)*0.5
     local lo,hi=max(0,t-1),t
-    local h0,h1=height(lo),height(hi)
+    local h0=h+v*lo+a*lo*lo
+    local h1=h+v*hi+a*hi*hi
     local low,high=min(h0,h1),max(h0,h1)
-    if math.abs(a)>0.000001 then
-        local turn=-bullet.FallingSpeed/(2*a)
-        if turn>lo and turn<hi then low=min(low,height(turn));high=max(high,height(turn)) end
+    if abs(a)>0.000001 then
+        local turn=-v/(2*a)
+        if turn>lo and turn<hi then
+            local ht=h+v*turn+a*turn*turn
+            low=min(low,ht);high=max(high,ht)
+        end
     end
     return high>=BAND and low<=0
 end
