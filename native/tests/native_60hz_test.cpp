@@ -940,6 +940,41 @@ void testBatchedReadFallbackAndSanitizedPtrs() {
     std::puts("PASS batched-read fallbacks (kSizeMulti, Chubber parent life) & <0x10000 pointer sanitization");
 }
 
+void testStandingOnBombNoLagOrTie() {
+    auto runCase = [](int count, int fuse, double maxUs) {
+        WorldFixture f;
+        f.initBase();
+        f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {320.0f, 280.0f});
+        f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kVel, {0.0f, 0.0f});
+        for (int i = 0; i < count; ++i) {
+            f.addBomb({320.0f + static_cast<float>(i) * 4.0f, 280.0f}, {0.0f, 0.0f}, fuse, 1.0f, count > 1 ? 3 : 0);
+        }
+        iad::ThreatScene scene;
+        assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 1, 60, scene));
+        iad::PlanResult plan = iad::solveNativePlan(scene, 0, -1, false);
+        assert(plan.valid && plan.danger);
+        // Must immediately move off the bomb instead of saturating wTier at 9999 and idling!
+        assert(plan.bestDir > 0);
+        if (maxUs > 0.0) {
+            constexpr int kIters = 200;
+            volatile int sink = 0;
+            auto t0 = std::chrono::steady_clock::now();
+            for (int i = 0; i < kIters; ++i) {
+                sink += iad::solveNativePlan(scene, 0, -1, false).bestDir;
+            }
+            auto t1 = std::chrono::steady_clock::now();
+            double us = std::chrono::duration<double, std::micro>(t1 - t0).count() / kIters;
+            assert(sink > 0);
+            assert(us < maxUs);
+        }
+    };
+    runCase(1, 40, 250.0);  // warn-only early fuse (~50 us)
+    runCase(1, 20, 250.0);  // hard blast inside extended horizon, straight escape clears (~60 us)
+    runCase(6, 18, 1200.0); // 6 troll bombs stacked under slow player, tieK branch-and-bound (~760 us vs ~1935 us)
+    runCase(1, 1, 600.0);   // imminent detonation (inside=true, ~280 us)
+    std::puts("PASS standing on bomb: immediate move-off (no wTier=9999 tie) & latency bounds");
+}
+
 } // namespace
 
 int main() {
@@ -952,6 +987,7 @@ int main() {
     testKrampusAttack2ChubberBoomerangAndTopWall();
     testItLivesFamiliarEffectFloodThroughput();
     testBatchedReadFallbackAndSanitizedPtrs();
+    testStandingOnBombNoLagOrTie();
     benchmarkCombatRoom();
     std::puts("PASS all native 60Hz memory-read & 2-stage planning tests");
     return 0;

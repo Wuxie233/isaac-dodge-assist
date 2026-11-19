@@ -271,6 +271,8 @@ struct PrecompThreats {
 
     int maxK = 0;
     int numChunks = 1;
+    int minHardK = 10000;
+    int maxHardK = -1;
     bool gridHasAutoAvoid = false;
 
     int numBullets = 0;
@@ -306,6 +308,8 @@ struct PrecompThreats {
     void init(const ThreatScene& scene, int maxKIn, bool allowPickups, bool hasAutoAvoid) {
         maxK = maxKIn;
         numChunks = (maxK >> 3) + 1;
+        minHardK = maxK + 1;
+        maxHardK = -1;
         gridHasAutoAvoid = (!allowPickups) && hasAutoAvoid;
         float ep = scene.entityPhase;
 
@@ -333,6 +337,10 @@ struct PrecompThreats {
             ab.minY = b.minY; ab.maxY = b.maxY;
             ab.radius = b.radius;
             ab.warning = b.warning;
+            if (!b.warning) {
+                minHardK = std::min(minHardK, lo);
+                maxHardK = std::max(maxHardK, hi);
+            }
         }
         numBullets = activeB;
         bulletsPtr = bDst;
@@ -384,6 +392,10 @@ struct PrecompThreats {
             while (lo <= hi && (static_cast<float>(lo) * 0.5f + ep) < d.fromT) ++lo;
             while (lo <= hi && (((hi == 0) ? 0.0f : static_cast<float>(hi - 1) * 0.5f) + ep) > d.toT) --hi;
             if (lo > hi) continue;
+            if (!d.warning) {
+                minHardK = std::min(minHardK, lo);
+                maxHardK = std::max(maxHardK, hi);
+            }
 
             if (!d.isCapsule && d.vel.x == 0.0f && d.vel.y == 0.0f) {
                 StaticDisc sd{d.pos, d.radius, lo, hi, d.warning, static_cast<uint8_t>(d.groundOnly ? 1 : 0)};
@@ -600,6 +612,10 @@ struct PrecompThreats {
                                         std::max(st.orig0.x, st.orig1.x) + st.sMaxX + stepPad,
                                         std::min(st.orig0.y, st.orig1.y) + st.sMinY - stepPad,
                                         std::max(st.orig0.y, st.orig1.y) + st.sMaxY + stepPad);
+            }
+            if (!l.warning && p.firstActiveK <= p.lastActiveK) {
+                minHardK = std::min(minHardK, p.firstActiveK);
+                maxHardK = std::max(maxHardK, p.lastActiveK);
             }
         }
     }
@@ -959,8 +975,10 @@ inline void stepPlayer60Fast(const RoomGrid& grid, const GridFastInfo& gf,
 }
 
 // Ultra-fast zero-sqrt hard-only collision probe at step k (gm == 0).
+// When minPen > 0, returns true iff a hard threat penetrates strictly deeper than minPen.
 inline bool hitsHardAtStep(const ThreatScene& scene, PrecompThreats& pt,
-                           Vec2 p0, Vec2 p1, float bodyRadius, bool bodyCanFly, int k) {
+                           Vec2 p0, Vec2 p1, float bodyRadius, bool bodyCanFly, int k,
+                           float minPen = 0.0f) {
     float pMinX = std::min(p0.x, p1.x), pMaxX = std::max(p0.x, p1.x);
     float pMinY = std::min(p0.y, p1.y), pMaxY = std::max(p0.y, p1.y);
     int blk = k >> 3;
@@ -978,7 +996,8 @@ inline bool hitsHardAtStep(const ThreatScene& scene, PrecompThreats& pt,
             pMaxY + pad < lcb.minY || pMinY - pad > lcb.maxY) {
             continue;
         }
-        float radSum = bodyRadius + l.width;
+        float radSum = bodyRadius + l.width - minPen;
+        if (radSum <= 0.0f) continue;
         Vec2 a{p0.x - ps.orig0.x, p0.y - ps.orig0.y};
         Vec2 b{p1.x - ps.orig1.x, p1.y - ps.orig1.y};
         if (l.ring) {
@@ -1031,7 +1050,8 @@ inline bool hitsHardAtStep(const ThreatScene& scene, PrecompThreats& pt,
             const StaticDisc& sd = pt.staticDiscsPtr[di];
             if (sd.warning || k < sd.lo || k > sd.hi) continue;
             if (sd.groundOnly && bodyCanFly) continue;
-            float rs = bodyRadius + sd.radius;
+            float rs = bodyRadius + sd.radius - minPen;
+            if (rs <= 0.0f) continue;
             if (pMaxX + rs < sd.pos.x || pMinX - rs > sd.pos.x ||
                 pMaxY + rs < sd.pos.y || pMinY - rs > sd.pos.y) {
                 continue;
@@ -1048,7 +1068,8 @@ inline bool hitsHardAtStep(const ThreatScene& scene, PrecompThreats& pt,
         const MovingDisc& md = pt.movingDiscsPtr[mi];
         if (md.warning || k < md.lo || k > md.hi) continue;
         if (md.groundOnly && bodyCanFly) continue;
-        float rs = bodyRadius + md.radius;
+        float rs = bodyRadius + md.radius - minPen;
+        if (rs <= 0.0f) continue;
         float pad = rs + 1.0f;
         const ChunkBox& mcb = md.chunks[blk];
         if (pMaxX + pad < mcb.minX || pMinX - pad > mcb.maxX ||
@@ -1080,7 +1101,8 @@ inline bool hitsHardAtStep(const ThreatScene& scene, PrecompThreats& pt,
     for (int bi = 0; bi < pt.numBullets; ++bi) {
         const ActiveBullet& ab = pt.bulletsPtr[bi];
         if (ab.warning || k < ab.lo || k > ab.hi) continue;
-        float rs = bodyRadius + ab.radius;
+        float rs = bodyRadius + ab.radius - minPen;
+        if (rs <= 0.0f) continue;
         float pad = rs + 1.0f;
         const ChunkBox& cb = row[bi];
         if (pMaxX + pad < cb.minX || pMinX - pad > cb.maxX ||
@@ -1683,8 +1705,9 @@ inline double computeRolloutScore(const ThreatScene& scene, const RolloutState& 
 
         if (inside) {
             if (lastHit < maxK) {
-                // Keep primary integer tier strictly on exit tick (lastHit + 1) so hysteresis holds steady!
-                intRisk = 1000000LL + static_cast<int64_t>(std::max(0, lastHit) + 1);
+                // Keep primary exit tick strictly ahead of warning tie-break (wTier <= 9999)
+                // so a bomb warning disc never swamps hard exit time or breaks Regime A pruning.
+                intRisk = 1000000LL + static_cast<int64_t>(std::max(0, lastHit) + 1) * 10000LL;
                 exitTie = std::min(499, hits * 8 + std::min(200, static_cast<int>(exposure * 0.5f)));
             } else {
                 // Cannot exit pool/beam within horizon: rank by terminal penetration depth so player runs to nearest edge!
@@ -1696,7 +1719,7 @@ inline double computeRolloutScore(const ThreatScene& scene, const RolloutState& 
             int survival = std::max(1, maxK + 2 - std::max(1, firstHit));
             int64_t trapped = (lastHit >= maxK) ? 200000LL : 0LL;
             int64_t sub = std::min<int64_t>(
-                999999LL,
+                989999LL,
                 trapped + static_cast<int64_t>(std::floor(maxPen * 2000.0f + exposure * 50.0f + hits * 100.0f)));
             intRisk = static_cast<int64_t>(survival) * 1000000LL + sub;
         }
@@ -1705,7 +1728,10 @@ inline double computeRolloutScore(const ThreatScene& scene, const RolloutState& 
     if (hasWarn) {
         float wWeighted = std::max(fast.warnWeighted, slow.warnWeighted);
         float wPeak = std::max(fast.maxWarnPen, slow.maxWarnPen);
-        int64_t wTier = std::max<int64_t>(1LL, std::min<int64_t>(9999LL, static_cast<int64_t>(std::ceil(wWeighted + wPeak * 0.5f))));
+        // When !hasHard (e.g. standing on a bomb warning), allow up to 99999 (< 600000 autoAvoid)
+        // so large bomb radii over 46-60 ticks never saturate all directions to a flat 9999 tie.
+        int64_t wCap = hasHard ? 9999LL : 99999LL;
+        int64_t wTier = std::max<int64_t>(1LL, std::min<int64_t>(wCap, static_cast<int64_t>(std::ceil(wWeighted + wPeak * 0.5f))));
         intRisk += wTier;
     }
     if (crossedAuto) {
@@ -1897,6 +1923,7 @@ inline bool continueAfterPivotSnap(const ThreatScene& scene, PrecompThreats& pt,
                                    const PlayerKinematics& kin, const PlayerKinematics& twinKin,
                                    int maxK, int abortFirstHardLe, int abortLastHardGt,
                                    bool abortAnyWarn, int maxEndDepthBucket,
+                                   float maxTieHardPen,
                                    RolloutState& st, TurnPathBuffer& buf) {
     st.initFromSnap(sn);
 
@@ -1940,45 +1967,135 @@ inline bool continueAfterPivotSnap(const ThreatScene& scene, PrecompThreats& pt,
         }
     };
 
-    // Regime C1 (!inside && !abortAnyWarn && abortFirstHardLe >= 0): ultra-fast hard-only zero-sqrt interleaved probe
-    if (!abortAnyWarn && abortFirstHardLe >= 0) {
-        int kCheckEnd = std::min(maxK, abortFirstHardLe);
-        for (int k = k0; k <= kCheckEnd; ++k) {
-            bool stepMoved = false;
-            stepPlayer60Fast(scene.grid, gf, scene.player.size, scene.player.canFly,
-                             originUnsafe, dZero, dAccel, kin, st.pos, st.vel, stepMoved);
-            if (stepMoved) st.moved = true;
-            buf.path[k] = st.pos;
-            if (hitsHardAtStep(scene, pt, buf.path[k - 1], st.pos, scene.player.size, scene.player.canFly, k)) {
-                st.hasHard = true;
-                st.firstHardK = std::min(st.firstHardK, k);
-                st.lastHardK = std::max(st.lastHardK, k);
-                return false;
+    auto computeInteriorSafe = [&]() -> bool {
+        if (!gf.fastOpen || originUnsafe || scene.hasTwin) return false;
+        float vMax = 4.2f * scene.player.moveSpeed;
+        float maxVx = dZero ? std::abs(st.vel.x) : std::max(std::abs(st.vel.x), std::abs(dVec.x) * vMax);
+        float maxVy = dZero ? std::abs(st.vel.y) : std::max(std::abs(st.vel.y), std::abs(dVec.y) * vMax);
+        float nSteps = static_cast<float>(maxK - k0 + 1);
+        float pr = std::max(2.0f, scene.player.size - 1.0f);
+        return (maxVx * maxVx + maxVy * maxVy <= 36.0f) &&
+               (st.pos.x - nSteps * maxVx - pr >= scene.grid.topLeft.x) &&
+               (st.pos.x + nSteps * maxVx + pr <= scene.grid.bottomRight.x) &&
+               (st.pos.y - nSteps * maxVy - pr >= scene.grid.topLeft.y) &&
+               (st.pos.y + nSteps * maxVy + pr <= scene.grid.bottomRight.y);
+    };
+
+    auto simKinRange = [&](int a, int b, bool interiorSafe) {
+        if (a > b) return;
+        if (interiorSafe) {
+            float f = dZero ? kin.fIdle : kin.fDrive;
+            float ax = dZero ? 0.0f : dAccel.x;
+            float ay = dZero ? 0.0f : dAccel.y;
+            float px = st.pos.x, py = st.pos.y, vx = st.vel.x, vy = st.vel.y;
+            bool mv = st.moved;
+            for (int k = a; k <= b; ++k) {
+                vx = vx * f + ax;
+                vy = vy * f + ay;
+                if (vx * vx + vy * vy >= 1e-8f) {
+                    px += vx;
+                    py += vy;
+                    mv = true;
+                }
+                buf.path[k] = {px, py};
             }
-            if (scene.hasTwin) {
-                bool twinMoved = false;
-                stepPlayer60Fast(scene.grid, gf, scene.twin.size, scene.twin.canFly,
-                                 twinOriginUnsafe, dZero, tDAccel, twinKin, st.twinPos, st.twinVel, twinMoved);
-                buf.twinPath[k] = st.twinPos;
-                if (hitsHardAtStep(scene, pt, buf.twinPath[k - 1], st.twinPos, scene.twin.size, scene.twin.canFly, k)) {
-                    st.hasHard = true;
-                    st.firstHardK = std::min(st.firstHardK, k);
-                    st.lastHardK = std::max(st.lastHardK, k);
-                    return false;
+            st.pos = {px, py};
+            st.vel = {vx, vy};
+            st.moved = mv;
+        } else {
+            for (int k = a; k <= b; ++k) {
+                bool stepMoved = false;
+                stepPlayer60Fast(scene.grid, gf, scene.player.size, scene.player.canFly,
+                                 originUnsafe, dZero, dAccel, kin, st.pos, st.vel, stepMoved);
+                if (stepMoved) st.moved = true;
+                buf.path[k] = st.pos;
+                if (scene.hasTwin) {
+                    bool twinMoved = false;
+                    stepPlayer60Fast(scene.grid, gf, scene.twin.size, scene.twin.canFly,
+                                     twinOriginUnsafe, dZero, tDAccel, twinKin, st.twinPos, st.twinVel, twinMoved);
+                    buf.twinPath[k] = st.twinPos;
                 }
             }
         }
-        for (int k = std::max(k0, kCheckEnd + 1); k <= maxK; ++k) {
-            bool stepMoved = false;
-            stepPlayer60Fast(scene.grid, gf, scene.player.size, scene.player.canFly,
-                             originUnsafe, dZero, dAccel, kin, st.pos, st.vel, stepMoved);
-            if (stepMoved) st.moved = true;
-            buf.path[k] = st.pos;
-            if (scene.hasTwin) {
-                bool twinMoved = false;
-                stepPlayer60Fast(scene.grid, gf, scene.twin.size, scene.twin.canFly,
-                                 twinOriginUnsafe, dZero, tDAccel, twinKin, st.twinPos, st.twinVel, twinMoved);
-                buf.twinPath[k] = st.twinPos;
+    };
+
+    // Regime C1 (!inside && !abortAnyWarn && abortFirstHardLe >= 0): ultra-fast hard-only zero-sqrt interleaved probe
+    if (!abortAnyWarn && abortFirstHardLe >= 0) {
+        bool interiorSafe = computeInteriorSafe();
+        int kCheckEnd = std::min(maxK, abortFirstHardLe);
+        int kHardLo = std::max(k0, pt.minHardK);
+        int kHardHi = std::min(kCheckEnd, pt.maxHardK);
+        if (kHardLo <= kHardHi) {
+            simKinRange(k0, kHardLo - 1, interiorSafe);
+            if (interiorSafe) {
+                float f = dZero ? kin.fIdle : kin.fDrive;
+                float ax = dZero ? 0.0f : dAccel.x;
+                float ay = dZero ? 0.0f : dAccel.y;
+                float px = st.pos.x, py = st.pos.y, vx = st.vel.x, vy = st.vel.y;
+                bool mv = st.moved;
+                for (int k = kHardLo; k <= kHardHi; ++k) {
+                    vx = vx * f + ax;
+                    vy = vy * f + ay;
+                    if (vx * vx + vy * vy >= 1e-8f) {
+                        px += vx;
+                        py += vy;
+                        mv = true;
+                    }
+                    buf.path[k] = {px, py};
+                    if (hitsHardAtStep(scene, pt, buf.path[k - 1], buf.path[k], scene.player.size, scene.player.canFly, k)) {
+                        st.pos = {px, py}; st.vel = {vx, vy}; st.moved = mv;
+                        st.hasHard = true;
+                        st.firstHardK = std::min(st.firstHardK, k);
+                        st.lastHardK = std::max(st.lastHardK, k);
+                        return false;
+                    }
+                }
+                st.pos = {px, py};
+                st.vel = {vx, vy};
+                st.moved = mv;
+            } else {
+                for (int k = kHardLo; k <= kHardHi; ++k) {
+                    bool stepMoved = false;
+                    stepPlayer60Fast(scene.grid, gf, scene.player.size, scene.player.canFly,
+                                     originUnsafe, dZero, dAccel, kin, st.pos, st.vel, stepMoved);
+                    if (stepMoved) st.moved = true;
+                    buf.path[k] = st.pos;
+                    if (hitsHardAtStep(scene, pt, buf.path[k - 1], st.pos, scene.player.size, scene.player.canFly, k)) {
+                        st.hasHard = true;
+                        st.firstHardK = std::min(st.firstHardK, k);
+                        st.lastHardK = std::max(st.lastHardK, k);
+                        return false;
+                    }
+                    if (scene.hasTwin) {
+                        bool twinMoved = false;
+                        stepPlayer60Fast(scene.grid, gf, scene.twin.size, scene.twin.canFly,
+                                         twinOriginUnsafe, dZero, tDAccel, twinKin, st.twinPos, st.twinVel, twinMoved);
+                        buf.twinPath[k] = st.twinPos;
+                        if (hitsHardAtStep(scene, pt, buf.twinPath[k - 1], st.twinPos, scene.twin.size, scene.twin.canFly, k)) {
+                            st.hasHard = true;
+                            st.firstHardK = std::min(st.firstHardK, k);
+                            st.lastHardK = std::max(st.lastHardK, k);
+                            return false;
+                        }
+                    }
+                }
+            }
+            simKinRange(kHardHi + 1, maxK, interiorSafe);
+        } else {
+            simKinRange(k0, maxK, interiorSafe);
+        }
+        // Exact branch-and-bound on the survival-tie tick (tieK = abortFirstHardLe + 1):
+        // if penetration at tieK alone exceeds maxTieHardPen, sub > targetScore's sub, so prune before warning/BFS eval!
+        int tieK = abortFirstHardLe + 1;
+        if (maxTieHardPen > 0.0f && tieK >= std::max(k0, pt.minHardK) && tieK <= std::min(maxK, pt.maxHardK)) {
+            if (hitsHardAtStep(scene, pt, buf.path[tieK - 1], buf.path[tieK],
+                               scene.player.size, scene.player.canFly, tieK, maxTieHardPen) ||
+                (scene.hasTwin && hitsHardAtStep(scene, pt, buf.twinPath[tieK - 1], buf.twinPath[tieK],
+                                                 scene.twin.size, scene.twin.canFly, tieK, maxTieHardPen))) {
+                st.hasHard = true;
+                st.firstHardK = std::min(st.firstHardK, tieK);
+                st.lastHardK = std::max(st.lastHardK, tieK);
+                return false;
             }
         }
         initRange(k0, maxK);
@@ -2030,58 +2147,13 @@ inline bool continueAfterPivotSnap(const ThreatScene& scene, PrecompThreats& pt,
     }
 
     // Regimes A / B / D: simulate kinematics k0..maxK (branchless fast interior loop when wall-free)
-    {
-        float vMax = 4.2f * scene.player.moveSpeed;
-        float maxVx = dZero ? std::abs(st.vel.x) : std::max(std::abs(st.vel.x), std::abs(dVec.x) * vMax);
-        float maxVy = dZero ? std::abs(st.vel.y) : std::max(std::abs(st.vel.y), std::abs(dVec.y) * vMax);
-        float nSteps = static_cast<float>(maxK - k0 + 1);
-        float pr = std::max(2.0f, scene.player.size - 1.0f);
-        bool interiorSafe = gf.fastOpen && !originUnsafe && !scene.hasTwin &&
-            (maxVx * maxVx + maxVy * maxVy <= 36.0f) &&
-            (st.pos.x - nSteps * maxVx - pr >= scene.grid.topLeft.x) &&
-            (st.pos.x + nSteps * maxVx + pr <= scene.grid.bottomRight.x) &&
-            (st.pos.y - nSteps * maxVy - pr >= scene.grid.topLeft.y) &&
-            (st.pos.y + nSteps * maxVy + pr <= scene.grid.bottomRight.y);
-        if (interiorSafe) {
-            float f = dZero ? kin.fIdle : kin.fDrive;
-            float ax = dZero ? 0.0f : dAccel.x;
-            float ay = dZero ? 0.0f : dAccel.y;
-            float px = st.pos.x, py = st.pos.y, vx = st.vel.x, vy = st.vel.y;
-            bool mv = st.moved;
-            for (int k = k0; k <= maxK; ++k) {
-                vx = vx * f + ax;
-                vy = vy * f + ay;
-                if (vx * vx + vy * vy >= 1e-8f) {
-                    px += vx;
-                    py += vy;
-                    mv = true;
-                }
-                buf.path[k] = {px, py};
-            }
-            st.pos = {px, py};
-            st.vel = {vx, vy};
-            st.moved = mv;
-        } else {
-            for (int k = k0; k <= maxK; ++k) {
-                bool stepMoved = false;
-                stepPlayer60Fast(scene.grid, gf, scene.player.size, scene.player.canFly,
-                                 originUnsafe, dZero, dAccel, kin, st.pos, st.vel, stepMoved);
-                if (stepMoved) st.moved = true;
-                buf.path[k] = st.pos;
-                if (scene.hasTwin) {
-                    bool twinMoved = false;
-                    stepPlayer60Fast(scene.grid, gf, scene.twin.size, scene.twin.canFly,
-                                     twinOriginUnsafe, dZero, tDAccel, twinKin, st.twinPos, st.twinVel, twinMoved);
-                    buf.twinPath[k] = st.twinPos;
-                }
-            }
-        }
-    }
+    simKinRange(k0, maxK, computeInteriorSafe());
 
-    // Regime A (inside && abortLastHardGt >= 0): hard-only zero-sqrt tail check maxK down to abortLastHardGt + 1
+    // Regime A (inside && abortLastHardGt >= 0): hard-only zero-sqrt tail check maxHardK down to abortLastHardGt + 1
     if (abortLastHardGt >= 0) {
-        int tailLo = std::max(k0, abortLastHardGt + 1);
-        for (int k = maxK; k >= tailLo; --k) {
+        int tailLo = std::max(k0, std::max(abortLastHardGt + 1, pt.minHardK));
+        int tailHi = std::min(maxK, pt.maxHardK);
+        for (int k = tailHi; k >= tailLo; --k) {
             if (hitsHardAtStep(scene, pt, buf.path[k - 1], buf.path[k], scene.player.size, scene.player.canFly, k)) {
                 st.hasHard = true;
                 st.lastHardK = std::max(st.lastHardK, k);
@@ -2362,10 +2434,14 @@ inline PlanResult solveNativePlan(const ThreatScene& scene, int rawWorldDir,
         return res;
     }
 
-    // 2. Run 2-stage turning trajectory search if all straight routes are risky or graze closely.
+    // 2. Run 2-stage turning trajectory search if straight routes hit hard/AUTO-avoid hazards or graze closely.
+    // Pure soft-warning-only scenes (e.g. standing on a bomb whose straight escape already clears the blast)
+    // do not need a 432-rollout turn search.
     static constexpr double kScale = PlanResult::kScale;
     static constexpr double kHard  = PlanResult::kHard;
-    bool needTurnSearch = (bestStraightScore > 0.0) || (bestSafeClearance < 4.0f);
+    static constexpr double kAutoAvoidTier = 600000.0 * kScale;
+    bool needTurnSearch = (bestStraightScore >= kAutoAvoidTier) ||
+                          (bestStraightScore <= 0.0 && bestSafeClearance < 4.0f);
 
     if (needTurnSearch && canRecordSnaps) {
         double bestOverall = bestStraightScore;
@@ -2394,11 +2470,13 @@ inline PlanResult solveNativePlan(const ThreatScene& scene, int rawWorldDir,
                     int cutoffK = -1;
                     int abortLastGt = -1;
                     int maxEndBucket = -1;
+                    float maxTiePen = -1.0f;
                     bool abortWarn = (targetScore < 0.0);
                     auto refreshBounds = [&]() {
                         cutoffK = -1;
                         abortLastGt = -1;
                         maxEndBucket = -1;
+                        maxTiePen = -1.0f;
                         abortWarn = (targetScore < 0.0);
                         if (abortWarn) {
                             cutoffK = maxK;
@@ -2406,12 +2484,17 @@ inline PlanResult solveNativePlan(const ThreatScene& scene, int rawWorldDir,
                             if (targetScore < kHard) {
                                 cutoffK = maxK;
                             } else {
-                                int minSurv = static_cast<int>(std::floor(targetScore / kHard));
+                                int64_t targetTier = static_cast<int64_t>(std::floor(targetScore / kScale));
+                                int minSurv = static_cast<int>(targetTier / 1000000LL);
                                 cutoffK = std::max(-1, (maxK + 1) - minSurv);
+                                int64_t maxSub = targetTier % 1000000LL;
+                                if (maxSub < 989999LL) {
+                                    maxTiePen = static_cast<float>(maxSub + 1) / 2000.0f + 1e-4f;
+                                }
                             }
                         } else if (targetScore < 2000000.0 * kScale) {
                             int bestTier = static_cast<int>(std::floor(targetScore / kScale));
-                            abortLastGt = std::max(0, bestTier - 1000001);
+                            abortLastGt = std::max(0, (bestTier - 1000000) / 10000 - 1);
                         } else {
                             int64_t bestTier = static_cast<int64_t>(std::floor(targetScore / kScale));
                             maxEndBucket = static_cast<int>((bestTier - 2000000LL) / 1000LL);
@@ -2423,9 +2506,14 @@ inline PlanResult solveNativePlan(const ThreatScene& scene, int rawWorldDir,
                          (snSlow.hasHard && snSlow.firstHardK <= cutoffK))) {
                         continue;
                     }
-                    if (inside && abortLastGt >= 0 &&
-                        std::max(snFast.lastHardK, snSlow.lastHardK) > abortLastGt) {
-                        continue;
+                    if (inside && abortLastGt >= 0) {
+                        if (std::max(snFast.lastHardK, snSlow.lastHardK) > abortLastGt) {
+                            continue;
+                        }
+                        // If all hard hazards have already ended by pivotK, turning afterwards cannot improve hard exit time.
+                        if (pt.maxHardK >= 0 && pKFast >= pt.maxHardK && pKSlow >= pt.maxHardK) {
+                            continue;
+                        }
                     }
 
                     for (int d2 = 0; d2 < 9; ++d2) {
@@ -2433,7 +2521,7 @@ inline PlanResult solveNativePlan(const ThreatScene& scene, int rawWorldDir,
                         if (!planner_detail::continueAfterPivotSnap(
                                 scene, pt, gf, snFast, pKFast, d2,
                                 originUnsafe, twinOriginUnsafe, kinFast, twinFast, maxK,
-                                cutoffK, abortLastGt, abortWarn, maxEndBucket, fullFast, turnBuf)) {
+                                cutoffK, abortLastGt, abortWarn, maxEndBucket, maxTiePen, fullFast, turnBuf)) {
                             continue;
                         }
                         if (abortWarn && (fullFast.hasHard || fullFast.hasWarn || fullFast.crossedAutoAvoid)) continue;
@@ -2447,7 +2535,7 @@ inline PlanResult solveNativePlan(const ThreatScene& scene, int rawWorldDir,
                         if (!planner_detail::continueAfterPivotSnap(
                                 scene, pt, gf, snSlow, pKSlow, d2,
                                 originUnsafe, twinOriginUnsafe, kinSlow, twinSlow, maxK,
-                                cutoffK, abortLastGt, abortWarn, maxEndBucket, fullSlow, turnBuf)) {
+                                cutoffK, abortLastGt, abortWarn, maxEndBucket, maxTiePen, fullSlow, turnBuf)) {
                             continue;
                         }
                         if (abortWarn && (fullSlow.hasHard || fullSlow.hasWarn || fullSlow.crossedAutoAvoid)) continue;
@@ -2484,8 +2572,8 @@ inline PlanResult solveNativePlan(const ThreatScene& scene, int rawWorldDir,
                 bestMovingScore = res.scores[d];
             }
         }
-        // Only try delayed start (d1=0 -> move d2) when no immediate moving straight/turning route escapes cleanly.
-        if (bestMovingScore > 0.0 && bestStraightScore > 0.0) {
+        // Only try delayed start (d1=0 -> move d2) when no immediate moving straight/turning route avoids hard collision.
+        if (bestMovingScore >= kHard && bestStraightScore >= kHard) {
             searchTurnRange(0, 0);
         }
     }

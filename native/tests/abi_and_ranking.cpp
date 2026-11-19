@@ -77,10 +77,13 @@ int main(){
     mutableValue[0]=1.f;mutablePressed[0]=true;
     assert(liveValue(&rawBase,0)==1.f && livePressed(&rawBase,0)); // no stale snapshot
     assert(!lastPollValid); // nothing was sampled or cached
-    // Active, fresh plan: the window snapshot still applies (0.4.2 contract).
+    // Active, fresh plan: the window snapshot still applies (0.4.2 contract),
+    // and lastCounter is stamped AFTER evaluate() so a slow tick still reuses.
     idleShared.magic=Shared::kMagic;idleShared.version=1;idleShared.active=1;idleShared.stamp=GetTickCount();
     mutableValue[0]=0.5f;
+    LARGE_INTEGER preCall{}; QueryPerformanceCounter(&preCall);
     assert(liveValue(&rawBase,0)==0.5f);
+    assert(lastPollValid && lastCounter >= preCall.QuadPart);
     mutableValue[0]=0.75f;
     assert(liveValue(&rawBase,0)==0.5f); // same poll window answers alike
     idleShared.active=0;idleShared.nativeMode=2;

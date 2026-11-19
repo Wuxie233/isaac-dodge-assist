@@ -288,8 +288,12 @@ static Poll choose(void* device) {
         sampleRaw(device,result.raw,result.pressed);
         DWORD now=GetTickCount();
         result.decision=evaluate(device,now,result.raw);
+        // Timestamp AFTER evaluate() so a >3ms frame never invalidates the
+        // reuse window for the remaining action polls of the same game tick.
+        LARGE_INTEGER doneCounter; QueryPerformanceCounter(&doneCounter);
+        DWORD doneTick=GetTickCount();
         lastPoll=result; lastPollValid=true;
-        lastChoice=result.decision.move; lastAt=now; lastDevice=device; lastCounter=counter.QuadPart;
+        lastChoice=result.decision.move; lastAt=doneTick; lastDevice=device; lastCounter=doneCounter.QuadPart;
         InterlockedExchange(&shared->chosen,result.decision.move);
     }
     ReleaseSRWLockExclusive(&decisionLock);
