@@ -63,31 +63,81 @@ struct PlayerKinematics {
     }
 };
 
+inline float clamp01(float v) {
+    return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+}
+
 inline float pointSegmentDistSq(float px, float py, float ax, float ay, float bx, float by) {
     float dx = bx - ax, dy = by - ay;
     float vx = px - ax, vy = py - ay;
     float lenSq = dx * dx + dy * dy;
-    float u = (lenSq > 1e-6f) ? std::max(0.0f, std::min(1.0f, (vx * dx + vy * dy) / lenSq)) : 0.0f;
+    float u = (lenSq > 1e-6f) ? clamp01((vx * dx + vy * dy) / lenSq) : 0.0f;
     float rx = vx - dx * u, ry = vy - dy * u;
     return rx * rx + ry * ry;
 }
 
-inline float segmentSegmentDistSq(float ax, float ay, float bx, float by,
-                                  float cx, float cy, float dx, float dy) {
+inline float segmentSegmentDistSqPre(float ax, float ay, float bx, float by,
+                                     float cx, float cy, float cdx, float cdy,
+                                     float cdLenSq, float cdInvLenSq) {
     float abx = bx - ax, aby = by - ay;
-    float cdx = dx - cx, cdy = dy - cy;
     float denom = abx * cdy - aby * cdx;
     if (std::abs(denom) > 1e-6f) {
         float x = cx - ax, y = cy - ay;
-        float t = (x * cdy - y * cdx) / denom;
-        float u = (x * aby - y * abx) / denom;
-        if (t >= 0.0f && t <= 1.0f && u >= 0.0f && u <= 1.0f) return 0.0f;
+        float numT = x * cdy - y * cdx;
+        float numU = x * aby - y * abx;
+        if (denom > 0.0f) {
+            if (numT >= 0.0f && numT <= denom && numU >= 0.0f && numU <= denom) return 0.0f;
+        } else {
+            if (numT <= 0.0f && numT >= denom && numU <= 0.0f && numU >= denom) return 0.0f;
+        }
     }
-    float d1 = pointSegmentDistSq(ax, ay, cx, cy, dx, dy);
-    float d2 = pointSegmentDistSq(bx, by, cx, cy, dx, dy);
-    float d3 = pointSegmentDistSq(cx, cy, ax, ay, bx, by);
-    float d4 = pointSegmentDistSq(dx, dy, ax, ay, bx, by);
+    float d1, d2;
+    if (cdLenSq > 1e-6f) {
+        float acx = ax - cx, acy = ay - cy;
+        float bcx = bx - cx, bcy = by - cy;
+        float u1 = (acx * cdx + acy * cdy) * cdInvLenSq;
+        float u2 = (bcx * cdx + bcy * cdy) * cdInvLenSq;
+        float uc1 = clamp01(u1), uc2 = clamp01(u2);
+        float rx1 = acx - cdx * uc1, ry1 = acy - cdy * uc1;
+        float rx2 = bcx - cdx * uc2, ry2 = bcy - cdy * uc2;
+        d1 = rx1 * rx1 + ry1 * ry1;
+        d2 = rx2 * rx2 + ry2 * ry2;
+        if (u1 >= 0.0f && u1 <= 1.0f && u2 >= 0.0f && u2 <= 1.0f) {
+            return std::min(d1, d2);
+        }
+    } else {
+        float acx = ax - cx, acy = ay - cy;
+        float bcx = bx - cx, bcy = by - cy;
+        d1 = acx * acx + acy * acy;
+        d2 = bcx * bcx + bcy * bcy;
+    }
+    float abLenSq = abx * abx + aby * aby;
+    float d3, d4;
+    if (abLenSq > 1e-6f) {
+        float invAb = 1.0f / abLenSq;
+        float cax = cx - ax, cay = cy - ay;
+        float dax = (cx + cdx) - ax, day = (cy + cdy) - ay;
+        float v1 = clamp01((cax * abx + cay * aby) * invAb);
+        float v2 = clamp01((dax * abx + day * aby) * invAb);
+        float rx3 = cax - abx * v1, ry3 = cay - aby * v1;
+        float rx4 = dax - abx * v2, ry4 = day - aby * v2;
+        d3 = rx3 * rx3 + ry3 * ry3;
+        d4 = rx4 * rx4 + ry4 * ry4;
+    } else {
+        float cax = cx - ax, cay = cy - ay;
+        float dax = (cx + cdx) - ax, day = (cy + cdy) - ay;
+        d3 = cax * cax + cay * cay;
+        d4 = dax * dax + day * day;
+    }
     return std::min(std::min(d1, d2), std::min(d3, d4));
+}
+
+inline float segmentSegmentDistSq(float ax, float ay, float bx, float by,
+                                  float cx, float cy, float dx, float dy) {
+    float cdx = dx - cx, cdy = dy - cy;
+    float cdLenSq = cdx * cdx + cdy * cdy;
+    float cdInv = (cdLenSq > 1e-6f) ? (1.0f / cdLenSq) : 0.0f;
+    return segmentSegmentDistSqPre(ax, ay, bx, by, cx, cy, cdx, cdy, cdLenSq, cdInv);
 }
 
 // Minimum swept penetration against a segment relative motion:
@@ -104,10 +154,31 @@ inline float sweptRelativeClearance(Vec2 p0, Vec2 p1, Vec2 q0, Vec2 q1, float ra
     float rvx = (p1.x - p0.x) - (q1.x - q0.x);
     float rvy = (p1.y - p0.y) - (q1.y - q0.y);
     float lenSq = rvx * rvx + rvy * rvy;
-    float u = (lenSq > 1e-6f) ? std::max(0.0f, std::min(1.0f, -(rx0 * rvx + ry0 * rvy) / lenSq)) : 0.0f;
+    float u = (lenSq > 1e-6f) ? clamp01(-(rx0 * rvx + ry0 * rvy) / lenSq) : 0.0f;
     float cx = rx0 + rvx * u, cy = ry0 + rvy * u;
     float distSq = cx * cx + cy * cy;
     if (distSq >= bound * bound) return -24.0f;
+    return radiusSum - std::sqrt(distSq);
+}
+
+// Faster variant using precomputed step AABB of p0->p1. Returns positive pen (or 1.0f if abortCheck && hit).
+inline float sweptRelativeClearanceFast(Vec2 p0, Vec2 p1, float pMinX, float pMaxX, float pMinY, float pMaxY,
+                                        Vec2 q0, Vec2 q1, float radiusSum, float gapMargin,
+                                        bool skipSqrtOnHardHit) {
+    float bound = radiusSum + gapMargin;
+    if (pMaxX + bound < std::min(q0.x, q1.x) || pMinX - bound > std::max(q0.x, q1.x) ||
+        pMaxY + bound < std::min(q0.y, q1.y) || pMinY - bound > std::max(q0.y, q1.y)) {
+        return -24.0f;
+    }
+    float rx0 = p0.x - q0.x, ry0 = p0.y - q0.y;
+    float rvx = (p1.x - p0.x) - (q1.x - q0.x);
+    float rvy = (p1.y - p0.y) - (q1.y - q0.y);
+    float lenSq = rvx * rvx + rvy * rvy;
+    float u = (lenSq > 1e-6f) ? clamp01(-(rx0 * rvx + ry0 * rvy) / lenSq) : 0.0f;
+    float cx = rx0 + rvx * u, cy = ry0 + rvy * u;
+    float distSq = cx * cx + cy * cy;
+    if (distSq >= bound * bound) return -24.0f;
+    if (skipSqrtOnHardHit && distSq < radiusSum * radiusSum) return 1.0f;
     return radiusSum - std::sqrt(distSq);
 }
 
@@ -125,141 +196,495 @@ inline float sweptCapsuleClearance(Vec2 p0, Vec2 p1, Vec2 c0, Vec2 c1, float rad
     return radiusSum - std::sqrt(distSq);
 }
 
+struct ChunkBox {
+    float minX = 1e9f, maxX = -1e9f, minY = 1e9f, maxY = -1e9f;
+    void reset() { minX = 1e9f; maxX = -1e9f; minY = 1e9f; maxY = -1e9f; }
+    void expand(float x, float y) {
+        minX = std::min(minX, x); maxX = std::max(maxX, x);
+        minY = std::min(minY, y); maxY = std::max(maxY, y);
+    }
+    void expandBox(float x0, float x1, float y0, float y1) {
+        minX = std::min(minX, x0); maxX = std::max(maxX, x1);
+        minY = std::min(minY, y0); maxY = std::max(maxY, y1);
+    }
+};
+
 struct PrecompLaserStep {
-    float t0 = 0.0f, t1 = 0.0f;
-    float cosA = 1.0f, sinA = 0.0f, rotMargin = 0.0f;
-    Vec2 segA{}, segB{}; // pre-rotated world segment when twoPts == true
-    float sMinX = 0.0f, sMaxX = 0.0f, sMinY = 0.0f, sMaxY = 0.0f;
-    bool twoPts = false;
-    bool midZero = true;
-    bool active = false;
+    float t0, t1;
+    Vec2 orig0, orig1;
+    float cosA, sinA, rotMargin;
+    Vec2 segA, segB; // pre-rotated segment when twoPts == true
+    float segDx, segDy, segLenSq, segInvLenSq;
+    float sMinX, sMaxX, sMinY, sMaxY;
+    int rotCacheOffset; // lazy offset into PrecompThreats::rotPtsCache for rotating multi-pt lasers
+    bool twoPts;
+    bool midZero;
+    bool active;
 };
 
 struct PrecompLaser {
-    float minX = 0.0f, maxX = 0.0f, minY = 0.0f, maxY = 0.0f;
-    PrecompLaserStep steps[BulletTrack::kMaxPts]{};
+    float minX, maxX, minY, maxY;
+    int firstActiveK;
+    int lastActiveK;
+    int stepOffset;
+    ChunkBox chunks[8];
 };
 
-inline void prepareLasers(const ThreatScene& scene, int maxK, std::vector<PrecompLaser>& out) {
-    out.resize(scene.lasers.size());
-    float ep = scene.entityPhase;
-    float maxT = static_cast<float>(maxK) * 0.5f + ep;
-    for (size_t i = 0; i < scene.lasers.size(); ++i) {
-        const LaserHazard& l = scene.lasers[i];
-        PrecompLaser& p = out[i];
-        float pad = l.width + 2.0f;
-        float vx0 = std::min(0.0f, l.vel.x * maxT);
-        float vx1 = std::max(0.0f, l.vel.x * maxT);
-        float vy0 = std::min(0.0f, l.vel.y * maxT);
-        float vy1 = std::max(0.0f, l.vel.y * maxT);
-        if (l.ring) {
-            float ext = l.radius + pad;
-            p.minX = l.origin.x + vx0 - ext; p.maxX = l.origin.x + vx1 + ext;
-            p.minY = l.origin.y + vy0 - ext; p.maxY = l.origin.y + vy1 + ext;
-        } else if (l.angularSpeed != 0.0f || l.numPts <= 0) {
-            float ext = l.reach + pad;
-            p.minX = l.origin.x + vx0 - ext; p.maxX = l.origin.x + vx1 + ext;
-            p.minY = l.origin.y + vy0 - ext; p.maxY = l.origin.y + vy1 + ext;
-        } else {
-            float lx0 = l.pts[0].x, lx1 = l.pts[0].x;
-            float ly0 = l.pts[0].y, ly1 = l.pts[0].y;
-            for (int j = 1; j < l.numPts; ++j) {
-                lx0 = std::min(lx0, l.pts[j].x); lx1 = std::max(lx1, l.pts[j].x);
-                ly0 = std::min(ly0, l.pts[j].y); ly1 = std::max(ly1, l.pts[j].y);
-            }
-            p.minX = l.origin.x + vx0 + lx0 - pad; p.maxX = l.origin.x + vx1 + lx1 + pad;
-            p.minY = l.origin.y + vy0 + ly0 - pad; p.maxY = l.origin.y + vx1 + ly1 + pad;
+struct ActiveBullet {
+    int idx;
+    int lo;
+    int hi;
+    float minX, maxX, minY, maxY;
+    float radius;
+    uint8_t warning;
+};
+
+struct StaticDisc {
+    Vec2 pos;
+    float radius;
+    int lo;
+    int hi;
+    uint8_t warning;
+    uint8_t groundOnly;
+};
+
+struct MovingDisc {
+    int lo;
+    int hi;
+    int ptsOffset;
+    float minX, maxX, minY, maxY;
+    float radius;
+    Vec2 sweepEndOffset;
+    uint8_t warning;
+    uint8_t groundOnly;
+    uint8_t isCapsule;
+    ChunkBox chunks[8];
+};
+
+struct PrecompThreats {
+    static constexpr int kInlineBullets = 64;
+    static constexpr int kInlineDiscs = 32;
+    static constexpr int kInlineMovingDiscs = 16;
+    static constexpr int kInlineLasers = 8;
+    static constexpr int kInlineDiscPts = 16 * 64; // pairs (c0, c1) -> *2
+    static constexpr int kInlineLaserSteps = 8 * BulletTrack::kMaxPts;
+
+    int maxK = 0;
+    int numChunks = 1;
+    bool gridHasAutoAvoid = false;
+
+    int numBullets = 0;
+    ActiveBullet inlineBullets[kInlineBullets];
+    std::vector<ActiveBullet> extraBullets;
+    ChunkBox inlineBulletChunks[kInlineBullets * 8];
+    std::vector<ChunkBox> extraBulletChunks;
+    const ActiveBullet* bulletsPtr = nullptr;
+    const ChunkBox* bulletChunksPtr = nullptr;
+
+    int numStaticDiscs = 0;
+    StaticDisc inlineStaticDiscs[kInlineDiscs];
+    std::vector<StaticDisc> extraStaticDiscs;
+    const StaticDisc* staticDiscsPtr = nullptr;
+
+    int numMovingDiscs = 0;
+    MovingDisc inlineMovingDiscs[kInlineMovingDiscs];
+    std::vector<MovingDisc> extraMovingDiscs;
+    const MovingDisc* movingDiscsPtr = nullptr;
+    Vec2 inlineDiscPts[kInlineDiscPts * 2];
+    std::vector<Vec2> extraDiscPts;
+    const Vec2* discPtsPtr = nullptr;
+
+    int numLasers = 0;
+    PrecompLaser inlineLasers[kInlineLasers];
+    std::vector<PrecompLaser> extraLasers;
+    PrecompLaser* lasersPtr = nullptr;
+    PrecompLaserStep inlineLaserSteps[kInlineLaserSteps];
+    std::vector<PrecompLaserStep> extraLaserSteps;
+    PrecompLaserStep* laserStepsPtr = nullptr;
+    mutable std::vector<Vec2> rotPtsCache; // lazy rotated polyline points for rotating multi-pt lasers
+
+    void init(const ThreatScene& scene, int maxKIn, bool allowPickups, bool hasAutoAvoid) {
+        maxK = maxKIn;
+        numChunks = (maxK >> 3) + 1;
+        gridHasAutoAvoid = (!allowPickups) && hasAutoAvoid;
+        float ep = scene.entityPhase;
+
+        // 1. Bullets + 8-step chunk AABBs
+        int rawB = static_cast<int>(scene.bullets.size());
+        ActiveBullet* bDst = inlineBullets;
+        ChunkBox* cDst = inlineBulletChunks;
+        if (rawB > kInlineBullets) {
+            extraBullets.resize(rawB);
+            extraBulletChunks.resize(static_cast<size_t>(rawB) * static_cast<size_t>(numChunks));
+            bDst = extraBullets.data();
+            cDst = extraBulletChunks.data();
         }
-        bool isTwo = (!l.ring && l.numPts == 2);
-        for (int k = 0; k <= maxK; ++k) {
-            PrecompLaserStep& st = p.steps[k];
-            st.t0 = ((k == 0) ? 0.0f : static_cast<float>(k - 1) * 0.5f) + ep;
-            st.t1 = static_cast<float>(k) * 0.5f + ep;
-            st.active = !(st.t1 < l.activeFrom || st.t0 > l.timeoutT) && (l.ring || l.numPts >= 2);
-            st.twoPts = isTwo;
-            if (!st.active || l.ring) continue;
-            if (l.angularSpeed == 0.0f || st.t1 <= l.rotDelay) {
-                st.midZero = true;
-                st.cosA = 1.0f; st.sinA = 0.0f; st.rotMargin = 0.0f;
-                if (isTwo) {
-                    st.segA = l.pts[0]; st.segB = l.pts[1];
-                    st.sMinX = std::min(st.segA.x, st.segB.x); st.sMaxX = std::max(st.segA.x, st.segB.x);
-                    st.sMinY = std::min(st.segA.y, st.segB.y); st.sMaxY = std::max(st.segA.y, st.segB.y);
+        int activeB = 0;
+        for (int i = 0; i < rawB; ++i) {
+            const BulletTrack& b = scene.bullets[i];
+            int lo = std::max(0, b.firstStep);
+            int hi = std::min(maxK, b.lastStep);
+            if (lo > hi) continue;
+            ActiveBullet& ab = bDst[activeB++];
+            ab.idx = i;
+            ab.lo = lo;
+            ab.hi = hi;
+            ab.minX = b.minX; ab.maxX = b.maxX;
+            ab.minY = b.minY; ab.maxY = b.maxY;
+            ab.radius = b.radius;
+            ab.warning = b.warning;
+        }
+        numBullets = activeB;
+        bulletsPtr = bDst;
+        bulletChunksPtr = cDst;
+        for (int blk = 0; blk < numChunks; ++blk) {
+            int kA = blk * 8;
+            int kB = std::min(maxK, kA + 7);
+            ChunkBox* row = cDst + blk * numBullets;
+            for (int bi = 0; bi < numBullets; ++bi) {
+                const ActiveBullet& ab = bDst[bi];
+                const BulletTrack& b = scene.bullets[ab.idx];
+                int lo = std::max(kA, ab.lo);
+                int hi = std::min(kB, ab.hi);
+                ChunkBox& box = row[bi];
+                box.reset();
+                if (lo <= hi) {
+                    Vec2 q0 = (lo == 0) ? b.pts[0] : b.pts[lo - 1];
+                    box.expand(q0.x, q0.y);
+                    for (int k = lo; k <= hi; ++k) {
+                        box.expand(b.pts[k].x, b.pts[k].y);
+                    }
+                }
+            }
+        }
+
+        // 2. Discs: split into static non-capsule vs moving/capsule with exact pre-trimmed [lo..hi]
+        bool allFly = scene.player.canFly && (!scene.hasTwin || scene.twin.canFly);
+        int rawD = static_cast<int>(scene.discs.size());
+        numStaticDiscs = 0;
+        numMovingDiscs = 0;
+        extraStaticDiscs.clear();
+        extraMovingDiscs.clear();
+        int discPtsCount = 0;
+        bool usingExtraDiscPts = false;
+        int strideD = (maxK + 1) * 2;
+        for (int i = 0; i < rawD; ++i) {
+            const DiscHazard& d = scene.discs[i];
+            if (d.groundOnly && allFly) continue;
+            if (d.autoOnly && allowPickups) continue;
+
+            int lo = 0;
+            if (d.fromT > ep) {
+                lo = std::max(lo, static_cast<int>(std::ceil((d.fromT - ep) * 2.0f - 1e-4f)));
+            }
+            int hi = maxK;
+            if (d.toT < 1e5f) {
+                hi = std::min(hi, static_cast<int>(std::floor((d.toT - ep) * 2.0f + 1.0f + 1e-4f)));
+            }
+            while (lo <= hi && (static_cast<float>(lo) * 0.5f + ep) < d.fromT) ++lo;
+            while (lo <= hi && (((hi == 0) ? 0.0f : static_cast<float>(hi - 1) * 0.5f) + ep) > d.toT) --hi;
+            if (lo > hi) continue;
+
+            if (!d.isCapsule && d.vel.x == 0.0f && d.vel.y == 0.0f) {
+                StaticDisc sd{d.pos, d.radius, lo, hi, d.warning, static_cast<uint8_t>(d.groundOnly ? 1 : 0)};
+                if (extraStaticDiscs.empty() && numStaticDiscs < kInlineDiscs) {
+                    inlineStaticDiscs[numStaticDiscs++] = sd;
+                } else {
+                    if (extraStaticDiscs.empty()) {
+                        extraStaticDiscs.assign(inlineStaticDiscs, inlineStaticDiscs + numStaticDiscs);
+                    }
+                    extraStaticDiscs.push_back(sd);
+                    ++numStaticDiscs;
                 }
             } else {
-                float ang0 = l.angularSpeed * std::max(0.0f, st.t0 - l.rotDelay);
-                float ang1 = l.angularSpeed * std::max(0.0f, st.t1 - l.rotDelay);
-                float midAng = 0.5f * (ang0 + ang1);
-                st.midZero = std::abs(midAng) < 1e-4f;
-                if (!st.midZero) {
-                    float rad = midAng * 0.0174532925f;
-                    st.cosA = std::cos(rad);
-                    st.sinA = std::sin(rad);
+                MovingDisc* mdPtr = nullptr;
+                if (extraMovingDiscs.empty() && numMovingDiscs < kInlineMovingDiscs) {
+                    mdPtr = &inlineMovingDiscs[numMovingDiscs++];
                 } else {
-                    st.cosA = 1.0f;
-                    st.sinA = 0.0f;
+                    if (extraMovingDiscs.empty()) {
+                        extraMovingDiscs.resize(numMovingDiscs + 1);
+                        for (int m = 0; m < numMovingDiscs; ++m) extraMovingDiscs[m] = inlineMovingDiscs[m];
+                    } else {
+                        extraMovingDiscs.emplace_back();
+                    }
+                    mdPtr = &extraMovingDiscs.back();
+                    ++numMovingDiscs;
                 }
-                if (isTwo) {
-                    st.segA = {l.pts[0].x * st.cosA - l.pts[0].y * st.sinA,
-                               l.pts[0].x * st.sinA + l.pts[0].y * st.cosA};
-                    st.segB = {l.pts[1].x * st.cosA - l.pts[1].y * st.sinA,
-                               l.pts[1].x * st.sinA + l.pts[1].y * st.cosA};
-                    st.sMinX = std::min(st.segA.x, st.segB.x); st.sMaxX = std::max(st.segA.x, st.segB.x);
-                    st.sMinY = std::min(st.segA.y, st.segB.y); st.sMaxY = std::max(st.segA.y, st.segB.y);
+                MovingDisc& md = *mdPtr;
+                md.lo = lo;
+                md.hi = hi;
+                md.ptsOffset = discPtsCount;
+                md.radius = d.radius;
+                md.sweepEndOffset = d.sweepEndOffset;
+                md.warning = d.warning;
+                md.groundOnly = d.groundOnly ? 1 : 0;
+                md.isCapsule = d.isCapsule ? 1 : 0;
+                for (int blk = 0; blk < numChunks; ++blk) md.chunks[blk].reset();
+
+                if (!usingExtraDiscPts && discPtsCount + strideD > kInlineDiscPts * 2) {
+                    extraDiscPts.assign(inlineDiscPts, inlineDiscPts + discPtsCount);
+                    usingExtraDiscPts = true;
                 }
-                st.rotMargin = l.reach * std::abs(ang1 - ang0) * 0.0174532925f * 0.5f;
+                Vec2* ptsOut = nullptr;
+                if (!usingExtraDiscPts) {
+                    ptsOut = inlineDiscPts + discPtsCount;
+                } else {
+                    extraDiscPts.resize(discPtsCount + strideD);
+                    ptsOut = extraDiscPts.data() + discPtsCount;
+                }
+                discPtsCount += strideD;
+
+                ChunkBox gbox;
+                gbox.reset();
+                for (int k = lo; k <= hi; ++k) {
+                    float t0 = ((k == 0) ? 0.0f : static_cast<float>(k - 1) * 0.5f) + ep;
+                    float t1 = static_cast<float>(k) * 0.5f + ep;
+                    Vec2 q0 = d.pos + d.vel * t0;
+                    Vec2 q1 = d.isCapsule ? (d.pos + d.vel * t1 + d.sweepEndOffset) : (d.pos + d.vel * t1);
+                    ptsOut[k * 2] = q0;
+                    ptsOut[k * 2 + 1] = q1;
+                    gbox.expand(q0.x, q0.y);
+                    gbox.expand(q1.x, q1.y);
+                    int blk = k >> 3;
+                    md.chunks[blk].expand(q0.x, q0.y);
+                    md.chunks[blk].expand(q1.x, q1.y);
+                }
+                md.minX = gbox.minX; md.maxX = gbox.maxX;
+                md.minY = gbox.minY; md.maxY = gbox.maxY;
+            }
+        }
+        staticDiscsPtr = extraStaticDiscs.empty() ? inlineStaticDiscs : extraStaticDiscs.data();
+        movingDiscsPtr = extraMovingDiscs.empty() ? inlineMovingDiscs : extraMovingDiscs.data();
+        discPtsPtr = usingExtraDiscPts ? extraDiscPts.data() : inlineDiscPts;
+
+        // 3. Lasers: precompute geometry, step bounds, and 8-step chunks with trig recurrence
+        numLasers = static_cast<int>(scene.lasers.size());
+        int stepStride = maxK + 1;
+        if (numLasers <= kInlineLasers) {
+            lasersPtr = inlineLasers;
+            laserStepsPtr = inlineLaserSteps;
+        } else {
+            extraLasers.resize(numLasers);
+            extraLaserSteps.resize(static_cast<size_t>(numLasers) * static_cast<size_t>(stepStride));
+            lasersPtr = extraLasers.data();
+            laserStepsPtr = extraLaserSteps.data();
+        }
+        float maxT = static_cast<float>(maxK) * 0.5f + ep;
+        for (int i = 0; i < numLasers; ++i) {
+            const LaserHazard& l = scene.lasers[i];
+            PrecompLaser& p = lasersPtr[i];
+            p.stepOffset = i * stepStride;
+            PrecompLaserStep* stepsArr = laserStepsPtr + p.stepOffset;
+            float pad = l.width + 2.0f;
+            float vx0 = std::min(0.0f, l.vel.x * maxT);
+            float vx1 = std::max(0.0f, l.vel.x * maxT);
+            float vy0 = std::min(0.0f, l.vel.y * maxT);
+            float vy1 = std::max(0.0f, l.vel.y * maxT);
+            float unrotMinX = 0.0f, unrotMaxX = 0.0f, unrotMinY = 0.0f, unrotMaxY = 0.0f;
+            if (l.ring) {
+                float ext = l.radius + pad;
+                p.minX = l.origin.x + vx0 - ext; p.maxX = l.origin.x + vx1 + ext;
+                p.minY = l.origin.y + vy0 - ext; p.maxY = l.origin.y + vy1 + ext;
+            } else {
+                if (l.numPts > 0) {
+                    unrotMinX = unrotMaxX = l.pts[0].x;
+                    unrotMinY = unrotMaxY = l.pts[0].y;
+                    for (int j = 1; j < l.numPts; ++j) {
+                        unrotMinX = std::min(unrotMinX, l.pts[j].x);
+                        unrotMaxX = std::max(unrotMaxX, l.pts[j].x);
+                        unrotMinY = std::min(unrotMinY, l.pts[j].y);
+                        unrotMaxY = std::max(unrotMaxY, l.pts[j].y);
+                    }
+                }
+                if (l.angularSpeed != 0.0f || l.numPts <= 0) {
+                    float ext = l.reach + pad;
+                    p.minX = l.origin.x + vx0 - ext; p.maxX = l.origin.x + vx1 + ext;
+                    p.minY = l.origin.y + vy0 - ext; p.maxY = l.origin.y + vy1 + ext;
+                } else {
+                    p.minX = l.origin.x + vx0 + unrotMinX - pad; p.maxX = l.origin.x + vx1 + unrotMaxX + pad;
+                    p.minY = l.origin.y + vy0 + unrotMinY - pad; p.maxY = l.origin.y + vy1 + unrotMaxY + pad;
+                }
+            }
+            for (int blk = 0; blk < numChunks; ++blk) p.chunks[blk].reset();
+            p.firstActiveK = 10000;
+            p.lastActiveK = -1;
+            bool isTwo = (!l.ring && l.numPts == 2);
+            Vec2 unrotSegA = isTwo ? l.pts[0] : Vec2{};
+            Vec2 unrotSegB = isTwo ? l.pts[1] : Vec2{};
+            float unrotDx = unrotSegB.x - unrotSegA.x;
+            float unrotDy = unrotSegB.y - unrotSegA.y;
+            float unrotLenSq = unrotDx * unrotDx + unrotDy * unrotDy;
+            float unrotInvLenSq = (unrotLenSq > 1e-6f) ? (1.0f / unrotLenSq) : 0.0f;
+
+            bool hasRotRec = false;
+            double recC = 1.0, recS = 0.0, dRotC = 1.0, dRotS = 0.0;
+            if (!l.ring && l.angularSpeed != 0.0f) {
+                double dRad = static_cast<double>(l.angularSpeed) * 0.5 * 0.017453292519943295;
+                dRotC = std::cos(dRad);
+                dRotS = std::sin(dRad);
+            }
+
+            for (int k = 0; k <= maxK; ++k) {
+                PrecompLaserStep& st = stepsArr[k];
+                st.t0 = ((k == 0) ? 0.0f : static_cast<float>(k - 1) * 0.5f) + ep;
+                st.t1 = static_cast<float>(k) * 0.5f + ep;
+                st.active = !(st.t1 < l.activeFrom || st.t0 > l.timeoutT) && (l.ring || l.numPts >= 2);
+                st.twoPts = isTwo;
+                st.rotCacheOffset = -1;
+                if (!st.active) continue;
+                p.firstActiveK = std::min(p.firstActiveK, k);
+                p.lastActiveK = std::max(p.lastActiveK, k);
+                st.orig0 = {l.origin.x + l.vel.x * st.t0, l.origin.y + l.vel.y * st.t0};
+                st.orig1 = {l.origin.x + l.vel.x * st.t1, l.origin.y + l.vel.y * st.t1};
+                int blk = k >> 3;
+                if (l.ring) {
+                    float ext = l.radius + l.width + 1.0f;
+                    p.chunks[blk].expandBox(std::min(st.orig0.x, st.orig1.x) - ext,
+                                            std::max(st.orig0.x, st.orig1.x) + ext,
+                                            std::min(st.orig0.y, st.orig1.y) - ext,
+                                            std::max(st.orig0.y, st.orig1.y) + ext);
+                    continue;
+                }
+                if (l.angularSpeed == 0.0f || st.t1 <= l.rotDelay) {
+                    st.midZero = true;
+                    st.cosA = 1.0f; st.sinA = 0.0f; st.rotMargin = 0.0f;
+                    if (isTwo) {
+                        st.segA = unrotSegA; st.segB = unrotSegB;
+                        st.segDx = unrotDx; st.segDy = unrotDy;
+                        st.segLenSq = unrotLenSq; st.segInvLenSq = unrotInvLenSq;
+                    }
+                    st.sMinX = unrotMinX; st.sMaxX = unrotMaxX;
+                    st.sMinY = unrotMinY; st.sMaxY = unrotMaxY;
+                } else {
+                    float ang0 = l.angularSpeed * std::max(0.0f, st.t0 - l.rotDelay);
+                    float ang1 = l.angularSpeed * std::max(0.0f, st.t1 - l.rotDelay);
+                    float midAng = 0.5f * (ang0 + ang1);
+                    st.midZero = std::abs(midAng) < 1e-4f;
+                    if (!st.midZero) {
+                        if (hasRotRec && k >= 2 && (st.t0 - 0.5f) >= l.rotDelay) {
+                            double nc = recC * dRotC - recS * dRotS;
+                            double ns = recS * dRotC + recC * dRotS;
+                            recC = nc; recS = ns;
+                        } else {
+                            double rad = static_cast<double>(midAng) * 0.017453292519943295;
+                            recC = std::cos(rad);
+                            recS = std::sin(rad);
+                            hasRotRec = (k >= 1 && st.t0 >= l.rotDelay);
+                        }
+                        st.cosA = static_cast<float>(recC);
+                        st.sinA = static_cast<float>(recS);
+                    } else {
+                        st.cosA = 1.0f;
+                        st.sinA = 0.0f;
+                    }
+                    st.rotMargin = l.reach * std::abs(ang1 - ang0) * 0.0174532925f * 0.5f;
+                    if (isTwo) {
+                        st.segA = {l.pts[0].x * st.cosA - l.pts[0].y * st.sinA,
+                                   l.pts[0].x * st.sinA + l.pts[0].y * st.cosA};
+                        st.segB = {l.pts[1].x * st.cosA - l.pts[1].y * st.sinA,
+                                   l.pts[1].x * st.sinA + l.pts[1].y * st.cosA};
+                        st.segDx = st.segB.x - st.segA.x;
+                        st.segDy = st.segB.y - st.segA.y;
+                        st.segLenSq = st.segDx * st.segDx + st.segDy * st.segDy;
+                        st.segInvLenSq = (st.segLenSq > 1e-6f) ? (1.0f / st.segLenSq) : 0.0f;
+                        st.sMinX = std::min(st.segA.x, st.segB.x); st.sMaxX = std::max(st.segA.x, st.segB.x);
+                        st.sMinY = std::min(st.segA.y, st.segB.y); st.sMaxY = std::max(st.segA.y, st.segB.y);
+                    } else {
+                        float ext = l.reach;
+                        st.sMinX = -ext; st.sMaxX = ext;
+                        st.sMinY = -ext; st.sMaxY = ext;
+                    }
+                }
+                float stepPad = l.width + st.rotMargin + 1.0f;
+                p.chunks[blk].expandBox(std::min(st.orig0.x, st.orig1.x) + st.sMinX - stepPad,
+                                        std::max(st.orig0.x, st.orig1.x) + st.sMaxX + stepPad,
+                                        std::min(st.orig0.y, st.orig1.y) + st.sMinY - stepPad,
+                                        std::max(st.orig0.y, st.orig1.y) + st.sMaxY + stepPad);
             }
         }
     }
-}
 
-inline float laserClearanceAtStepPre(const LaserHazard& l, const PrecompLaserStep& ps,
+    const Vec2* getLaserRotPts(const LaserHazard& l, PrecompLaserStep& ps) const {
+        if (ps.rotCacheOffset >= 0) {
+            return rotPtsCache.data() + ps.rotCacheOffset;
+        }
+        int offset = static_cast<int>(rotPtsCache.size());
+        rotPtsCache.resize(offset + l.numPts);
+        Vec2* dst = rotPtsCache.data() + offset;
+        float c = ps.cosA, s = ps.sinA;
+        float minX = 1e9f, maxX = -1e9f, minY = 1e9f, maxY = -1e9f;
+        for (int i = 0; i < l.numPts; ++i) {
+            Vec2 rp{l.pts[i].x * c - l.pts[i].y * s, l.pts[i].x * s + l.pts[i].y * c};
+            dst[i] = rp;
+            minX = std::min(minX, rp.x); maxX = std::max(maxX, rp.x);
+            minY = std::min(minY, rp.y); maxY = std::max(maxY, rp.y);
+        }
+        ps.sMinX = minX; ps.sMaxX = maxX;
+        ps.sMinY = minY; ps.sMaxY = maxY;
+        ps.rotCacheOffset = offset;
+        return dst;
+    }
+};
+
+inline float laserClearanceAtStepPre(const LaserHazard& l, PrecompLaserStep& ps,
+                                     const PrecompThreats* pt,
                                      Vec2 p0, Vec2 p1, float playerRadius, float gapMargin = 24.0f) {
     if (!ps.active) return -1e6f;
     float radSum = playerRadius + l.width;
-    Vec2 a{p0.x - l.origin.x - l.vel.x * ps.t0, p0.y - l.origin.y - l.vel.y * ps.t0};
-    Vec2 b{p1.x - l.origin.x - l.vel.x * ps.t1, p1.y - l.origin.y - l.vel.y * ps.t1};
+    Vec2 a{p0.x - ps.orig0.x, p0.y - ps.orig0.y};
+    Vec2 b{p1.x - ps.orig1.x, p1.y - ps.orig1.y};
 
     if (l.ring) {
-        float nearD = std::sqrt(pointSegmentDistSq(0.0f, 0.0f, a.x, a.y, b.x, b.y));
-        float farD = std::sqrt(std::max(a.lengthSq(), b.lengthSq()));
+        float pad = radSum + gapMargin;
+        float nearSq = pointSegmentDistSq(0.0f, 0.0f, a.x, a.y, b.x, b.y);
+        float maxOuter = l.radius + pad;
+        if (nearSq > maxOuter * maxOuter) return -24.0f;
+        float farSq = std::max(a.lengthSq(), b.lengthSq());
+        float minInner = l.radius - pad;
+        if (minInner > 0.0f && farSq < minInner * minInner) return -24.0f;
+        float nearD = std::sqrt(nearSq);
+        float farD = std::sqrt(farSq);
         float shellGap = std::max({nearD - l.radius, l.radius - farD, 0.0f});
         return radSum - shellGap;
     }
 
+    float effRad = radSum + ps.rotMargin;
+    float pad = effRad + gapMargin;
+
     if (ps.twoPts) {
-        float effRad = radSum + ps.rotMargin;
-        float pad = effRad + gapMargin;
         if (std::max(a.x, b.x) + pad < ps.sMinX || std::min(a.x, b.x) - pad > ps.sMaxX ||
             std::max(a.y, b.y) + pad < ps.sMinY || std::min(a.y, b.y) - pad > ps.sMaxY) {
             return -24.0f;
         }
-        float d2 = segmentSegmentDistSq(a.x, a.y, b.x, b.y, ps.segA.x, ps.segA.y, ps.segB.x, ps.segB.y);
+        float d2 = segmentSegmentDistSqPre(a.x, a.y, b.x, b.y,
+                                           ps.segA.x, ps.segA.y, ps.segDx, ps.segDy,
+                                           ps.segLenSq, ps.segInvLenSq);
         if (d2 >= pad * pad) return -24.0f;
         return effRad - std::sqrt(d2);
     }
 
+    const Vec2* pts = ps.midZero ? l.pts : pt->getLaserRotPts(l, ps);
+    float aMinX = std::min(a.x, b.x) - pad, aMaxX = std::max(a.x, b.x) + pad;
+    float aMinY = std::min(a.y, b.y) - pad, aMaxY = std::max(a.y, b.y) + pad;
+    if (aMaxX < ps.sMinX || aMinX > ps.sMaxX || aMaxY < ps.sMinY || aMinY > ps.sMaxY) {
+        return -24.0f;
+    }
+    float padSq = pad * pad;
     float minDistSq = 1e12f;
-    if (ps.midZero) {
-        for (int i = 1; i < l.numPts; ++i) {
-            float d2 = segmentSegmentDistSq(a.x, a.y, b.x, b.y,
-                                            l.pts[i - 1].x, l.pts[i - 1].y,
-                                            l.pts[i].x, l.pts[i].y);
-            if (d2 < minDistSq) minDistSq = d2;
+    for (int i = 1; i < l.numPts; ++i) {
+        const Vec2& pA = pts[i - 1];
+        const Vec2& pB = pts[i];
+        if (std::max(pA.x, pB.x) < aMinX || std::min(pA.x, pB.x) > aMaxX ||
+            std::max(pA.y, pB.y) < aMinY || std::min(pA.y, pB.y) > aMaxY) {
+            continue;
         }
-    } else {
-        float c = ps.cosA, s = ps.sinA;
-        Vec2 prev{l.pts[0].x * c - l.pts[0].y * s, l.pts[0].x * s + l.pts[0].y * c};
-        for (int i = 1; i < l.numPts; ++i) {
-            Vec2 cur{l.pts[i].x * c - l.pts[i].y * s, l.pts[i].x * s + l.pts[i].y * c};
-            float d2 = segmentSegmentDistSq(a.x, a.y, b.x, b.y, prev.x, prev.y, cur.x, cur.y);
-            if (d2 < minDistSq) minDistSq = d2;
-            prev = cur;
+        float d2 = segmentSegmentDistSq(a.x, a.y, b.x, b.y, pA.x, pA.y, pB.x, pB.y);
+        if (d2 < minDistSq) {
+            minDistSq = d2;
+            if (minDistSq == 0.0f) break;
         }
     }
-    float effRad = radSum + ps.rotMargin;
-    float pad = effRad + gapMargin;
-    if (minDistSq >= pad * pad) return -24.0f;
+    if (minDistSq >= padSq) return -24.0f;
     return effRad - std::sqrt(minDistSq);
 }
 
@@ -303,14 +728,31 @@ struct RolloutState {
     float warnWeighted = 0.0f;
     float minClearance = 24.0f;
     float endClearance = 24.0f;
-    float minX = 0.0f, maxX = 0.0f, minY = 0.0f, maxY = 0.0f;
-    float tMinX = 0.0f, tMaxX = 0.0f, tMinY = 0.0f, tMaxY = 0.0f;
-    Vec2 path[BulletTrack::kMaxPts]{};
-    Vec2 vels[BulletTrack::kMaxPts]{};
-    Vec2 twinPath[BulletTrack::kMaxPts]{};
-    Vec2 twinVels[BulletTrack::kMaxPts]{};
-    bool movedAt[BulletTrack::kMaxPts]{};
     RolloutSnapshot snaps[3]{};
+
+    void initFromSnap(const RolloutSnapshot& sn) {
+        pos = sn.pos; vel = sn.vel;
+        twinPos = sn.twinPos; twinVel = sn.twinVel;
+        moved = sn.moved;
+        hasHard = sn.hasHard;
+        hasWarn = sn.hasWarn;
+        crossedAutoAvoid = sn.crossedAutoAvoid;
+        firstHardK = sn.firstHardK;
+        lastHardK = sn.lastHardK;
+        hardHitSteps = sn.hardHitSteps;
+        maxHardPen = sn.maxHardPen;
+        endHardPen = sn.endHardPen;
+        hardExposure = sn.hardExposure;
+        maxWarnPen = sn.maxWarnPen;
+        warnWeighted = sn.warnWeighted;
+        minClearance = sn.minClearance;
+        endClearance = sn.endClearance;
+    }
+};
+
+struct TurnPathBuffer {
+    Vec2 path[BulletTrack::kMaxPts]{};
+    Vec2 twinPath[BulletTrack::kMaxPts]{};
 };
 
 // Physical intrusion penalty only (walls, L-room cutouts, solid rocks/pits).
@@ -323,8 +765,10 @@ inline float footprintPenalty(const RoomGrid& grid, float x, float y, float radi
             if (px > grid.bottomRight.x) over += (px - grid.bottomRight.x);
             if (py < grid.topLeft.y) over += (grid.topLeft.y - py);
             if (py > grid.bottomRight.y) over += (py - grid.bottomRight.y);
-            float cut = grid.lRoomCutoutOverflow(px, py, 0.0f);
-            if (cut > 0.0f) over += cut;
+            if (grid.isLShape()) {
+                float cut = grid.lRoomCutoutOverflow(px, py, 0.0f);
+                if (cut > 0.0f) over += cut;
+            }
         } else if (!grid.inBoundsPoint(px, py, 0.0f)) {
             over += 10.0f;
         }
@@ -339,6 +783,8 @@ inline float footprintPenalty(const RoomGrid& grid, float x, float y, float radi
     static constexpr float kOx[9] = {0, -1, 1, 0, 0, -kD8, kD8, -kD8, kD8};
     static constexpr float kOy[9] = {0, 0, 0, -1, 1, -kD8, -kD8, kD8, kD8};
     float r = std::max(2.0f, radius - 1.0f);
+    float invPx = (grid.pitch.x > 0.0f) ? (1.0f / grid.pitch.x) : 0.0f;
+    float invPy = (grid.pitch.y > 0.0f) ? (1.0f / grid.pitch.y) : 0.0f;
     for (int i = 0; i < 9; ++i) {
         float px = x + kOx[i] * r;
         float py = y + kOy[i] * r;
@@ -347,20 +793,52 @@ inline float footprintPenalty(const RoomGrid& grid, float x, float y, float radi
             pen += 200.0f + over * 20.0f;
             continue;
         }
-        int idx = grid.indexAt(px, py);
+        int idx = -1;
+        if (invPx > 0.0f && invPy > 0.0f) {
+            float ux = (px - grid.origin.x) * invPx + 0.5f;
+            float uy = (py - grid.origin.y) * invPy + 0.5f;
+            int col = (ux >= 0.0f) ? static_cast<int>(ux) : static_cast<int>(std::floor(ux));
+            int row = (uy >= 0.0f) ? static_cast<int>(uy) : static_cast<int>(std::floor(uy));
+            if (col >= 0 && col < grid.width && row >= 0 && row < grid.height) {
+                int candIdx = col + row * grid.width;
+                if (candIdx < grid.cellCount) idx = candIdx;
+            }
+        }
         if (idx < 0) {
             pen += 200.0f;
             continue;
         }
         if (!grid.cellPhysicallyPassable(idx, canFly)) {
-            Vec2 ctr = grid.cellCenter(idx);
-            float depth = std::min(std::max(0.0f, grid.pitch.x * 0.5f - std::abs(px - ctr.x)),
-                                   std::max(0.0f, grid.pitch.y * 0.5f - std::abs(py - ctr.y)));
+            int col = idx % grid.width;
+            int row = idx / grid.width;
+            float cx = grid.origin.x + static_cast<float>(col) * grid.pitch.x;
+            float cy = grid.origin.y + static_cast<float>(row) * grid.pitch.y;
+            float depth = std::min(std::max(0.0f, grid.pitch.x * 0.5f - std::abs(px - cx)),
+                                   std::max(0.0f, grid.pitch.y * 0.5f - std::abs(py - cy)));
             pen += 100.0f * (1.0f + depth);
         }
     }
     return pen;
 }
+
+struct GridFastInfo {
+    bool fastOpen = false;
+    bool simpleRect = false;
+
+    void init(const RoomGrid& grid) {
+        simpleRect = !grid.beast && !grid.isLShape() && grid.pitch.x == 40.0f && grid.pitch.y == 40.0f;
+        fastOpen = simpleRect && !grid.hasSolidCells;
+    }
+
+    bool footprintSafe(const RoomGrid& grid, float x, float y, float radius, bool canFly) const {
+        if (fastOpen) {
+            float r = std::max(2.0f, radius - 1.0f);
+            return x - r >= grid.topLeft.x && x + r <= grid.bottomRight.x &&
+                   y - r >= grid.topLeft.y && y + r <= grid.bottomRight.y;
+        }
+        return grid.footprintSafe(x, y, radius, canFly);
+    }
+};
 
 // Advance one 60Hz player update (`pos += vel`, NOT `0.5 * vel`!) with physical terrain slide.
 inline void stepPlayer60(const RoomGrid& grid, float playerSize, bool canFly,
@@ -375,12 +853,13 @@ inline void stepPlayer60(const RoomGrid& grid, float playerSize, bool canFly,
     float distSq = delta.lengthSq();
     if (distSq < 1e-8f) return;
 
+    float fromPen = -1.0f;
     auto canMoveTo = [&](Vec2 q, Vec2 from) -> bool {
         if (grid.footprintSafe(q.x, q.y, playerSize, canFly)) return true;
         if (!originUnsafe) return false;
         if (grid.footprintSafe(from.x, from.y, playerSize, canFly)) return false;
-        return footprintPenalty(grid, q.x, q.y, playerSize, canFly) <
-               footprintPenalty(grid, from.x, from.y, playerSize, canFly) - 0.02f;
+        if (fromPen < 0.0f) fromPen = footprintPenalty(grid, from.x, from.y, playerSize, canFly);
+        return footprintPenalty(grid, q.x, q.y, playerSize, canFly) < fromPen - 0.02f;
     };
 
     int sub = (distSq <= 36.0f) ? 1 : std::min(4, std::max(1, static_cast<int>(std::ceil(std::sqrt(distSq) / 6.0f))));
@@ -389,15 +868,16 @@ inline void stepPlayer60(const RoomGrid& grid, float playerSize, bool canFly,
         Vec2 cand = pos + step;
         if (canMoveTo(cand, pos)) {
             pos = cand;
+            fromPen = -1.0f;
             moved = true;
             continue;
         }
         bool slideX = (std::abs(step.x) > 1e-4f) && canMoveTo({pos.x + step.x, pos.y}, pos);
         bool slideY = (std::abs(step.y) > 1e-4f) && canMoveTo({pos.x, pos.y + step.y}, pos);
         if (slideX && !slideY) {
-            pos.x += step.x; vel.y = 0.0f; moved = true;
+            pos.x += step.x; vel.y = 0.0f; fromPen = -1.0f; moved = true;
         } else if (slideY && !slideX) {
-            pos.y += step.y; vel.x = 0.0f; moved = true;
+            pos.y += step.y; vel.x = 0.0f; fromPen = -1.0f; moved = true;
         } else {
             vel = {0.0f, 0.0f};
             break;
@@ -405,198 +885,606 @@ inline void stepPlayer60(const RoomGrid& grid, float playerSize, bool canFly,
     }
 }
 
-inline bool sampleBodyRange(const ThreatScene& scene,
-                            const std::vector<PrecompLaser>& preLasers,
-                            const Vec2* path, float pMinX, float pMaxX, float pMinY, float pMaxY,
-                            float bodyRadius, bool bodyCanFly, bool allowPickups,
-                            int kStart, int kEnd, int maxK,
-                            float* stepHardMax, float* stepWarnMax, float* stepMinGap,
-                            RolloutState& st, int abortFirstHardLe, int abortLastHardGt,
-                            bool abortAnyWarn, bool onlyEndGap) {
-    float ep = scene.entityPhase;
+// Specialized fast stepper for inner rollout loops: eliminates std::ceil/sqrt and virtual branches on open rooms.
+inline void stepPlayer60Fast(const RoomGrid& grid, const GridFastInfo& gf,
+                             float playerSize, bool canFly, bool originUnsafe,
+                             bool dirZero, Vec2 dAccel, const PlayerKinematics& kin,
+                             Vec2& pos, Vec2& vel, bool& moved) {
+    if (dirZero) {
+        vel *= kin.fIdle;
+    } else {
+        vel = vel * kin.fDrive + dAccel;
+    }
+    float distSq = vel.lengthSq();
+    if (distSq < 1e-8f) return;
 
-    // 1. Bullets outer loop (b.pts[k] is already phase-aligned with player step k)
-    for (const BulletTrack& b : scene.bullets) {
-        int lo = std::max(kStart, b.firstStep);
-        int hi = std::min(kEnd, b.lastStep);
-        if (lo > hi) continue;
-        float pad = b.radius + bodyRadius + 1.0f;
-        if (pMaxX + pad < b.minX || pMinX - pad > b.maxX ||
-            pMaxY + pad < b.minY || pMinY - pad > b.maxY) {
-            continue;
-        }
-        float rs = bodyRadius + b.radius;
-        for (int k = lo; k <= hi; ++k) {
-            Vec2 p0 = (k == 0) ? path[0] : path[k - 1];
-            Vec2 q0 = (k == 0) ? b.pts[0] : b.pts[k - 1];
-            float gm = (!onlyEndGap || k == maxK) ? 24.0f : 0.0f;
-            float pen = sweptRelativeClearance(p0, path[k], q0, b.pts[k], rs, gm);
-            if (pen > 0.0f) {
-                if (b.warning) {
-                    stepWarnMax[k] = std::max(stepWarnMax[k], pen);
-                    if (abortAnyWarn) { st.hasWarn = true; return true; }
-                } else {
-                    stepHardMax[k] = std::max(stepHardMax[k], pen);
-                    if ((abortFirstHardLe >= 0 && std::min(st.firstHardK, k) <= abortFirstHardLe) ||
-                        (abortLastHardGt >= 0 && k > abortLastHardGt)) {
-                        st.hasHard = true;
-                        st.firstHardK = std::min(st.firstHardK, k);
-                        st.lastHardK = std::max(st.lastHardK, k);
-                        return true;
-                    }
-                }
-                stepMinGap[k] = 0.0f;
+    if (gf.fastOpen && !originUnsafe) {
+        float r = std::max(2.0f, playerSize - 1.0f);
+        if (distSq <= 36.0f) {
+            Vec2 cand{pos.x + vel.x, pos.y + vel.y};
+            if (cand.x - r >= grid.topLeft.x && cand.x + r <= grid.bottomRight.x &&
+                cand.y - r >= grid.topLeft.y && cand.y + r <= grid.bottomRight.y) {
+                pos = cand;
+                moved = true;
+                return;
+            }
+            bool slideX = (std::abs(vel.x) > 1e-4f) &&
+                          (pos.x + vel.x - r >= grid.topLeft.x && pos.x + vel.x + r <= grid.bottomRight.x &&
+                           pos.y - r >= grid.topLeft.y && pos.y + r <= grid.bottomRight.y);
+            bool slideY = (std::abs(vel.y) > 1e-4f) &&
+                          (pos.x - r >= grid.topLeft.x && pos.x + r <= grid.bottomRight.x &&
+                           pos.y + vel.y - r >= grid.topLeft.y && pos.y + vel.y + r <= grid.bottomRight.y);
+            if (slideX && !slideY) {
+                pos.x += vel.x; vel.y = 0.0f; moved = true;
+            } else if (slideY && !slideX) {
+                pos.y += vel.y; vel.x = 0.0f; moved = true;
             } else {
-                stepMinGap[k] = std::min(stepMinGap[k], -pen);
+                vel = {0.0f, 0.0f};
             }
-        }
-    }
-
-    // 2. Discs & capsules outer loop
-    for (const DiscHazard& d : scene.discs) {
-        if (d.groundOnly && bodyCanFly) continue;
-        if (d.autoOnly && allowPickups) continue;
-
-        int lo = kStart;
-        if (d.fromT > ep) {
-            lo = std::max(lo, static_cast<int>(std::ceil((d.fromT - ep) * 2.0f - 1e-4f)));
-        }
-        int hi = kEnd;
-        if (d.toT < 1e5f) {
-            hi = std::min(hi, static_cast<int>(std::floor((d.toT - ep) * 2.0f + 1.0f + 1e-4f)));
-        }
-        if (lo > hi) continue;
-
-        float tA = ((lo == 0) ? 0.0f : static_cast<float>(lo - 1) * 0.5f) + ep;
-        float tB = static_cast<float>(hi) * 0.5f + ep;
-        Vec2 cA = d.pos + d.vel * tA;
-        Vec2 cB = d.pos + d.vel * tB;
-        float dMinX = std::min(cA.x, cB.x), dMaxX = std::max(cA.x, cB.x);
-        float dMinY = std::min(cA.y, cB.y), dMaxY = std::max(cA.y, cB.y);
-        if (d.isCapsule) {
-            Vec2 cA2 = cA + d.sweepEndOffset;
-            Vec2 cB2 = cB + d.sweepEndOffset;
-            dMinX = std::min({dMinX, cA2.x, cB2.x});
-            dMaxX = std::max({dMaxX, cA2.x, cB2.x});
-            dMinY = std::min({dMinY, cA2.y, cB2.y});
-            dMaxY = std::max({dMaxY, cA2.y, cB2.y});
-        }
-        float pad = d.radius + bodyRadius + 1.0f;
-        if (pMaxX + pad < dMinX || pMinX - pad > dMaxX ||
-            pMaxY + pad < dMinY || pMinY - pad > dMaxY) {
-            continue;
-        }
-        float rs = bodyRadius + d.radius;
-        for (int k = lo; k <= hi; ++k) {
-            float t0 = ((k == 0) ? 0.0f : static_cast<float>(k - 1) * 0.5f) + ep;
-            float t1 = static_cast<float>(k) * 0.5f + ep;
-            if (t1 < d.fromT || t0 > d.toT) continue;
-            Vec2 p0 = (k == 0) ? path[0] : path[k - 1];
-            float gm = (!onlyEndGap || k == maxK) ? 24.0f : 0.0f;
-            float pen = d.isCapsule
-                ? sweptCapsuleClearance(p0, path[k], d.pos + d.vel * t0, d.pos + d.vel * t1 + d.sweepEndOffset, rs, gm)
-                : sweptRelativeClearance(p0, path[k], d.pos + d.vel * t0, d.pos + d.vel * t1, rs, gm);
-            if (pen > 0.0f) {
-                if (d.warning) {
-                    stepWarnMax[k] = std::max(stepWarnMax[k], pen);
-                    if (abortAnyWarn) { st.hasWarn = true; return true; }
-                } else {
-                    stepHardMax[k] = std::max(stepHardMax[k], pen);
-                    if ((abortFirstHardLe >= 0 && std::min(st.firstHardK, k) <= abortFirstHardLe) ||
-                        (abortLastHardGt >= 0 && k > abortLastHardGt)) {
-                        st.hasHard = true;
-                        st.firstHardK = std::min(st.firstHardK, k);
-                        st.lastHardK = std::max(st.lastHardK, k);
-                        return true;
-                    }
-                }
-                stepMinGap[k] = 0.0f;
-            } else {
-                stepMinGap[k] = std::min(stepMinGap[k], -pen);
-            }
-        }
-    }
-
-    // 3. Lasers outer loop using precomputed per-step cos/sin and step segment AABB
-    for (size_t li = 0; li < scene.lasers.size(); ++li) {
-        const PrecompLaser& pl = preLasers[li];
-        float pad = bodyRadius + 1.0f;
-        if (pMaxX + pad < pl.minX || pMinX - pad > pl.maxX ||
-            pMaxY + pad < pl.minY || pMinY - pad > pl.maxY) {
-            continue;
-        }
-        const LaserHazard& l = scene.lasers[li];
-        for (int k = kStart; k <= kEnd; ++k) {
-            if (!pl.steps[k].active) continue;
-            Vec2 p0 = (k == 0) ? path[0] : path[k - 1];
-            float gm = (!onlyEndGap || k == maxK) ? 24.0f : 0.0f;
-            float pen = laserClearanceAtStepPre(l, pl.steps[k], p0, path[k], bodyRadius, gm);
-            if (pen > 0.0f) {
-                if (l.warning) {
-                    stepWarnMax[k] = std::max(stepWarnMax[k], pen);
-                    if (abortAnyWarn) { st.hasWarn = true; return true; }
-                } else {
-                    stepHardMax[k] = std::max(stepHardMax[k], pen);
-                    if ((abortFirstHardLe >= 0 && std::min(st.firstHardK, k) <= abortFirstHardLe) ||
-                        (abortLastHardGt >= 0 && k > abortLastHardGt)) {
-                        st.hasHard = true;
-                        st.firstHardK = std::min(st.firstHardK, k);
-                        st.lastHardK = std::max(st.lastHardK, k);
-                        return true;
-                    }
-                }
-                stepMinGap[k] = 0.0f;
-            } else if (pen > -1e5f) {
-                stepMinGap[k] = std::min(stepMinGap[k], -pen);
-            }
-        }
-    }
-
-    // 4. AUTO-only pickup/pedestal/mimic cells (never braked in manual mode)
-    if (!allowPickups) {
-        for (int k = std::max(1, kStart); k <= kEnd; ++k) {
-            int idx = scene.grid.indexAt(path[k].x, path[k].y);
-            if (scene.grid.cellAutoAvoid(idx)) {
-                st.crossedAutoAvoid = true;
-                st.hasWarn = true;
-                if (abortAnyWarn) return true;
-            }
-        }
-    }
-    (void)maxK;
-    return false;
-}
-
-inline void sampleRolloutRange(const ThreatScene& scene,
-                               const std::vector<PrecompLaser>& preLasers,
-                               int kStart, int kEnd, int maxK, bool allowPickups,
-                               RolloutState& st,
-                               int abortFirstHardLe = -1, int abortLastHardGt = -1,
-                               bool abortAnyWarn = false, bool onlyEndGap = false) {
-    if (kStart > kEnd) return;
-
-    float stepHardMax[BulletTrack::kMaxPts]{};
-    float stepWarnMax[BulletTrack::kMaxPts]{};
-    float stepMinGap[BulletTrack::kMaxPts];
-    for (int k = kStart; k <= kEnd; ++k) stepMinGap[k] = 24.0f;
-
-    if (sampleBodyRange(scene, preLasers, st.path, st.minX, st.maxX, st.minY, st.maxY,
-                        scene.player.size, scene.player.canFly, allowPickups,
-                        kStart, kEnd, maxK, stepHardMax, stepWarnMax, stepMinGap,
-                        st, abortFirstHardLe, abortLastHardGt, abortAnyWarn, onlyEndGap)) {
-        return;
-    }
-
-    if (scene.hasTwin) {
-        if (sampleBodyRange(scene, preLasers, st.twinPath, st.tMinX, st.tMaxX, st.tMinY, st.tMaxY,
-                            scene.twin.size, scene.twin.canFly, allowPickups,
-                            kStart, kEnd, maxK, stepHardMax, stepWarnMax, stepMinGap,
-                            st, abortFirstHardLe, abortLastHardGt, abortAnyWarn, onlyEndGap)) {
             return;
         }
     }
 
+    Vec2 delta = vel;
+    float fromPen = -1.0f;
+    auto canMoveTo = [&](Vec2 q, Vec2 from) -> bool {
+        if (gf.footprintSafe(grid, q.x, q.y, playerSize, canFly)) return true;
+        if (!originUnsafe) return false;
+        if (gf.footprintSafe(grid, from.x, from.y, playerSize, canFly)) return false;
+        if (fromPen < 0.0f) fromPen = footprintPenalty(grid, from.x, from.y, playerSize, canFly);
+        return footprintPenalty(grid, q.x, q.y, playerSize, canFly) < fromPen - 0.02f;
+    };
+
+    int sub = (distSq <= 36.0f) ? 1 : std::min(4, std::max(1, static_cast<int>(std::ceil(std::sqrt(distSq) / 6.0f))));
+    for (int s = 0; s < sub; ++s) {
+        Vec2 step = delta * (1.0f / static_cast<float>(sub));
+        Vec2 cand = pos + step;
+        if (canMoveTo(cand, pos)) {
+            pos = cand;
+            fromPen = -1.0f;
+            moved = true;
+            continue;
+        }
+        bool slideX = (std::abs(step.x) > 1e-4f) && canMoveTo({pos.x + step.x, pos.y}, pos);
+        bool slideY = (std::abs(step.y) > 1e-4f) && canMoveTo({pos.x, pos.y + step.y}, pos);
+        if (slideX && !slideY) {
+            pos.x += step.x; vel.y = 0.0f; fromPen = -1.0f; moved = true;
+        } else if (slideY && !slideX) {
+            pos.y += step.y; vel.x = 0.0f; fromPen = -1.0f; moved = true;
+        } else {
+            vel = {0.0f, 0.0f};
+            break;
+        }
+    }
+}
+
+// Ultra-fast zero-sqrt hard-only collision probe at step k (gm == 0).
+inline bool hitsHardAtStep(const ThreatScene& scene, PrecompThreats& pt,
+                           Vec2 p0, Vec2 p1, float bodyRadius, bool bodyCanFly, int k) {
+    float pMinX = std::min(p0.x, p1.x), pMaxX = std::max(p0.x, p1.x);
+    float pMinY = std::min(p0.y, p1.y), pMaxY = std::max(p0.y, p1.y);
+    int blk = k >> 3;
+
+    // 1. Hard lasers
+    for (int li = 0; li < pt.numLasers; ++li) {
+        const LaserHazard& l = scene.lasers[li];
+        if (l.warning) continue;
+        PrecompLaser& pl = pt.lasersPtr[li];
+        PrecompLaserStep& ps = pt.laserStepsPtr[pl.stepOffset + k];
+        if (!ps.active) continue;
+        float pad = bodyRadius + 1.0f;
+        const ChunkBox& lcb = pl.chunks[blk];
+        if (pMaxX + pad < lcb.minX || pMinX - pad > lcb.maxX ||
+            pMaxY + pad < lcb.minY || pMinY - pad > lcb.maxY) {
+            continue;
+        }
+        float radSum = bodyRadius + l.width;
+        Vec2 a{p0.x - ps.orig0.x, p0.y - ps.orig0.y};
+        Vec2 b{p1.x - ps.orig1.x, p1.y - ps.orig1.y};
+        if (l.ring) {
+            float nearSq = pointSegmentDistSq(0.0f, 0.0f, a.x, a.y, b.x, b.y);
+            float outer = l.radius + radSum;
+            if (nearSq >= outer * outer) continue;
+            if (l.radius < radSum) return true;
+            float inner = l.radius - radSum;
+            if (std::max(a.lengthSq(), b.lengthSq()) > inner * inner) return true;
+        } else {
+            float effRad = radSum + ps.rotMargin;
+            if (ps.twoPts) {
+                if (std::max(a.x, b.x) + effRad < ps.sMinX || std::min(a.x, b.x) - effRad > ps.sMaxX ||
+                    std::max(a.y, b.y) + effRad < ps.sMinY || std::min(a.y, b.y) - effRad > ps.sMaxY) {
+                    continue;
+                }
+                float d2 = segmentSegmentDistSqPre(a.x, a.y, b.x, b.y,
+                                                   ps.segA.x, ps.segA.y, ps.segDx, ps.segDy,
+                                                   ps.segLenSq, ps.segInvLenSq);
+                if (d2 < effRad * effRad) return true;
+            } else {
+                const Vec2* pts = ps.midZero ? l.pts : pt.getLaserRotPts(l, ps);
+                float aMinX = std::min(a.x, b.x) - effRad, aMaxX = std::max(a.x, b.x) + effRad;
+                float aMinY = std::min(a.y, b.y) - effRad, aMaxY = std::max(a.y, b.y) + effRad;
+                if (aMaxX < ps.sMinX || aMinX > ps.sMaxX || aMaxY < ps.sMinY || aMinY > ps.sMaxY) {
+                    continue;
+                }
+                float effSq = effRad * effRad;
+                for (int i = 1; i < l.numPts; ++i) {
+                    const Vec2& pA = pts[i - 1];
+                    const Vec2& pB = pts[i];
+                    if (std::max(pA.x, pB.x) < aMinX || std::min(pA.x, pB.x) > aMaxX ||
+                        std::max(pA.y, pB.y) < aMinY || std::min(pA.y, pB.y) > aMaxY) {
+                        continue;
+                    }
+                    if (segmentSegmentDistSq(a.x, a.y, b.x, b.y, pA.x, pA.y, pB.x, pB.y) < effSq) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Hard static discs
+    if (pt.numStaticDiscs > 0) {
+        float pSegDx = p1.x - p0.x, pSegDy = p1.y - p0.y;
+        float pSegLenSq = pSegDx * pSegDx + pSegDy * pSegDy;
+        float pSegInvLenSq = (pSegLenSq > 1e-6f) ? (1.0f / pSegLenSq) : 0.0f;
+        for (int di = 0; di < pt.numStaticDiscs; ++di) {
+            const StaticDisc& sd = pt.staticDiscsPtr[di];
+            if (sd.warning || k < sd.lo || k > sd.hi) continue;
+            if (sd.groundOnly && bodyCanFly) continue;
+            float rs = bodyRadius + sd.radius;
+            if (pMaxX + rs < sd.pos.x || pMinX - rs > sd.pos.x ||
+                pMaxY + rs < sd.pos.y || pMinY - rs > sd.pos.y) {
+                continue;
+            }
+            float vx = sd.pos.x - p0.x, vy = sd.pos.y - p0.y;
+            float u = (pSegInvLenSq > 0.0f) ? clamp01((vx * pSegDx + vy * pSegDy) * pSegInvLenSq) : 0.0f;
+            float rx = vx - pSegDx * u, ry = vy - pSegDy * u;
+            if (rx * rx + ry * ry < rs * rs) return true;
+        }
+    }
+
+    // 3. Hard moving / capsule discs
+    for (int mi = 0; mi < pt.numMovingDiscs; ++mi) {
+        const MovingDisc& md = pt.movingDiscsPtr[mi];
+        if (md.warning || k < md.lo || k > md.hi) continue;
+        if (md.groundOnly && bodyCanFly) continue;
+        float rs = bodyRadius + md.radius;
+        float pad = rs + 1.0f;
+        const ChunkBox& mcb = md.chunks[blk];
+        if (pMaxX + pad < mcb.minX || pMinX - pad > mcb.maxX ||
+            pMaxY + pad < mcb.minY || pMinY - pad > mcb.maxY) {
+            continue;
+        }
+        const Vec2* mdPts = pt.discPtsPtr + md.ptsOffset;
+        const Vec2& q0 = mdPts[k * 2];
+        const Vec2& q1 = mdPts[k * 2 + 1];
+        if (pMaxX + rs < std::min(q0.x, q1.x) || pMinX - rs > std::max(q0.x, q1.x) ||
+            pMaxY + rs < std::min(q0.y, q1.y) || pMinY - rs > std::max(q0.y, q1.y)) {
+            continue;
+        }
+        if (md.isCapsule) {
+            if (segmentSegmentDistSq(p0.x, p0.y, p1.x, p1.y, q0.x, q0.y, q1.x, q1.y) < rs * rs) return true;
+        } else {
+            float rx0 = p0.x - q0.x, ry0 = p0.y - q0.y;
+            float rvx = (p1.x - p0.x) - (q1.x - q0.x);
+            float rvy = (p1.y - p0.y) - (q1.y - q0.y);
+            float lenSq = rvx * rvx + rvy * rvy;
+            float u = (lenSq > 1e-6f) ? clamp01(-(rx0 * rvx + ry0 * rvy) / lenSq) : 0.0f;
+            float cx = rx0 + rvx * u, cy = ry0 + rvy * u;
+            if (cx * cx + cy * cy < rs * rs) return true;
+        }
+    }
+
+    // 4. Hard bullets
+    const ChunkBox* row = pt.bulletChunksPtr + blk * pt.numBullets;
+    for (int bi = 0; bi < pt.numBullets; ++bi) {
+        const ActiveBullet& ab = pt.bulletsPtr[bi];
+        if (ab.warning || k < ab.lo || k > ab.hi) continue;
+        float rs = bodyRadius + ab.radius;
+        float pad = rs + 1.0f;
+        const ChunkBox& cb = row[bi];
+        if (pMaxX + pad < cb.minX || pMinX - pad > cb.maxX ||
+            pMaxY + pad < cb.minY || pMinY - pad > cb.maxY) {
+            continue;
+        }
+        const BulletTrack& b = scene.bullets[ab.idx];
+        Vec2 q0 = (k == 0) ? b.pts[0] : b.pts[k - 1];
+        const Vec2& q1 = b.pts[k];
+        if (pMaxX + rs < std::min(q0.x, q1.x) || pMinX - rs > std::max(q0.x, q1.x) ||
+            pMaxY + rs < std::min(q0.y, q1.y) || pMinY - rs > std::max(q0.y, q1.y)) {
+            continue;
+        }
+        float rx0 = p0.x - q0.x, ry0 = p0.y - q0.y;
+        float rvx = (p1.x - p0.x) - (q1.x - q0.x);
+        float rvy = (p1.y - p0.y) - (q1.y - q0.y);
+        float lenSq = rvx * rvx + rvy * rvy;
+        float u = (lenSq > 1e-6f) ? clamp01(-(rx0 * rvx + ry0 * rvy) / lenSq) : 0.0f;
+        float cx = rx0 + rvx * u, cy = ry0 + rvy * u;
+        if (cx * cx + cy * cy < rs * rs) return true;
+    }
+
+    return false;
+}
+
+// Single-step hazard evaluator for early-abort step-major loops.
+// Returns true if aborted early (updating st.hasHard/firstHardK/lastHardK/hasWarn/crossedAutoAvoid).
+inline bool evalBodyAtStep(const ThreatScene& scene, PrecompThreats& pt,
+                           Vec2 p0, Vec2 p1, float bodyRadius, bool bodyCanFly,
+                           int k, int maxK, bool onlyEndGap,
+                           float& hardMax, float& warnMax, float& minGap,
+                           RolloutState& st, bool abortHard, bool abortWarn) {
+    float gm = (!onlyEndGap || k == maxK) ? 24.0f : 0.0f;
+    float pMinX = std::min(p0.x, p1.x), pMaxX = std::max(p0.x, p1.x);
+    float pMinY = std::min(p0.y, p1.y), pMaxY = std::max(p0.y, p1.y);
+    int blk = k >> 3;
+
+    // 1. Lasers (long beams often dominate early aborts)
+    for (int li = 0; li < pt.numLasers; ++li) {
+        PrecompLaser& pl = pt.lasersPtr[li];
+        PrecompLaserStep& ps = pt.laserStepsPtr[pl.stepOffset + k];
+        if (!ps.active) continue;
+        float pad = bodyRadius + gm + 1.0f;
+        const ChunkBox& lcb = pl.chunks[blk];
+        if (pMaxX + pad < lcb.minX || pMinX - pad > lcb.maxX ||
+            pMaxY + pad < lcb.minY || pMinY - pad > lcb.maxY) {
+            continue;
+        }
+        const LaserHazard& l = scene.lasers[li];
+        float pen = laserClearanceAtStepPre(l, ps, &pt, p0, p1, bodyRadius, gm);
+        if (pen > 0.0f) {
+            if (l.warning) {
+                warnMax = std::max(warnMax, pen);
+                if (abortWarn) { st.hasWarn = true; return true; }
+            } else {
+                hardMax = std::max(hardMax, pen);
+                if (abortHard || abortWarn) {
+                    st.hasHard = true;
+                    st.firstHardK = std::min(st.firstHardK, k);
+                    st.lastHardK = std::max(st.lastHardK, k);
+                    return true;
+                }
+            }
+            minGap = 0.0f;
+        } else if (pen > -1e5f) {
+            minGap = std::min(minGap, -pen);
+        }
+    }
+
+    // 2. Static discs (fast point-to-segment test with precomputed step segment invLenSq)
+    float pSegDx = p1.x - p0.x, pSegDy = p1.y - p0.y;
+    float pSegLenSq = pSegDx * pSegDx + pSegDy * pSegDy;
+    float pSegInvLenSq = (pSegLenSq > 1e-6f) ? (1.0f / pSegLenSq) : 0.0f;
+    for (int di = 0; di < pt.numStaticDiscs; ++di) {
+        const StaticDisc& sd = pt.staticDiscsPtr[di];
+        if (k < sd.lo || k > sd.hi) continue;
+        if (sd.groundOnly && bodyCanFly) continue;
+        float rs = bodyRadius + sd.radius;
+        float bound = rs + gm;
+        if (pMaxX + bound < sd.pos.x || pMinX - bound > sd.pos.x ||
+            pMaxY + bound < sd.pos.y || pMinY - bound > sd.pos.y) {
+            continue;
+        }
+        float vx = sd.pos.x - p0.x, vy = sd.pos.y - p0.y;
+        float u = (pSegInvLenSq > 0.0f) ? clamp01((vx * pSegDx + vy * pSegDy) * pSegInvLenSq) : 0.0f;
+        float rx = vx - pSegDx * u, ry = vy - pSegDy * u;
+        float distSq = rx * rx + ry * ry;
+        if (distSq < bound * bound) {
+            bool skipSqrt = (!sd.warning && (abortHard || abortWarn) && distSq < rs * rs);
+            float pen = skipSqrt ? 1.0f : (rs - std::sqrt(distSq));
+            if (pen > 0.0f) {
+                if (sd.warning) {
+                    warnMax = std::max(warnMax, pen);
+                    if (abortWarn) { st.hasWarn = true; return true; }
+                } else {
+                    hardMax = std::max(hardMax, pen);
+                    if (abortHard || abortWarn) {
+                        st.hasHard = true;
+                        st.firstHardK = std::min(st.firstHardK, k);
+                        st.lastHardK = std::max(st.lastHardK, k);
+                        return true;
+                    }
+                }
+                minGap = 0.0f;
+            } else {
+                minGap = std::min(minGap, -pen);
+            }
+        }
+    }
+
+    // 3. Moving / capsule discs
+    for (int mi = 0; mi < pt.numMovingDiscs; ++mi) {
+        const MovingDisc& md = pt.movingDiscsPtr[mi];
+        if (k < md.lo || k > md.hi) continue;
+        if (md.groundOnly && bodyCanFly) continue;
+        float pad = md.radius + bodyRadius + gm + 1.0f;
+        const ChunkBox& mcb = md.chunks[blk];
+        if (pMaxX + pad < mcb.minX || pMinX - pad > mcb.maxX ||
+            pMaxY + pad < mcb.minY || pMinY - pad > mcb.maxY) {
+            continue;
+        }
+        float rs = bodyRadius + md.radius;
+        const Vec2* mdPts = pt.discPtsPtr + md.ptsOffset;
+        float pen = md.isCapsule
+            ? sweptCapsuleClearance(p0, p1, mdPts[k * 2], mdPts[k * 2 + 1], rs, gm)
+            : sweptRelativeClearanceFast(p0, p1, pMinX, pMaxX, pMinY, pMaxY,
+                                         mdPts[k * 2], mdPts[k * 2 + 1], rs, gm, !md.warning && (abortHard || abortWarn));
+        if (pen > 0.0f) {
+            if (md.warning) {
+                warnMax = std::max(warnMax, pen);
+                if (abortWarn) { st.hasWarn = true; return true; }
+            } else {
+                hardMax = std::max(hardMax, pen);
+                if (abortHard || abortWarn) {
+                    st.hasHard = true;
+                    st.firstHardK = std::min(st.firstHardK, k);
+                    st.lastHardK = std::max(st.lastHardK, k);
+                    return true;
+                }
+            }
+            minGap = 0.0f;
+        } else {
+            minGap = std::min(minGap, -pen);
+        }
+    }
+
+    // 4. Bullets using compact L1-resident chunk AABBs for block `blk`
+    const ChunkBox* row = pt.bulletChunksPtr + blk * pt.numBullets;
+    for (int bi = 0; bi < pt.numBullets; ++bi) {
+        const ActiveBullet& ab = pt.bulletsPtr[bi];
+        if (k < ab.lo || k > ab.hi) continue;
+        float pad = ab.radius + bodyRadius + gm + 1.0f;
+        const ChunkBox& cb = row[bi];
+        if (pMaxX + pad < cb.minX || pMinX - pad > cb.maxX ||
+            pMaxY + pad < cb.minY || pMinY - pad > cb.maxY) {
+            continue;
+        }
+        const BulletTrack& b = scene.bullets[ab.idx];
+        Vec2 q0 = (k == 0) ? b.pts[0] : b.pts[k - 1];
+        float rs = bodyRadius + ab.radius;
+        float pen = sweptRelativeClearanceFast(p0, p1, pMinX, pMaxX, pMinY, pMaxY,
+                                               q0, b.pts[k], rs, gm, !ab.warning && (abortHard || abortWarn));
+        if (pen > 0.0f) {
+            if (ab.warning) {
+                warnMax = std::max(warnMax, pen);
+                if (abortWarn) { st.hasWarn = true; return true; }
+            } else {
+                hardMax = std::max(hardMax, pen);
+                if (abortHard || abortWarn) {
+                    st.hasHard = true;
+                    st.firstHardK = std::min(st.firstHardK, k);
+                    st.lastHardK = std::max(st.lastHardK, k);
+                    return true;
+                }
+            }
+            minGap = 0.0f;
+        } else {
+            minGap = std::min(minGap, -pen);
+        }
+    }
+
+    // 5. AUTO-only pickup/pedestal/mimic cells
+    if (k >= 1 && pt.gridHasAutoAvoid) {
+        int idx = scene.grid.indexAt(p1.x, p1.y);
+        if (scene.grid.cellAutoAvoid(idx)) {
+            st.crossedAutoAvoid = true;
+            st.hasWarn = true;
+            if (abortWarn) return true;
+        }
+    }
+    return false;
+}
+
+// Block-accelerated range hazard evaluator (no early abort; fills stepHardMax/WarnMax/MinGap/AutoAvoid).
+inline void evalBodyRangeBlocked(const ThreatScene& scene, PrecompThreats& pt,
+                                 const Vec2* path, const ChunkBox pChunks[8],
+                                 float pMinX, float pMaxX, float pMinY, float pMaxY,
+                                 float bodyRadius, bool bodyCanFly,
+                                 int kStart, int kEnd, int maxK, float nonEndGm,
+                                 float* stepHardMax, float* stepWarnMax, float* stepMinGap,
+                                 uint8_t* stepAutoAvoid) {
+    if (kStart > kEnd) return;
+    int blkStart = kStart >> 3;
+    int blkEnd = kEnd >> 3;
+
+    // 1. Bullets (global AABB -> 8-step chunk AABB -> step segment)
+    for (int bi = 0; bi < pt.numBullets; ++bi) {
+        const ActiveBullet& ab = pt.bulletsPtr[bi];
+        int lo = std::max(kStart, ab.lo);
+        int hi = std::min(kEnd, ab.hi);
+        if (lo > hi) continue;
+        float maxGm = (hi == maxK) ? 24.0f : nonEndGm;
+        float gPad = ab.radius + bodyRadius + maxGm + 1.0f;
+        if (pMaxX + gPad < ab.minX || pMinX - gPad > ab.maxX ||
+            pMaxY + gPad < ab.minY || pMinY - gPad > ab.maxY) {
+            continue;
+        }
+        const BulletTrack& b = scene.bullets[ab.idx];
+        float rs = bodyRadius + ab.radius;
+        int bBlk0 = lo >> 3;
+        int bBlk1 = hi >> 3;
+        for (int blk = bBlk0; blk <= bBlk1; ++blk) {
+            int cLo = std::max(lo, blk * 8);
+            int cHi = std::min(hi, blk * 8 + 7);
+            float blkGm = (cHi == maxK) ? 24.0f : nonEndGm;
+            float cPad = rs + blkGm + 1.0f;
+            const ChunkBox& pcb = pChunks[blk];
+            const ChunkBox& bcb = pt.bulletChunksPtr[blk * pt.numBullets + bi];
+            if (pcb.maxX + cPad < bcb.minX || pcb.minX - cPad > bcb.maxX ||
+                pcb.maxY + cPad < bcb.minY || pcb.minY - cPad > bcb.maxY) {
+                continue;
+            }
+            for (int k = cLo; k <= cHi; ++k) {
+                Vec2 p0 = (k == 0) ? path[0] : path[k - 1];
+                Vec2 q0 = (k == 0) ? b.pts[0] : b.pts[k - 1];
+                float gm = (k == maxK) ? 24.0f : nonEndGm;
+                float pen = sweptRelativeClearance(p0, path[k], q0, b.pts[k], rs, gm);
+                if (pen > 0.0f) {
+                    if (ab.warning) stepWarnMax[k] = std::max(stepWarnMax[k], pen);
+                    else            stepHardMax[k] = std::max(stepHardMax[k], pen);
+                    stepMinGap[k] = 0.0f;
+                } else {
+                    stepMinGap[k] = std::min(stepMinGap[k], -pen);
+                }
+            }
+        }
+    }
+
+    // 2. Static discs (point-segment distance)
+    for (int di = 0; di < pt.numStaticDiscs; ++di) {
+        const StaticDisc& sd = pt.staticDiscsPtr[di];
+        if (sd.groundOnly && bodyCanFly) continue;
+        int lo = std::max(kStart, sd.lo);
+        int hi = std::min(kEnd, sd.hi);
+        if (lo > hi) continue;
+        float rs = bodyRadius + sd.radius;
+        float maxGm = (hi == maxK) ? 24.0f : nonEndGm;
+        float gBound = rs + maxGm;
+        if (pMaxX + gBound < sd.pos.x || pMinX - gBound > sd.pos.x ||
+            pMaxY + gBound < sd.pos.y || pMinY - gBound > sd.pos.y) {
+            continue;
+        }
+        int dBlk0 = lo >> 3;
+        int dBlk1 = hi >> 3;
+        for (int blk = dBlk0; blk <= dBlk1; ++blk) {
+            int cLo = std::max(lo, blk * 8);
+            int cHi = std::min(hi, blk * 8 + 7);
+            float blkGm = (cHi == maxK) ? 24.0f : nonEndGm;
+            float bBound = rs + blkGm;
+            const ChunkBox& pcb = pChunks[blk];
+            if (pcb.maxX + bBound < sd.pos.x || pcb.minX - bBound > sd.pos.x ||
+                pcb.maxY + bBound < sd.pos.y || pcb.minY - bBound > sd.pos.y) {
+                continue;
+            }
+            for (int k = cLo; k <= cHi; ++k) {
+                Vec2 p0 = (k == 0) ? path[0] : path[k - 1];
+                float gm = (k == maxK) ? 24.0f : nonEndGm;
+                float bound = rs + gm;
+                if (std::max(p0.x, path[k].x) + bound < sd.pos.x || std::min(p0.x, path[k].x) - bound > sd.pos.x ||
+                    std::max(p0.y, path[k].y) + bound < sd.pos.y || std::min(p0.y, path[k].y) - bound > sd.pos.y) {
+                    continue;
+                }
+                float d2 = pointSegmentDistSq(sd.pos.x, sd.pos.y, p0.x, p0.y, path[k].x, path[k].y);
+                if (d2 >= bound * bound) continue;
+                float pen = rs - std::sqrt(d2);
+                if (pen > 0.0f) {
+                    if (sd.warning) stepWarnMax[k] = std::max(stepWarnMax[k], pen);
+                    else            stepHardMax[k] = std::max(stepHardMax[k], pen);
+                    stepMinGap[k] = 0.0f;
+                } else {
+                    stepMinGap[k] = std::min(stepMinGap[k], -pen);
+                }
+            }
+        }
+    }
+
+    // 3. Moving / capsule discs
+    for (int mi = 0; mi < pt.numMovingDiscs; ++mi) {
+        const MovingDisc& md = pt.movingDiscsPtr[mi];
+        if (md.groundOnly && bodyCanFly) continue;
+        int lo = std::max(kStart, md.lo);
+        int hi = std::min(kEnd, md.hi);
+        if (lo > hi) continue;
+        float rs = bodyRadius + md.radius;
+        float maxGm = (hi == maxK) ? 24.0f : nonEndGm;
+        float gPad = rs + maxGm + 1.0f;
+        if (pMaxX + gPad < md.minX || pMinX - gPad > md.maxX ||
+            pMaxY + gPad < md.minY || pMinY - gPad > md.maxY) {
+            continue;
+        }
+        int mBlk0 = lo >> 3;
+        int mBlk1 = hi >> 3;
+        for (int blk = mBlk0; blk <= mBlk1; ++blk) {
+            int cLo = std::max(lo, blk * 8);
+            int cHi = std::min(hi, blk * 8 + 7);
+            float blkGm = (cHi == maxK) ? 24.0f : nonEndGm;
+            float cPad = rs + blkGm + 1.0f;
+            const ChunkBox& pcb = pChunks[blk];
+            const ChunkBox& mcb = md.chunks[blk];
+            if (pcb.maxX + cPad < mcb.minX || pcb.minX - cPad > mcb.maxX ||
+                pcb.maxY + cPad < mcb.minY || pcb.minY - cPad > mcb.maxY) {
+                continue;
+            }
+            const Vec2* mdPts = pt.discPtsPtr + md.ptsOffset;
+            for (int k = cLo; k <= cHi; ++k) {
+                Vec2 p0 = (k == 0) ? path[0] : path[k - 1];
+                float gm = (k == maxK) ? 24.0f : nonEndGm;
+                float pen = md.isCapsule
+                    ? sweptCapsuleClearance(p0, path[k], mdPts[k * 2], mdPts[k * 2 + 1], rs, gm)
+                    : sweptRelativeClearance(p0, path[k], mdPts[k * 2], mdPts[k * 2 + 1], rs, gm);
+                if (pen > 0.0f) {
+                    if (md.warning) stepWarnMax[k] = std::max(stepWarnMax[k], pen);
+                    else            stepHardMax[k] = std::max(stepHardMax[k], pen);
+                    stepMinGap[k] = 0.0f;
+                } else {
+                    stepMinGap[k] = std::min(stepMinGap[k], -pen);
+                }
+            }
+        }
+    }
+
+    // 4. Lasers
+    for (int li = 0; li < pt.numLasers; ++li) {
+        PrecompLaser& pl = pt.lasersPtr[li];
+        int lo = std::max(kStart, pl.firstActiveK);
+        int hi = std::min(kEnd, pl.lastActiveK);
+        if (lo > hi) continue;
+        float maxGm = (hi == maxK) ? 24.0f : nonEndGm;
+        float gPad = bodyRadius + maxGm + 1.0f;
+        if (pMaxX + gPad < pl.minX || pMinX - gPad > pl.maxX ||
+            pMaxY + gPad < pl.minY || pMinY - gPad > pl.maxY) {
+            continue;
+        }
+        const LaserHazard& l = scene.lasers[li];
+        int lBlk0 = lo >> 3;
+        int lBlk1 = hi >> 3;
+        for (int blk = std::max(blkStart, lBlk0); blk <= std::min(blkEnd, lBlk1); ++blk) {
+            int cLo = std::max(lo, blk * 8);
+            int cHi = std::min(hi, blk * 8 + 7);
+            float blkGm = (cHi == maxK) ? 24.0f : nonEndGm;
+            float cPad = bodyRadius + blkGm + 1.0f;
+            const ChunkBox& pcb = pChunks[blk];
+            const ChunkBox& lcb = pl.chunks[blk];
+            if (pcb.maxX + cPad < lcb.minX || pcb.minX - cPad > lcb.maxX ||
+                pcb.maxY + cPad < lcb.minY || pcb.minY - cPad > lcb.maxY) {
+                continue;
+            }
+            for (int k = cLo; k <= cHi; ++k) {
+                PrecompLaserStep& ps = pt.laserStepsPtr[pl.stepOffset + k];
+                if (!ps.active) continue;
+                Vec2 p0 = (k == 0) ? path[0] : path[k - 1];
+                float gm = (k == maxK) ? 24.0f : nonEndGm;
+                float pen = laserClearanceAtStepPre(l, ps, &pt, p0, path[k], bodyRadius, gm);
+                if (pen > 0.0f) {
+                    if (l.warning) stepWarnMax[k] = std::max(stepWarnMax[k], pen);
+                    else           stepHardMax[k] = std::max(stepHardMax[k], pen);
+                    stepMinGap[k] = 0.0f;
+                } else if (pen > -1e5f) {
+                    stepMinGap[k] = std::min(stepMinGap[k], -pen);
+                }
+            }
+        }
+    }
+
+    // 5. AUTO-only pickup/pedestal/mimic cells
+    if (pt.gridHasAutoAvoid) {
+        for (int k = std::max(1, kStart); k <= kEnd; ++k) {
+            int idx = scene.grid.indexAt(path[k].x, path[k].y);
+            if (scene.grid.cellAutoAvoid(idx)) {
+                stepAutoAvoid[k] = 1;
+            }
+        }
+    }
+}
+
+inline void accumulateRolloutSteps(int kStart, int kEnd, int maxK,
+                                   const float* stepHardMax, const float* stepWarnMax,
+                                   const float* stepMinGap, const uint8_t* stepAutoAvoid,
+                                   RolloutState& st) {
     for (int k = kStart; k <= kEnd; ++k) {
+        if (stepAutoAvoid[k]) {
+            st.crossedAutoAvoid = true;
+            st.hasWarn = true;
+        }
         float h = stepHardMax[k];
         float w = stepWarnMax[k];
         if (h > 0.0f) {
@@ -627,17 +1515,45 @@ inline void sampleRolloutRange(const ThreatScene& scene,
 }
 
 struct SpaceBfsCache {
+    struct EnemyBody {
+        Vec2 pos;
+        float radSum;
+    };
+    static constexpr int kInlineEnemies = 32;
+
     int16_t cost[Offsets::Room::kMaxGridCells]{};
     uint8_t blockedCell[Offsets::Room::kMaxGridCells]{};
+    uint16_t seenStamp[Offsets::Room::kMaxGridCells]{};
+    uint16_t curStamp = 0;
+
+    int numEnemies = 0;
+    EnemyBody inlineEnemies[kInlineEnemies]{};
+    std::vector<EnemyBody> extraEnemies;
+    const EnemyBody* enemiesPtr = nullptr;
 
     void init(const ThreatScene& scene) {
         const RoomGrid& g = scene.grid;
         for (int i = 0; i < g.cellCount; ++i) {
             cost[i] = -1;
             blockedCell[i] = 0;
+            seenStamp[i] = 0;
         }
+        curStamp = 0;
+        numEnemies = 0;
+        extraEnemies.clear();
+
         // Mark enemy bodies and static floor hazards so BFS never treats choked/spiked corners as open escape space
         for (const DiscHazard& d : scene.discs) {
+            if (d.isEnemyBody) {
+                EnemyBody eb{d.pos, d.radius + scene.player.size};
+                if (extraEnemies.empty() && numEnemies < kInlineEnemies) {
+                    inlineEnemies[numEnemies++] = eb;
+                } else {
+                    if (extraEnemies.empty()) extraEnemies.assign(inlineEnemies, inlineEnemies + numEnemies);
+                    extraEnemies.push_back(eb);
+                    ++numEnemies;
+                }
+            }
             bool staticHazard = (d.warning == 0 && !d.autoOnly && d.fromT <= 0.5f &&
                                  d.vel.lengthSq() < 0.25f && (!d.groundOnly || !scene.player.canFly));
             if (!d.isEnemyBody && !staticHazard) continue;
@@ -648,17 +1564,20 @@ struct SpaceBfsCache {
             int r0 = std::max(0, static_cast<int>(std::floor((d.pos.y - r - g.origin.y) / g.pitch.y + 0.5f)));
             int r1 = std::min(g.height - 1, static_cast<int>(std::floor((d.pos.y + r - g.origin.y) / g.pitch.y + 0.5f)));
             for (int ry = r0; ry <= r1; ++ry) {
+                float cy = g.origin.y + static_cast<float>(ry) * g.pitch.y;
                 for (int cx = c0; cx <= c1; ++cx) {
                     int idx = cx + ry * g.width;
                     if (idx >= 0 && idx < g.cellCount) {
-                        Vec2 ctr = g.cellCenter(idx);
-                        if ((ctr - d.pos).lengthSq() <= rSq) {
+                        float ddx = (g.origin.x + static_cast<float>(cx) * g.pitch.x) - d.pos.x;
+                        float ddy = cy - d.pos.y;
+                        if (ddx * ddx + ddy * ddy <= rSq) {
                             blockedCell[idx] = 1;
                         }
                     }
                 }
             }
         }
+        enemiesPtr = extraEnemies.empty() ? inlineEnemies : extraEnemies.data();
     }
 };
 
@@ -670,35 +1589,44 @@ inline int scoreEndpointSpace(const ThreatScene& scene, Vec2 endpoint, SpaceBfsC
 
     int baseCost = cache.cost[idx];
     if (baseCost < 0) {
-        int queue[48];
+        if (++cache.curStamp == 0) {
+            std::fill_n(cache.seenStamp, g.cellCount, uint16_t(0));
+            cache.curStamp = 1;
+        }
+        uint16_t stamp = cache.curStamp;
+        int16_t qx[48], qy[48];
         int depth[48];
-        uint8_t seen[Offsets::Room::kMaxGridCells]{};
         int head = 0, tail = 0, exits = 0, reach = 0;
-        queue[tail] = idx; depth[tail] = 0; ++tail;
-        seen[idx] = 1;
+        int sx = idx % g.width;
+        int sy = idx / g.width;
+        qx[tail] = static_cast<int16_t>(sx); qy[tail] = static_cast<int16_t>(sy); depth[tail] = 0; ++tail;
+        cache.seenStamp[idx] = stamp;
 
         static constexpr int kDx[4] = {-1, 1, 0, 0};
         static constexpr int kDy[4] = {0, 0, -1, 1};
         while (head < tail && tail < 48) {
-            int cur = queue[head];
+            int cx = qx[head];
+            int cy = qy[head];
             int dp = depth[head];
             ++head;
             ++reach;
             if (dp < 4) {
-                int cx = cur % g.width;
-                int cy = cur / g.width;
                 for (int d = 0; d < 4; ++d) {
                     int nx = cx + kDx[d], ny = cy + kDy[d];
                     if (nx < 0 || nx >= g.width || ny < 0 || ny >= g.height) continue;
                     int ni = nx + ny * g.width;
-                    if (ni < 0 || ni >= g.cellCount) continue;
+                    if (ni >= g.cellCount) continue;
                     if (!g.cellPhysicallyPassable(ni, scene.player.canFly) || cache.blockedCell[ni]) continue;
-                    Vec2 nc = g.cellCenter(ni);
-                    if (!g.inBoundsPoint(nc.x, nc.y, 4.0f)) continue;
+                    float ncx = g.origin.x + static_cast<float>(nx) * g.pitch.x;
+                    float ncy = g.origin.y + static_cast<float>(ny) * g.pitch.y;
+                    if (!g.inBoundsPoint(ncx, ncy, 4.0f)) continue;
                     if (dp == 0) ++exits;
-                    if (!seen[ni] && tail < 48) {
-                        seen[ni] = 1;
-                        queue[tail] = ni; depth[tail] = dp + 1; ++tail;
+                    if (cache.seenStamp[ni] != stamp && tail < 48) {
+                        cache.seenStamp[ni] = stamp;
+                        qx[tail] = static_cast<int16_t>(nx);
+                        qy[tail] = static_cast<int16_t>(ny);
+                        depth[tail] = dp + 1;
+                        ++tail;
                     }
                 }
             }
@@ -715,12 +1643,14 @@ inline int scoreEndpointSpace(const ThreatScene& scene, Vec2 endpoint, SpaceBfsC
 
     // Enemy encirclement penalty so safe dodges steer away from surrounding monster packs
     int crowdPen = 0;
-    for (const DiscHazard& d : scene.discs) {
-        if (!d.isEnemyBody) continue;
-        Vec2 dVec = endpoint - d.pos;
-        float distSq = dVec.lengthSq();
+    for (int ei = 0; ei < cache.numEnemies; ++ei) {
+        const auto& eb = cache.enemiesPtr[ei];
+        float dx = endpoint.x - eb.pos.x;
+        float dy = endpoint.y - eb.pos.y;
+        if (std::abs(dx) >= 140.0f || std::abs(dy) >= 140.0f) continue;
+        float distSq = dx * dx + dy * dy;
         if (distSq < 140.0f * 140.0f) {
-            float clear = std::sqrt(distSq) - (d.radius + scene.player.size);
+            float clear = std::sqrt(distSq) - eb.radSum;
             if (clear < 110.0f) {
                 crowdPen += static_cast<int>((110.0f - std::max(0.0f, clear)) * 0.45f);
             }
@@ -810,13 +1740,13 @@ inline double computeRolloutScore(const ThreatScene& scene, const RolloutState& 
     return static_cast<double>(intRisk) * kScale + tie;
 }
 
-inline RolloutSnapshot makeSnap(const RolloutState& st, int k) {
+inline RolloutSnapshot makeSnap(const RolloutState& st, Vec2 p, Vec2 v, Vec2 tp, Vec2 tv, bool moved) {
     RolloutSnapshot sn{};
-    sn.pos = st.path[k];
-    sn.vel = st.vels[k];
-    sn.twinPos = st.twinPath[k];
-    sn.twinVel = st.twinVels[k];
-    sn.moved = st.movedAt[k];
+    sn.pos = p;
+    sn.vel = v;
+    sn.twinPos = tp;
+    sn.twinVel = tv;
+    sn.moved = moved;
     sn.hasHard = st.hasHard;
     sn.hasWarn = st.hasWarn;
     sn.crossedAutoAvoid = st.crossedAutoAvoid;
@@ -833,51 +1763,82 @@ inline RolloutSnapshot makeSnap(const RolloutState& st, int k) {
     return sn;
 }
 
-inline RolloutState simulateStraight(const ThreatScene& scene,
-                                     const std::vector<PrecompLaser>& preLasers,
-                                     int dir, int rawDir,
-                                     bool originUnsafe, bool twinOriginUnsafe, bool allowPickups,
-                                     const PlayerKinematics& kin, const PlayerKinematics& twinKin,
-                                     int maxK, const int pivots[3], bool recordSnaps) {
-    RolloutState st{};
+inline void simulateStraight(const ThreatScene& scene, PrecompThreats& pt,
+                             const GridFastInfo& gf,
+                             int dir, int rawDir,
+                             bool originUnsafe, bool twinOriginUnsafe,
+                             const PlayerKinematics& kin, const PlayerKinematics& twinKin,
+                             int maxK, const int pivots[3], bool recordSnaps,
+                             RolloutState& st) {
+    st = RolloutState{};
     st.pos = scene.player.pos;
     st.vel = scene.player.vel;
-    st.path[0] = st.pos;
-    st.vels[0] = st.vel;
-    st.movedAt[0] = false;
-    st.minX = st.maxX = st.pos.x;
-    st.minY = st.maxY = st.pos.y;
-
     if (scene.hasTwin) {
         st.twinPos = scene.twin.pos;
         st.twinVel = scene.twin.vel;
-        st.twinPath[0] = st.twinPos;
-        st.twinVels[0] = st.twinVel;
-        st.tMinX = st.tMaxX = st.twinPos.x;
-        st.tMinY = st.tMaxY = st.twinPos.y;
+    }
+
+    Vec2 path[BulletTrack::kMaxPts];
+    Vec2 vels[BulletTrack::kMaxPts];
+    Vec2 twinPath[BulletTrack::kMaxPts];
+    Vec2 twinVels[BulletTrack::kMaxPts];
+    bool movedAt[BulletTrack::kMaxPts];
+
+    path[0] = st.pos;
+    vels[0] = st.vel;
+    movedAt[0] = false;
+    float pMinX = st.pos.x, pMaxX = st.pos.x, pMinY = st.pos.y, pMaxY = st.pos.y;
+    ChunkBox pChunks[8]{};
+    for (int blk = 0; blk < pt.numChunks; ++blk) pChunks[blk].reset();
+    pChunks[0].expand(st.pos.x, st.pos.y);
+
+    float tMinX = 0.0f, tMaxX = 0.0f, tMinY = 0.0f, tMaxY = 0.0f;
+    ChunkBox tChunks[8]{};
+    if (scene.hasTwin) {
+        twinPath[0] = st.twinPos;
+        twinVels[0] = st.twinVel;
+        tMinX = tMaxX = st.twinPos.x;
+        tMinY = tMaxY = st.twinPos.y;
+        for (int blk = 0; blk < pt.numChunks; ++blk) tChunks[blk].reset();
+        tChunks[0].expand(st.twinPos.x, st.twinPos.y);
     }
 
     int qSteps = std::min(maxK, scene.queueDelay30 * 2 + kin.extraDelay60);
-    Vec2 qVec = candVec(rawDir);
+    bool qZero = (rawDir <= 0 || rawDir >= 9);
+    Vec2 qAccel = candVec(rawDir) * kin.accel;
+    Vec2 tQAccel = candVec(rawDir) * twinKin.accel;
+    bool dZero = (dir <= 0 || dir >= 9);
     Vec2 dVec = candVec(dir);
+    Vec2 dAccel = dVec * kin.accel;
+    Vec2 tDAccel = dVec * twinKin.accel;
 
     for (int k = 1; k <= maxK; ++k) {
         bool steered = (k > qSteps);
-        Vec2 useDir = steered ? dVec : qVec;
         bool stepMoved = false;
-        stepPlayer60(scene.grid, scene.player.size, scene.player.canFly,
-                     originUnsafe, useDir, kin, st.pos, st.vel, stepMoved);
+        stepPlayer60Fast(scene.grid, gf, scene.player.size, scene.player.canFly,
+                         originUnsafe, steered ? dZero : qZero, steered ? dAccel : qAccel,
+                         kin, st.pos, st.vel, stepMoved);
         if (steered && stepMoved) st.moved = true;
-        st.path[k] = st.pos;
-        st.vels[k] = st.vel;
-        st.movedAt[k] = st.moved;
+        path[k] = st.pos;
+        vels[k] = st.vel;
+        movedAt[k] = st.moved;
+        pMinX = std::min(pMinX, st.pos.x); pMaxX = std::max(pMaxX, st.pos.x);
+        pMinY = std::min(pMinY, st.pos.y); pMaxY = std::max(pMaxY, st.pos.y);
+        int blk = k >> 3;
+        pChunks[blk].expand(path[k - 1].x, path[k - 1].y);
+        pChunks[blk].expand(st.pos.x, st.pos.y);
 
         if (scene.hasTwin) {
             bool twinMoved = false;
-            stepPlayer60(scene.grid, scene.twin.size, scene.twin.canFly,
-                         twinOriginUnsafe, useDir, twinKin, st.twinPos, st.twinVel, twinMoved);
-            st.twinPath[k] = st.twinPos;
-            st.twinVels[k] = st.twinVel;
+            stepPlayer60Fast(scene.grid, gf, scene.twin.size, scene.twin.canFly,
+                             twinOriginUnsafe, steered ? dZero : qZero, steered ? tDAccel : tQAccel,
+                             twinKin, st.twinPos, st.twinVel, twinMoved);
+            twinPath[k] = st.twinPos;
+            twinVels[k] = st.twinVel;
+            tMinX = std::min(tMinX, st.twinPos.x); tMaxX = std::max(tMaxX, st.twinPos.x);
+            tMinY = std::min(tMinY, st.twinPos.y); tMaxY = std::max(tMaxY, st.twinPos.y);
+            tChunks[blk].expand(twinPath[k - 1].x, twinPath[k - 1].y);
+            tChunks[blk].expand(st.twinPos.x, st.twinPos.y);
         }
     }
 
@@ -886,131 +1847,322 @@ inline RolloutState simulateStraight(const ThreatScene& scene,
         Vec2 probePos = st.pos, probeVel = st.vel;
         bool probeMoved = false;
         for (int p = 0; p < 2; ++p) {
-            stepPlayer60(scene.grid, scene.player.size, scene.player.canFly,
-                         originUnsafe, dVec, kin, probePos, probeVel, probeMoved);
+            stepPlayer60Fast(scene.grid, gf, scene.player.size, scene.player.canFly,
+                             originUnsafe, dZero, dAccel, kin, probePos, probeVel, probeMoved);
         }
         st.moved = probeMoved;
     }
 
-    auto expandBounds = [&](int fromK, int toK) {
-        for (int k = std::max(1, fromK); k <= toK; ++k) {
-            st.minX = std::min(st.minX, st.path[k].x); st.maxX = std::max(st.maxX, st.path[k].x);
-            st.minY = std::min(st.minY, st.path[k].y); st.maxY = std::max(st.maxY, st.path[k].y);
-            if (scene.hasTwin) {
-                st.tMinX = std::min(st.tMinX, st.twinPath[k].x); st.tMaxX = std::max(st.tMaxX, st.twinPath[k].x);
-                st.tMinY = std::min(st.tMinY, st.twinPath[k].y); st.tMaxY = std::max(st.tMaxY, st.twinPath[k].y);
-            }
-        }
-    };
+    float stepHardMax[BulletTrack::kMaxPts]{};
+    float stepWarnMax[BulletTrack::kMaxPts]{};
+    float stepMinGap[BulletTrack::kMaxPts];
+    uint8_t stepAutoAvoid[BulletTrack::kMaxPts]{};
+    for (int k = 0; k < maxK; ++k) stepMinGap[k] = 4.0f;
+    stepMinGap[maxK] = 24.0f;
 
-    if (!recordSnaps) {
-        expandBounds(1, maxK);
-        sampleRolloutRange(scene, preLasers, 0, maxK, maxK, allowPickups, st);
-        return st;
+    // Non-terminal straight clearance is only compared against < 4.0f (needTurnSearch); k == maxK keeps 24.0f for endGap.
+    evalBodyRangeBlocked(scene, pt, path, pChunks, pMinX, pMaxX, pMinY, pMaxY,
+                         scene.player.size, scene.player.canFly, 0, maxK, maxK, 4.0f,
+                         stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid);
+    if (scene.hasTwin) {
+        evalBodyRangeBlocked(scene, pt, twinPath, tChunks, tMinX, tMaxX, tMinY, tMaxY,
+                             scene.twin.size, scene.twin.canFly, 0, maxK, maxK, 4.0f,
+                             stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid);
     }
 
-    // Incremental hazard chunks at dynamic post-queue pivots so prefix states are exact in a single pass
+    if (!recordSnaps) {
+        accumulateRolloutSteps(0, maxK, maxK, stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid, st);
+        return;
+    }
+
     int curStart = 0;
     for (int ci = 0; ci < 3; ++ci) {
         int cEnd = std::min(maxK, pivots[ci]);
         if (cEnd >= curStart) {
-            expandBounds(curStart, cEnd);
-            sampleRolloutRange(scene, preLasers, curStart, cEnd, maxK, allowPickups, st);
+            accumulateRolloutSteps(curStart, cEnd, maxK, stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid, st);
             curStart = cEnd + 1;
         }
-        st.snaps[ci] = makeSnap(st, cEnd);
+        st.snaps[ci] = makeSnap(st, path[cEnd], vels[cEnd], twinPath[cEnd], twinVels[cEnd], movedAt[cEnd]);
     }
     if (curStart <= maxK) {
-        expandBounds(curStart, maxK);
-        sampleRolloutRange(scene, preLasers, curStart, maxK, maxK, allowPickups, st);
+        accumulateRolloutSteps(curStart, maxK, maxK, stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid, st);
     }
-    return st;
 }
 
-inline RolloutState continueAfterPivotSnap(const ThreatScene& scene,
-                                           const std::vector<PrecompLaser>& preLasers,
-                                           const RolloutSnapshot& sn, int pivotK,
-                                           int dir2, int rawDir,
-                                           bool originUnsafe, bool twinOriginUnsafe, bool allowPickups,
-                                           const PlayerKinematics& kin, const PlayerKinematics& twinKin,
-                                           int maxK, int abortFirstHardLe = -1, int abortLastHardGt = -1,
-                                           bool abortAnyWarn = false, int maxEndDepthBucket = -1) {
-    RolloutState st{};
-    st.pos = sn.pos;
-    st.vel = sn.vel;
-    st.twinPos = sn.twinPos;
-    st.twinVel = sn.twinVel;
-    st.moved = sn.moved;
-    st.hasHard = sn.hasHard;
-    st.hasWarn = sn.hasWarn;
-    st.crossedAutoAvoid = sn.crossedAutoAvoid;
-    st.firstHardK = sn.firstHardK;
-    st.lastHardK = sn.lastHardK;
-    st.hardHitSteps = sn.hardHitSteps;
-    st.maxHardPen = sn.maxHardPen;
-    st.endHardPen = sn.endHardPen;
-    st.hardExposure = sn.hardExposure;
-    st.maxWarnPen = sn.maxWarnPen;
-    st.warnWeighted = sn.warnWeighted;
-    st.minClearance = sn.minClearance;
-    st.endClearance = sn.endClearance;
+inline bool continueAfterPivotSnap(const ThreatScene& scene, PrecompThreats& pt,
+                                   const GridFastInfo& gf,
+                                   const RolloutSnapshot& sn, int pivotK,
+                                   int dir2,
+                                   bool originUnsafe, bool twinOriginUnsafe,
+                                   const PlayerKinematics& kin, const PlayerKinematics& twinKin,
+                                   int maxK, int abortFirstHardLe, int abortLastHardGt,
+                                   bool abortAnyWarn, int maxEndDepthBucket,
+                                   RolloutState& st, TurnPathBuffer& buf) {
+    st.initFromSnap(sn);
 
     int clampedPivot = std::min(maxK, pivotK);
-    st.minX = st.maxX = st.pos.x;
-    st.minY = st.maxY = st.pos.y;
-    st.path[clampedPivot] = st.pos;
-    if (scene.hasTwin) {
-        st.tMinX = st.tMaxX = st.twinPos.x;
-        st.tMinY = st.tMaxY = st.twinPos.y;
-        st.twinPath[clampedPivot] = st.twinPos;
-    }
-    if (clampedPivot >= maxK) return st;
+    if (clampedPivot >= maxK) return true;
 
-    int qSteps = std::min(maxK, scene.queueDelay30 * 2 + kin.extraDelay60);
-    Vec2 qVec = candVec(rawDir);
+    buf.path[clampedPivot] = st.pos;
+    if (scene.hasTwin) buf.twinPath[clampedPivot] = st.twinPos;
+
+    int k0 = clampedPivot + 1;
+    bool dZero = (dir2 <= 0 || dir2 >= 9);
     Vec2 dVec = candVec(dir2);
-    for (int k = clampedPivot + 1; k <= maxK; ++k) {
-        bool steered = (k > qSteps);
-        Vec2 useDir = steered ? dVec : qVec;
-        bool stepMoved = false;
-        stepPlayer60(scene.grid, scene.player.size, scene.player.canFly,
-                     originUnsafe, useDir, kin, st.pos, st.vel, stepMoved);
-        if (steered && stepMoved) st.moved = true;
-        st.path[k] = st.pos;
-        st.minX = std::min(st.minX, st.pos.x); st.maxX = std::max(st.maxX, st.pos.x);
-        st.minY = std::min(st.minY, st.pos.y); st.maxY = std::max(st.maxY, st.pos.y);
+    Vec2 dAccel = dVec * kin.accel;
+    Vec2 tDAccel = dVec * twinKin.accel;
 
+    float stepHardMax[BulletTrack::kMaxPts];
+    float stepWarnMax[BulletTrack::kMaxPts];
+    float stepMinGap[BulletTrack::kMaxPts];
+    uint8_t stepAutoAvoid[BulletTrack::kMaxPts];
+
+    auto initRange = [&](int a, int b) {
+        for (int k = a; k <= b; ++k) {
+            stepHardMax[k] = 0.0f;
+            stepWarnMax[k] = 0.0f;
+            stepMinGap[k] = (k == maxK) ? 24.0f : 0.0f;
+            stepAutoAvoid[k] = 0;
+        }
+    };
+
+    auto buildChunks = [&](int fromK, const Vec2* pathArr, ChunkBox chunks[8],
+                           float& minX, float& maxX, float& minY, float& maxY) {
+        minX = maxX = pathArr[fromK - 1].x;
+        minY = maxY = pathArr[fromK - 1].y;
+        for (int blk = 0; blk < pt.numChunks; ++blk) chunks[blk].reset();
+        for (int k = fromK; k <= maxK; ++k) {
+            minX = std::min(minX, pathArr[k].x); maxX = std::max(maxX, pathArr[k].x);
+            minY = std::min(minY, pathArr[k].y); maxY = std::max(maxY, pathArr[k].y);
+            int blk = k >> 3;
+            chunks[blk].expand(pathArr[k - 1].x, pathArr[k - 1].y);
+            chunks[blk].expand(pathArr[k].x, pathArr[k].y);
+        }
+    };
+
+    // Regime C1 (!inside && !abortAnyWarn && abortFirstHardLe >= 0): ultra-fast hard-only zero-sqrt interleaved probe
+    if (!abortAnyWarn && abortFirstHardLe >= 0) {
+        int kCheckEnd = std::min(maxK, abortFirstHardLe);
+        for (int k = k0; k <= kCheckEnd; ++k) {
+            bool stepMoved = false;
+            stepPlayer60Fast(scene.grid, gf, scene.player.size, scene.player.canFly,
+                             originUnsafe, dZero, dAccel, kin, st.pos, st.vel, stepMoved);
+            if (stepMoved) st.moved = true;
+            buf.path[k] = st.pos;
+            if (hitsHardAtStep(scene, pt, buf.path[k - 1], st.pos, scene.player.size, scene.player.canFly, k)) {
+                st.hasHard = true;
+                st.firstHardK = std::min(st.firstHardK, k);
+                st.lastHardK = std::max(st.lastHardK, k);
+                return false;
+            }
+            if (scene.hasTwin) {
+                bool twinMoved = false;
+                stepPlayer60Fast(scene.grid, gf, scene.twin.size, scene.twin.canFly,
+                                 twinOriginUnsafe, dZero, tDAccel, twinKin, st.twinPos, st.twinVel, twinMoved);
+                buf.twinPath[k] = st.twinPos;
+                if (hitsHardAtStep(scene, pt, buf.twinPath[k - 1], st.twinPos, scene.twin.size, scene.twin.canFly, k)) {
+                    st.hasHard = true;
+                    st.firstHardK = std::min(st.firstHardK, k);
+                    st.lastHardK = std::max(st.lastHardK, k);
+                    return false;
+                }
+            }
+        }
+        for (int k = std::max(k0, kCheckEnd + 1); k <= maxK; ++k) {
+            bool stepMoved = false;
+            stepPlayer60Fast(scene.grid, gf, scene.player.size, scene.player.canFly,
+                             originUnsafe, dZero, dAccel, kin, st.pos, st.vel, stepMoved);
+            if (stepMoved) st.moved = true;
+            buf.path[k] = st.pos;
+            if (scene.hasTwin) {
+                bool twinMoved = false;
+                stepPlayer60Fast(scene.grid, gf, scene.twin.size, scene.twin.canFly,
+                                 twinOriginUnsafe, dZero, tDAccel, twinKin, st.twinPos, st.twinVel, twinMoved);
+                buf.twinPath[k] = st.twinPos;
+            }
+        }
+        initRange(k0, maxK);
+        float pMinX, pMaxX, pMinY, pMaxY, tMinX, tMaxX, tMinY, tMaxY;
+        ChunkBox pChunks[8], tChunks[8];
+        buildChunks(k0, buf.path, pChunks, pMinX, pMaxX, pMinY, pMaxY);
+        evalBodyRangeBlocked(scene, pt, buf.path, pChunks, pMinX, pMaxX, pMinY, pMaxY,
+                             scene.player.size, scene.player.canFly, k0, maxK, maxK, 0.0f,
+                             stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid);
         if (scene.hasTwin) {
-            bool twinMoved = false;
-            stepPlayer60(scene.grid, scene.twin.size, scene.twin.canFly,
-                         twinOriginUnsafe, useDir, twinKin, st.twinPos, st.twinVel, twinMoved);
-            st.twinPath[k] = st.twinPos;
-            st.tMinX = std::min(st.tMinX, st.twinPos.x); st.tMaxX = std::max(st.tMaxX, st.twinPos.x);
-            st.tMinY = std::min(st.tMinY, st.twinPos.y); st.tMaxY = std::max(st.tMaxY, st.twinPos.y);
+            buildChunks(k0, buf.twinPath, tChunks, tMinX, tMaxX, tMinY, tMaxY);
+            evalBodyRangeBlocked(scene, pt, buf.twinPath, tChunks, tMinX, tMaxX, tMinY, tMaxY,
+                                 scene.twin.size, scene.twin.canFly, k0, maxK, maxK, 0.0f,
+                                 stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid);
+        }
+        accumulateRolloutSteps(k0, maxK, maxK, stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid, st);
+        return true;
+    }
+
+    // Regime C2 (abortAnyWarn): interleave kinematics & step-major check across k0..maxK
+    if (abortAnyWarn) {
+        initRange(k0, maxK);
+        for (int k = k0; k <= maxK; ++k) {
+            bool stepMoved = false;
+            stepPlayer60Fast(scene.grid, gf, scene.player.size, scene.player.canFly,
+                             originUnsafe, dZero, dAccel, kin, st.pos, st.vel, stepMoved);
+            if (stepMoved) st.moved = true;
+            buf.path[k] = st.pos;
+
+            if (evalBodyAtStep(scene, pt, buf.path[k - 1], st.pos, scene.player.size, scene.player.canFly,
+                               k, maxK, true, stepHardMax[k], stepWarnMax[k], stepMinGap[k],
+                               st, true, true)) {
+                return false;
+            }
+            if (scene.hasTwin) {
+                bool twinMoved = false;
+                stepPlayer60Fast(scene.grid, gf, scene.twin.size, scene.twin.canFly,
+                                 twinOriginUnsafe, dZero, tDAccel, twinKin, st.twinPos, st.twinVel, twinMoved);
+                buf.twinPath[k] = st.twinPos;
+                if (evalBodyAtStep(scene, pt, buf.twinPath[k - 1], st.twinPos, scene.twin.size, scene.twin.canFly,
+                                   k, maxK, true, stepHardMax[k], stepWarnMax[k], stepMinGap[k],
+                                   st, true, true)) {
+                    return false;
+                }
+            }
+        }
+        accumulateRolloutSteps(k0, maxK, maxK, stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid, st);
+        return true;
+    }
+
+    // Regimes A / B / D: simulate kinematics k0..maxK (branchless fast interior loop when wall-free)
+    {
+        float vMax = 4.2f * scene.player.moveSpeed;
+        float maxVx = dZero ? std::abs(st.vel.x) : std::max(std::abs(st.vel.x), std::abs(dVec.x) * vMax);
+        float maxVy = dZero ? std::abs(st.vel.y) : std::max(std::abs(st.vel.y), std::abs(dVec.y) * vMax);
+        float nSteps = static_cast<float>(maxK - k0 + 1);
+        float pr = std::max(2.0f, scene.player.size - 1.0f);
+        bool interiorSafe = gf.fastOpen && !originUnsafe && !scene.hasTwin &&
+            (maxVx * maxVx + maxVy * maxVy <= 36.0f) &&
+            (st.pos.x - nSteps * maxVx - pr >= scene.grid.topLeft.x) &&
+            (st.pos.x + nSteps * maxVx + pr <= scene.grid.bottomRight.x) &&
+            (st.pos.y - nSteps * maxVy - pr >= scene.grid.topLeft.y) &&
+            (st.pos.y + nSteps * maxVy + pr <= scene.grid.bottomRight.y);
+        if (interiorSafe) {
+            float f = dZero ? kin.fIdle : kin.fDrive;
+            float ax = dZero ? 0.0f : dAccel.x;
+            float ay = dZero ? 0.0f : dAccel.y;
+            float px = st.pos.x, py = st.pos.y, vx = st.vel.x, vy = st.vel.y;
+            bool mv = st.moved;
+            for (int k = k0; k <= maxK; ++k) {
+                vx = vx * f + ax;
+                vy = vy * f + ay;
+                if (vx * vx + vy * vy >= 1e-8f) {
+                    px += vx;
+                    py += vy;
+                    mv = true;
+                }
+                buf.path[k] = {px, py};
+            }
+            st.pos = {px, py};
+            st.vel = {vx, vy};
+            st.moved = mv;
+        } else {
+            for (int k = k0; k <= maxK; ++k) {
+                bool stepMoved = false;
+                stepPlayer60Fast(scene.grid, gf, scene.player.size, scene.player.canFly,
+                                 originUnsafe, dZero, dAccel, kin, st.pos, st.vel, stepMoved);
+                if (stepMoved) st.moved = true;
+                buf.path[k] = st.pos;
+                if (scene.hasTwin) {
+                    bool twinMoved = false;
+                    stepPlayer60Fast(scene.grid, gf, scene.twin.size, scene.twin.canFly,
+                                     twinOriginUnsafe, dZero, tDAccel, twinKin, st.twinPos, st.twinVel, twinMoved);
+                    buf.twinPath[k] = st.twinPos;
+                }
+            }
         }
     }
+
+    // Regime A (inside && abortLastHardGt >= 0): hard-only zero-sqrt tail check maxK down to abortLastHardGt + 1
+    if (abortLastHardGt >= 0) {
+        int tailLo = std::max(k0, abortLastHardGt + 1);
+        for (int k = maxK; k >= tailLo; --k) {
+            if (hitsHardAtStep(scene, pt, buf.path[k - 1], buf.path[k], scene.player.size, scene.player.canFly, k)) {
+                st.hasHard = true;
+                st.lastHardK = std::max(st.lastHardK, k);
+                st.firstHardK = std::min(st.firstHardK, k);
+                return false;
+            }
+            if (scene.hasTwin) {
+                if (hitsHardAtStep(scene, pt, buf.twinPath[k - 1], buf.twinPath[k], scene.twin.size, scene.twin.canFly, k)) {
+                    st.hasHard = true;
+                    st.lastHardK = std::max(st.lastHardK, k);
+                    st.firstHardK = std::min(st.firstHardK, k);
+                    return false;
+                }
+            }
+        }
+        initRange(k0, maxK);
+        float pMinX, pMaxX, pMinY, pMaxY, tMinX, tMaxX, tMinY, tMaxY;
+        ChunkBox pChunks[8], tChunks[8];
+        buildChunks(k0, buf.path, pChunks, pMinX, pMaxX, pMinY, pMaxY);
+        evalBodyRangeBlocked(scene, pt, buf.path, pChunks, pMinX, pMaxX, pMinY, pMaxY,
+                             scene.player.size, scene.player.canFly, k0, maxK, maxK, 0.0f,
+                             stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid);
+        if (scene.hasTwin) {
+            buildChunks(k0, buf.twinPath, tChunks, tMinX, tMaxX, tMinY, tMaxY);
+            evalBodyRangeBlocked(scene, pt, buf.twinPath, tChunks, tMinX, tMaxX, tMinY, tMaxY,
+                                 scene.twin.size, scene.twin.canFly, k0, maxK, maxK, 0.0f,
+                                 stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid);
+        }
+        accumulateRolloutSteps(k0, maxK, maxK, stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid, st);
+        return true;
+    }
+
+    initRange(k0, maxK);
+    float pMinX, pMaxX, pMinY, pMaxY, tMinX, tMaxX, tMinY, tMaxY;
+    ChunkBox pChunks[8], tChunks[8];
+    buildChunks(k0, buf.path, pChunks, pMinX, pMaxX, pMinY, pMaxY);
+    if (scene.hasTwin) buildChunks(k0, buf.twinPath, tChunks, tMinX, tMaxX, tMinY, tMaxY);
+
+    // Regime B (inside && maxEndDepthBucket >= 0): test terminal step k == maxK first!
     if (maxEndDepthBucket >= 0) {
-        // Test terminal step k == maxK first (1 step vs 25): if k == maxK has a deeper hit than target,
-        // lastHardK == maxK is guaranteed and depthBucket > maxEndDepthBucket cannot improve targetScore!
-        float savedMinX = st.minX, savedMaxX = st.maxX, savedMinY = st.minY, savedMaxY = st.maxY;
-        Vec2 pPrev = st.path[maxK - 1], pEnd = st.path[maxK];
-        st.minX = std::min(pPrev.x, pEnd.x); st.maxX = std::max(pPrev.x, pEnd.x);
-        st.minY = std::min(pPrev.y, pEnd.y); st.maxY = std::max(pPrev.y, pEnd.y);
-        sampleRolloutRange(scene, preLasers, maxK, maxK, maxK, allowPickups, st, -1, -1, false, true);
-        st.minX = savedMinX; st.maxX = savedMaxX; st.minY = savedMinY; st.maxY = savedMaxY;
-        if (st.endHardPen > 0.0f &&
-            std::min(999, static_cast<int>(std::floor(st.endHardPen * 4.0f))) > maxEndDepthBucket) {
-            return st;
+        evalBodyAtStep(scene, pt, buf.path[maxK - 1], buf.path[maxK], scene.player.size, scene.player.canFly,
+                       maxK, maxK, true, stepHardMax[maxK], stepWarnMax[maxK], stepMinGap[maxK],
+                       st, false, false);
+        if (scene.hasTwin) {
+            evalBodyAtStep(scene, pt, buf.twinPath[maxK - 1], buf.twinPath[maxK], scene.twin.size, scene.twin.canFly,
+                           maxK, maxK, true, stepHardMax[maxK], stepWarnMax[maxK], stepMinGap[maxK],
+                           st, false, false);
         }
-        if (clampedPivot + 1 <= maxK - 1) {
-            sampleRolloutRange(scene, preLasers, clampedPivot + 1, maxK - 1, maxK, allowPickups, st,
-                               abortFirstHardLe, abortLastHardGt, abortAnyWarn, true);
+        if (stepHardMax[maxK] > 0.0f &&
+            std::min(999, static_cast<int>(std::floor(stepHardMax[maxK] * 4.0f))) > maxEndDepthBucket) {
+            st.endHardPen = stepHardMax[maxK];
+            st.hasHard = true;
+            st.lastHardK = std::max(st.lastHardK, maxK);
+            st.firstHardK = std::min(st.firstHardK, maxK);
+            return false;
         }
-        return st;
+        if (k0 <= maxK - 1) {
+            evalBodyRangeBlocked(scene, pt, buf.path, pChunks, pMinX, pMaxX, pMinY, pMaxY,
+                                 scene.player.size, scene.player.canFly, k0, maxK - 1, maxK, 0.0f,
+                                 stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid);
+            if (scene.hasTwin) {
+                evalBodyRangeBlocked(scene, pt, buf.twinPath, tChunks, tMinX, tMaxX, tMinY, tMaxY,
+                                     scene.twin.size, scene.twin.canFly, k0, maxK - 1, maxK, 0.0f,
+                                     stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid);
+            }
+        }
+        accumulateRolloutSteps(k0, maxK, maxK, stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid, st);
+        return true;
     }
-    sampleRolloutRange(scene, preLasers, clampedPivot + 1, maxK, maxK, allowPickups, st,
-                       abortFirstHardLe, abortLastHardGt, abortAnyWarn, true);
-    return st;
+
+    // Regime D: full range
+    evalBodyRangeBlocked(scene, pt, buf.path, pChunks, pMinX, pMaxX, pMinY, pMaxY,
+                         scene.player.size, scene.player.canFly, k0, maxK, maxK, 0.0f,
+                         stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid);
+    if (scene.hasTwin) {
+        evalBodyRangeBlocked(scene, pt, buf.twinPath, tChunks, tMinX, tMaxX, tMinY, tMaxY,
+                             scene.twin.size, scene.twin.canFly, k0, maxK, maxK, 0.0f,
+                             stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid);
+    }
+    accumulateRolloutSteps(k0, maxK, maxK, stepHardMax, stepWarnMax, stepMinGap, stepAutoAvoid, st);
+    return true;
 }
 
 inline bool hasAnyAutoAvoidCell(const RoomGrid& grid) {
@@ -1039,36 +2191,110 @@ inline PlanResult solveNativePlan(const ThreatScene& scene, int rawWorldDir,
     auto twinFast = scene.hasTwin ? planner_detail::PlayerKinematics::fast(scene.twin) : kinFast;
     auto twinSlow = scene.hasTwin ? planner_detail::PlayerKinematics::slow(scene.twin) : kinSlow;
 
-    bool originUnsafe = !grid.footprintSafe(pl.pos.x, pl.pos.y, pl.size, pl.canFly);
-    bool twinOriginUnsafe = scene.hasTwin &&
-                            !grid.footprintSafe(scene.twin.pos.x, scene.twin.pos.y, scene.twin.size, scene.twin.canFly);
+    planner_detail::GridFastInfo gf;
+    gf.init(grid);
 
-    // Fast path: empty threat scene checks physical terrain blocking only (unless AUTO needs pedestal avoidance)
-    if (scene.bullets.empty() && scene.discs.empty() && scene.lasers.empty() &&
-        (allowPickups || !planner_detail::hasAnyAutoAvoidCell(grid))) {
+    bool originUnsafe = !gf.footprintSafe(grid, pl.pos.x, pl.pos.y, pl.size, pl.canFly);
+    bool twinOriginUnsafe = scene.hasTwin &&
+                            !gf.footprintSafe(grid, scene.twin.pos.x, scene.twin.pos.y, scene.twin.size, scene.twin.canFly);
+    bool hasAutoAvoid = planner_detail::hasAnyAutoAvoidCell(grid);
+
+    // Fast path: empty threat scene checks physical terrain blocking (and quick autoAvoid probe in AUTO mode).
+    if (scene.bullets.empty() && scene.discs.empty() && scene.lasers.empty()) {
         int qSteps = scene.queueDelay30 * 2;
-        int probeK = std::min(BulletTrack::kMaxPts - 1, std::max(maxK, qSteps + 6));
-        Vec2 qVec = candVec(rawWorldDir);
-        for (int d = 1; d < 9; ++d) {
-            Vec2 pos = pl.pos, vel = pl.vel;
-            bool moved = false;
-            Vec2 dVec = candVec(d);
-            for (int k = 1; k <= probeK; ++k) {
-                bool steered = (k > qSteps);
-                bool stepMoved = false;
-                planner_detail::stepPlayer60(grid, pl.size, pl.canFly, originUnsafe,
-                                             steered ? dVec : qVec, kinFast, pos, vel, stepMoved);
-                if (steered && stepMoved) moved = true;
+        bool qZero = (rawWorldDir <= 0 || rawWorldDir >= 9);
+        Vec2 qAccelFast = candVec(rawWorldDir) * kinFast.accel;
+        if (allowPickups || !hasAutoAvoid) {
+            int probeK = std::min(BulletTrack::kMaxPts - 1, std::max(maxK, qSteps + 6));
+            for (int d = 1; d < 9; ++d) {
+                Vec2 pos = pl.pos, vel = pl.vel;
+                bool moved = false;
+                Vec2 dAccel = candVec(d) * kinFast.accel;
+                for (int k = 1; k <= probeK; ++k) {
+                    bool steered = (k > qSteps);
+                    bool stepMoved = false;
+                    planner_detail::stepPlayer60Fast(grid, gf, pl.size, pl.canFly, originUnsafe,
+                                                     steered ? false : qZero, steered ? dAccel : qAccelFast,
+                                                     kinFast, pos, vel, stepMoved);
+                    if (steered && stepMoved) moved = true;
+                }
+                if (!moved) res.blockedMask |= (1 << d);
             }
-            if (!moved) res.blockedMask |= (1 << d);
+            res.danger = false;
+            res.bestDir = -1;
+            return res;
         }
-        res.danger = false;
-        res.bestDir = -1;
-        return res;
+        // AUTO mode with pedestals/mimics but zero combat threats (e.g. Library Room 12.4):
+        // check whether any candidate direction actually touches a kAutoAvoid cell before allocating BFS/rollouts.
+        int qStepsSlow = std::min(maxK, qSteps + kinSlow.extraDelay60);
+        int qStepsFastClamped = std::min(maxK, qSteps);
+        Vec2 qAccelSlow = candVec(rawWorldDir) * kinSlow.accel;
+        Vec2 tQAccelFast = candVec(rawWorldDir) * twinFast.accel;
+        Vec2 tQAccelSlow = candVec(rawWorldDir) * twinSlow.accel;
+        bool anyAutoCrossed = false;
+        int fastBlocked = 0;
+        for (int d = 0; d < 9 && !anyAutoCrossed; ++d) {
+            bool dZero = (d == 0);
+            Vec2 dVec = candVec(d);
+            Vec2 dAF = dVec * kinFast.accel, dAS = dVec * kinSlow.accel;
+            Vec2 pF = pl.pos, vF = pl.vel, pS = pl.pos, vS = pl.vel;
+            bool mF = false, mS = false;
+            Vec2 tpF = scene.twin.pos, tvF = scene.twin.vel, tpS = scene.twin.pos, tvS = scene.twin.vel;
+            bool tmF = false, tmS = false;
+            for (int k = 1; k <= maxK; ++k) {
+                bool stF = (k > qStepsFastClamped), stS = (k > qStepsSlow);
+                bool smF = false, smS = false;
+                planner_detail::stepPlayer60Fast(grid, gf, pl.size, pl.canFly, originUnsafe,
+                                                 stF ? dZero : qZero, stF ? dAF : qAccelFast, kinFast, pF, vF, smF);
+                planner_detail::stepPlayer60Fast(grid, gf, pl.size, pl.canFly, originUnsafe,
+                                                 stS ? dZero : qZero, stS ? dAS : qAccelSlow, kinSlow, pS, vS, smS);
+                if (stF && smF) mF = true;
+                if (stS && smS) mS = true;
+                if (grid.cellAutoAvoid(grid.indexAt(pF.x, pF.y)) ||
+                    grid.cellAutoAvoid(grid.indexAt(pS.x, pS.y))) {
+                    anyAutoCrossed = true;
+                    break;
+                }
+                if (scene.hasTwin) {
+                    planner_detail::stepPlayer60Fast(grid, gf, scene.twin.size, scene.twin.canFly, twinOriginUnsafe,
+                                                     stF ? dZero : qZero, stF ? (dVec * twinFast.accel) : tQAccelFast,
+                                                     twinFast, tpF, tvF, tmF);
+                    planner_detail::stepPlayer60Fast(grid, gf, scene.twin.size, scene.twin.canFly, twinOriginUnsafe,
+                                                     stS ? dZero : qZero, stS ? (dVec * twinSlow.accel) : tQAccelSlow,
+                                                     twinSlow, tpS, tvS, tmS);
+                    if (grid.cellAutoAvoid(grid.indexAt(tpF.x, tpF.y)) ||
+                        grid.cellAutoAvoid(grid.indexAt(tpS.x, tpS.y))) {
+                        anyAutoCrossed = true;
+                        break;
+                    }
+                }
+            }
+            if (!anyAutoCrossed && d > 0) {
+                if (qStepsFastClamped >= maxK) {
+                    Vec2 pp = pF, pv = vF; bool pm = false;
+                    for (int p = 0; p < 2; ++p)
+                        planner_detail::stepPlayer60Fast(grid, gf, pl.size, pl.canFly, originUnsafe, dZero, dAF, kinFast, pp, pv, pm);
+                    mF = pm;
+                }
+                if (qStepsSlow >= maxK) {
+                    Vec2 pp = pS, pv = vS; bool pm = false;
+                    for (int p = 0; p < 2; ++p)
+                        planner_detail::stepPlayer60Fast(grid, gf, pl.size, pl.canFly, originUnsafe, dZero, dAS, kinSlow, pp, pv, pm);
+                    mS = pm;
+                }
+                if (!mF && !mS) fastBlocked |= (1 << d);
+            }
+        }
+        if (!anyAutoCrossed) {
+            res.blockedMask = fastBlocked;
+            res.danger = false;
+            res.bestDir = -1;
+            return res;
+        }
     }
 
-    std::vector<planner_detail::PrecompLaser> preLasers;
-    planner_detail::prepareLasers(scene, maxK, preLasers);
+    planner_detail::PrecompThreats pt;
+    pt.init(scene, maxK, allowPickups, hasAutoAvoid);
     planner_detail::SpaceBfsCache bfsCache;
     bfsCache.init(scene);
 
@@ -1085,12 +2311,12 @@ inline PlanResult solveNativePlan(const ThreatScene& scene, int rawWorldDir,
     bool anyDanger = false;
 
     for (int d = 0; d < 9; ++d) {
-        sFast[d] = planner_detail::simulateStraight(
-            scene, preLasers, d, rawWorldDir, originUnsafe, twinOriginUnsafe,
-            allowPickups, kinFast, twinFast, maxK, pivotsFast, canRecordSnaps);
-        sSlow[d] = planner_detail::simulateStraight(
-            scene, preLasers, d, rawWorldDir, originUnsafe, twinOriginUnsafe,
-            allowPickups, kinSlow, twinSlow, maxK, pivotsSlow, canRecordSnaps);
+        planner_detail::simulateStraight(
+            scene, pt, gf, d, rawWorldDir, originUnsafe, twinOriginUnsafe,
+            kinFast, twinFast, maxK, pivotsFast, canRecordSnaps, sFast[d]);
+        planner_detail::simulateStraight(
+            scene, pt, gf, d, rawWorldDir, originUnsafe, twinOriginUnsafe,
+            kinSlow, twinSlow, maxK, pivotsSlow, canRecordSnaps, sSlow[d]);
         if (d > 0 && !sFast[d].moved && !sSlow[d].moved) {
             res.blockedMask |= (1 << d);
         }
@@ -1143,6 +2369,9 @@ inline PlanResult solveNativePlan(const ThreatScene& scene, int rawWorldDir,
 
     if (needTurnSearch && canRecordSnaps) {
         double bestOverall = bestStraightScore;
+        planner_detail::RolloutState fullFast{}, fullSlow{};
+        planner_detail::TurnPathBuffer turnBuf;
+
         auto searchTurnRange = [&](int dBegin, int dEnd) {
             for (int pIdx = 0; pIdx < 3; ++pIdx) {
                 int pKFast = pivotsFast[pIdx];
@@ -1201,10 +2430,12 @@ inline PlanResult solveNativePlan(const ThreatScene& scene, int rawWorldDir,
 
                     for (int d2 = 0; d2 < 9; ++d2) {
                         if (d2 == d1) continue;
-                        auto fullFast = planner_detail::continueAfterPivotSnap(
-                            scene, preLasers, snFast, pKFast, d2, rawWorldDir,
-                            originUnsafe, twinOriginUnsafe, allowPickups,
-                            kinFast, twinFast, maxK, cutoffK, abortLastGt, abortWarn, maxEndBucket);
+                        if (!planner_detail::continueAfterPivotSnap(
+                                scene, pt, gf, snFast, pKFast, d2,
+                                originUnsafe, twinOriginUnsafe, kinFast, twinFast, maxK,
+                                cutoffK, abortLastGt, abortWarn, maxEndBucket, fullFast, turnBuf)) {
+                            continue;
+                        }
                         if (abortWarn && (fullFast.hasHard || fullFast.hasWarn || fullFast.crossedAutoAvoid)) continue;
                         if (!inside && fullFast.hasHard && cutoffK >= 0 && fullFast.firstHardK <= cutoffK) continue;
                         if (inside && abortLastGt >= 0 && fullFast.hasHard && fullFast.lastHardK > abortLastGt) continue;
@@ -1213,10 +2444,12 @@ inline PlanResult solveNativePlan(const ThreatScene& scene, int rawWorldDir,
                             continue;
                         }
 
-                        auto fullSlow = planner_detail::continueAfterPivotSnap(
-                            scene, preLasers, snSlow, pKSlow, d2, rawWorldDir,
-                            originUnsafe, twinOriginUnsafe, allowPickups,
-                            kinSlow, twinSlow, maxK, cutoffK, abortLastGt, abortWarn, maxEndBucket);
+                        if (!planner_detail::continueAfterPivotSnap(
+                                scene, pt, gf, snSlow, pKSlow, d2,
+                                originUnsafe, twinOriginUnsafe, kinSlow, twinSlow, maxK,
+                                cutoffK, abortLastGt, abortWarn, maxEndBucket, fullSlow, turnBuf)) {
+                            continue;
+                        }
                         if (abortWarn && (fullSlow.hasHard || fullSlow.hasWarn || fullSlow.crossedAutoAvoid)) continue;
                         if (!inside && fullSlow.hasHard && cutoffK >= 0 && fullSlow.firstHardK <= cutoffK) continue;
                         if (inside && abortLastGt >= 0 && fullSlow.hasHard && fullSlow.lastHardK > abortLastGt) continue;

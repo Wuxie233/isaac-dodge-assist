@@ -184,6 +184,16 @@ static Decision fuseNativeDecision(const iad::PlanResult& plan, uint32_t combat,
     return d;
 }
 
+static constexpr DWORD kBridgeStaleMs = 220;
+
+static inline void clearNativeTelemetry(volatile Shared* s, LONG mode = 0) {
+    if (!s || !hasV2View() || s->extMagic != Shared::kExtMagic) return;
+    InterlockedExchange(&s->nativeMode, mode);
+    InterlockedExchange(&s->nativeThreats, 0);
+    InterlockedExchange(&s->nativeMicros, 0);
+    InterlockedExchange(&s->nativeChosen, 0);
+}
+
 static Decision evaluate(void* device, DWORD now, const float* raw) {
     const Decision none{-1,-1};
     DWORD pid=0; GetWindowThreadProcessId(GetForegroundWindow(), &pid);
@@ -197,12 +207,18 @@ static Decision evaluate(void* device, DWORD now, const float* raw) {
     bool v2View = hasV2View();
     memcpy(&sample, shared, v2View ? sizeof(Shared) : 104u);
     ReleaseMutex(mutexHandle);
-    if(sample.magic!=Shared::kMagic || sample.version!=1 || sample.pid!=pid || !sample.active || now-sample.stamp>120) return none;
-    int previous=(lastDevice==device && now-lastAt<=120) ? lastChoice : -1;
+    if (sample.magic != Shared::kMagic || sample.version != 1 || sample.pid != pid ||
+        !sample.active || now - sample.stamp > kBridgeStaleMs) {
+        if (v2View && sample.magic == Shared::kMagic && sample.version == 1 && sample.pid == pid) {
+            clearNativeTelemetry(shared, 0);
+        }
+        return none;
+    }
+    int previous = (lastDevice == device && now - lastAt <= kBridgeStaleMs) ? lastChoice : -1;
 
     if (v2View && sample.extMagic == Shared::kExtMagic) {
         if ((sample.luaFlags & Shared::kFlagPaused) != 0) {
-            if (shared->active) InterlockedExchange(&shared->nativeMode, 0);
+            if (shared->active) clearNativeTelemetry(shared, 0);
             return none;
         }
         bool canNative = peMatched && exeBase != 0 &&
@@ -241,11 +257,11 @@ static Decision evaluate(void* device, DWORD now, const float* raw) {
                 return d;
             }
             if (cachedScene.paused || cachedScene.passthrough) {
-                if (shared->active) InterlockedExchange(&shared->nativeMode, 0);
+                if (shared->active) clearNativeTelemetry(shared, 0);
                 return none;
             }
         }
-        if (shared->active) InterlockedExchange(&shared->nativeMode, 2);
+        if (shared->active) clearNativeTelemetry(shared, 2);
     }
 
     return decide(sample.risk,sample.blocked,sample.combat,raw,previous);
@@ -287,9 +303,10 @@ static Poll choose(void* device) {
 static bool engaged() {
     if(!shared) return false;
     const volatile Shared* s=shared;
-    bool ok = s->magic==Shared::kMagic && s->version==1 && s->active && GetTickCount()-s->stamp<=120;
-    if(!ok && hasV2View() && s->extMagic==Shared::kExtMagic && s->nativeMode!=0) {
-        InterlockedExchange(&shared->nativeMode, 0);
+    bool ok = s->magic==Shared::kMagic && s->version==1 && s->active && GetTickCount()-s->stamp<=kBridgeStaleMs;
+    if(!ok && hasV2View() && s->extMagic==Shared::kExtMagic &&
+       (s->nativeMode!=0 || s->nativeThreats!=0 || s->nativeMicros!=0 || s->nativeChosen!=0)) {
+        clearNativeTelemetry(shared, 0);
     }
     return ok;
 }

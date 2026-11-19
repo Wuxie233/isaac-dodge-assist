@@ -44,7 +44,7 @@ internal static class NativeHost
     static MemoryMappedViewAccessor view;
     static Mutex ipcLock;
     static int gamePid;
-    static volatile bool enabled=true, running=true;
+    static volatile bool enabled=true, running=true, uiStarted=false;
     // Reader thread and UI share view/log state under this lock.
     static readonly object sync=new object();
     // Isaac.GetTime() is QueryPerformanceCounter milliseconds (checked on the
@@ -78,10 +78,11 @@ internal static class NativeHost
     }
     static void Publish(bool active, double[] risk, int blocked, uint combat = 0, NativeMeta meta = default(NativeMeta), int horizonMs = 450)
     {
+        if(view==null || ipcLock==null)return;
         bool acquired=false;
         try {
             try { acquired=ipcLock.WaitOne(50); } catch(AbandonedMutexException){acquired=true;}
-            if(!acquired)return;
+            if(!acquired || view==null)return;
             view.Write(OffsetMagic,SharedMagic);view.Write(OffsetVersion,1u);view.Write(OffsetPid,(uint)gamePid);
             view.Write(OffsetStamp,unchecked((uint)Environment.TickCount));view.Write(OffsetActive,active?1u:0u);
             view.Write(OffsetBlocked,(uint)blocked);view.Write(OffsetSequence,++sequence);view.Write(OffsetCombat,active?combat:0u);
@@ -91,7 +92,7 @@ internal static class NativeHost
             view.Write(OffsetLuaFlags,(active && meta.Present)?meta.Flags:0u);
             view.Write(OffsetHorizonMs,horizonMs);
             view.Write(OffsetQueueDelay,meta.Present?meta.QueueDelay:0);
-            if(!active)view.Write(OffsetNativeMode,0);
+            if(!active){view.Write(OffsetNativeMode,0);view.Write(OffsetNativeThreats,0);view.Write(OffsetNativeMicros,0);view.Write(OffsetNativeChosen,0);}
         } finally {if(acquired)ipcLock.ReleaseMutex();}
     }
     static void ReadLog(string path)
@@ -146,13 +147,13 @@ internal static class NativeHost
                     if(view==null)return;
                     try{
                         ReadLog((string)path);
-                        if(clock.ElapsedMilliseconds-received>120){ResetPairing();Publish(false,null,0);}
+                        if(clock.ElapsedMilliseconds-received>220){ResetPairing();Publish(false,null,0);}
                     }catch(IOException){ResetPairing();Publish(false,null,0);if(log!=null)log.Dispose();log=null;note="等待游戏日志";}
                 }
                 Thread.Sleep(1);
             }
         }catch(Exception e){lock(sync){note="读取线程停止："+e.Message;if(view!=null)Publish(false,null,0);}}
-        finally{timeEndPeriod(1);}
+        finally{lock(sync){if(log!=null){try{log.Dispose();}catch(Exception){}log=null;}}timeEndPeriod(1);}
     }
     static void ArchiveLoop(object start)
     {
@@ -188,8 +189,8 @@ internal static class NativeHost
         bool created;
         using(var singleton=new Mutex(true,"Local\\IsaacDodgeAssist",out created)){
             if(!created){MessageBox.Show("请先关闭旧的模拟按键辅助程序，再启动原生版。");return;}
-            try { Run(); } catch(Exception e){MessageBox.Show(e.Message,"原生躲避未启动");}
-            finally {if(view!=null){Publish(false,null,0);view.Dispose();}if(log!=null)log.Dispose();if(ipcLock!=null)ipcLock.Dispose();}
+            try { Run(); } catch(Exception e){if(!uiStarted)MessageBox.Show(e.Message,"原生躲避未启动");}
+            finally {lock(sync){if(view!=null){try{Publish(false,null,0);}catch(Exception){}try{view.Dispose();}catch(Exception){}view=null;}if(log!=null){try{log.Dispose();}catch(Exception){}log=null;}}if(ipcLock!=null){try{ipcLock.Dispose();}catch(Exception){}ipcLock=null;}}
         }
     }
     static void Run()
@@ -249,12 +250,37 @@ internal static class NativeHost
                         label.Text=text;
                         if(status<0){enabled=false;toggle.Checked=false;lock(sync)note="Hook校验失败："+status;}
                         if(clock.ElapsedMilliseconds-lastStats>=30000){lastStats=clock.ElapsedMilliseconds;WriteStats("interval");}
-                    }catch(Exception e){lock(sync)Publish(false,null,0);timer.Stop();label.Text="已停止："+e.Message;}
+                    }catch(Exception e){
+                        bool exited=false;try{exited=game.HasExited;}catch(Exception){exited=true;}
+                        if(exited){form.Close();return;}
+                        lock(sync)Publish(false,null,0);timer.Stop();label.Text="已停止："+e.Message;
+                    }
                 };
-                form.FormClosing+=delegate{timer.Stop();running=false;reader.Join(500);WriteStats("exit");lock(sync)Publish(false,null,0);archiver.Join(5000);};
-                reader.Start(path);archiver.Start(new object[]{path,launch});timer.Start();Application.Run(form);timer.Dispose();
-                running=false;reader.Join(500);archiver.Join(5000);
-                lock(sync){view.Dispose();view=null;}
+                bool closing=false;
+                Action shutdown=delegate{
+                    if(closing)return;
+                    closing=true;
+                    try{timer.Stop();}catch(Exception){}
+                    running=false;
+                    try{reader.Join(500);}catch(Exception){}
+                    WriteStats("exit");
+                    lock(sync)Publish(false,null,0);
+                    try{archiver.Join(5000);}catch(Exception){}
+                };
+                form.FormClosing+=delegate{shutdown();};
+                form.FormClosed+=delegate{shutdown();Application.ExitThread();};
+                reader.Start(path);archiver.Start(new object[]{path,launch});timer.Start();
+                try{
+                    uiStarted=true;
+                    Application.Run(form);
+                }finally{
+                    shutdown();
+                    try{timer.Dispose();}catch(Exception){}
+                    lock(sync){
+                        if(log!=null){try{log.Dispose();}catch(Exception){}log=null;}
+                        if(view!=null){try{Publish(false,null,0);}catch(Exception){}try{view.Dispose();}catch(Exception){}view=null;}
+                    }
+                }
             }
         }
     }

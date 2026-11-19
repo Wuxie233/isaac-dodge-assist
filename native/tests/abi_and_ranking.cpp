@@ -6,6 +6,8 @@ static float mutableValue[8];
 static bool mutablePressed[8];
 static float __attribute__((thiscall)) changingValue(void*,int action) {return mutableValue[action];}
 static bool __attribute__((thiscall)) changingPressed(void*,int action) {return mutablePressed[action];}
+template <typename Dst, typename Src>
+static Dst abiCast(Src fn) {return reinterpret_cast<Dst>(reinterpret_cast<void(*)()>(fn));}
 int main(){
     double safe[9]={};assert(rank(safe,0,0,0,0)==-1);
     double danger[9]={100,0,90,100,100,100,100,100,100};
@@ -66,8 +68,8 @@ int main(){
     // function live, with no 3ms snapshot in between, and clears nativeMode to 0.
     Shared idleShared{};shared=&idleShared;
     idleShared.extMagic=Shared::kExtMagic;idleShared.nativeMode=1;
-    ValueFn volatile liveValue=reinterpret_cast<ValueFn>(valueHook);
-    BoolFn volatile livePressed=reinterpret_cast<BoolFn>(pressedHook);
+    ValueFn volatile liveValue=abiCast<ValueFn>(valueHook);
+    BoolFn volatile livePressed=abiCast<BoolFn>(pressedHook);
     originalValue=changingValue;originalPressed=changingPressed;
     mutableValue[0]=0.25f;mutablePressed[0]=false;
     assert(liveValue(&rawBase,0)==0.25f && !livePressed(&rawBase,0));
@@ -85,8 +87,8 @@ int main(){
     assert(liveValue(&rawBase,0)==0.75f && idleShared.nativeMode==0);
     lastPollValid=false;
     Shared sample{};shared=&sample;originalValue=fakeValue;originalPressed=fakePressed;
-    ValueFn volatile value=reinterpret_cast<ValueFn>(valueHook);
-    BoolFn volatile pressed=reinterpret_cast<BoolFn>(pressedHook);
+    ValueFn volatile value=abiCast<ValueFn>(valueHook);
+    BoolFn volatile pressed=abiCast<BoolFn>(pressedHook);
     float base=0.125f;uintptr_t before,after;
     asm volatile("mov %%esp,%0":"=r"(before));
     for(int i=0;i<200000;++i){int a=i%32;assert(value(&base,a)==base+a);assert(pressed(&base,a)==(a==2));}

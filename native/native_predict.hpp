@@ -307,6 +307,33 @@ inline bool strContainsCI(const char* s, const char* needle) {
     return false;
 }
 
+inline uintptr_t sanitizePtr32(uint32_t raw) {
+    return (raw >= 0x10000u) ? static_cast<uintptr_t>(raw) : 0;
+}
+
+inline bool readEntityLifeState(const MemReader& mem, uintptr_t entAddr,
+                                uint64_t& flagsOut, uint8_t& existsOut,
+                                uint8_t& deadOut, uint8_t& interpOut) {
+    static_assert(Offsets::Entity::kExists == Offsets::Entity::kFlags + 10u &&
+                  Offsets::Entity::kDead == Offsets::Entity::kFlags + 11u &&
+                  Offsets::Entity::kInterpolated == Offsets::Entity::kFlags + 13u,
+                  "Entity life block layout");
+    uint8_t lifeBuf[14]{};
+    if (mem.readBytes(entAddr + Offsets::Entity::kFlags, lifeBuf, sizeof(lifeBuf))) {
+        std::memcpy(&flagsOut, lifeBuf, sizeof(flagsOut));
+        existsOut = lifeBuf[10];
+        deadOut = lifeBuf[11];
+        interpOut = lifeBuf[13];
+        return true;
+    }
+    if (!mem.read(entAddr + Offsets::Entity::kExists, existsOut)) return false;
+    if (!existsOut) { deadOut = 0; interpOut = 0; flagsOut = 0; return true; }
+    mem.read(entAddr + Offsets::Entity::kDead, deadOut);
+    mem.read(entAddr + Offsets::Entity::kInterpolated, interpOut);
+    mem.read(entAddr + Offsets::Entity::kFlags, flagsOut);
+    return true;
+}
+
 inline bool readSpriteState(const MemReader& mem, uintptr_t spriteAddr,
                             char* animBuf, size_t animCap,
                             float& frameOut, bool& playingOut, bool& flipXOut) {
@@ -315,25 +342,49 @@ inline bool readSpriteState(const MemReader& mem, uintptr_t spriteAddr,
     playingOut = false;
     flipXOut = false;
     if (!spriteAddr) return false;
-    uintptr_t animData = mem.readPtr32(spriteAddr + Offsets::Sprite::kAnimData);
+    static_assert(Offsets::Sprite::kFrame == Offsets::Sprite::kAnimData + 12u &&
+                  Offsets::Sprite::kPlaying == Offsets::Sprite::kAnimData + 16u,
+                  "Sprite header layout");
+    uint8_t sprHdr[17]{};
+    if (!mem.readBytes(spriteAddr + Offsets::Sprite::kAnimData, sprHdr, sizeof(sprHdr))) {
+        uintptr_t animData = mem.readPtr32(spriteAddr + Offsets::Sprite::kAnimData);
+        if (!animData) return false;
+        if (!mem.readMsvcString(animData, animBuf, animCap)) return false;
+        mem.read(spriteAddr + Offsets::Sprite::kFrame, frameOut);
+        uint8_t pl = 0, fx = 0;
+        mem.read(spriteAddr + Offsets::Sprite::kPlaying, pl);
+        mem.read(spriteAddr + Offsets::Sprite::kFlipX, fx);
+        playingOut = (pl != 0);
+        flipXOut = (fx != 0);
+        return true;
+    }
+    uint32_t rawAnimPtr = 0;
+    std::memcpy(&rawAnimPtr, sprHdr, 4);
+    uintptr_t animData = sanitizePtr32(rawAnimPtr);
     if (!animData) return false;
     if (!mem.readMsvcString(animData, animBuf, animCap)) return false;
-    mem.read(spriteAddr + Offsets::Sprite::kFrame, frameOut);
-    uint8_t pl = 0, fx = 0;
-    mem.read(spriteAddr + Offsets::Sprite::kPlaying, pl);
+    std::memcpy(&frameOut, sprHdr + 12, sizeof(float));
+    playingOut = (sprHdr[16] != 0);
+    uint8_t fx = 0;
     mem.read(spriteAddr + Offsets::Sprite::kFlipX, fx);
-    playingOut = (pl != 0);
     flipXOut = (fx != 0);
     return true;
 }
 
-// Read un-interpolated 30Hz logic position of a non-player entity.
-// In Online Co-op (0x954cd0.c:213), NetManager polls input before clearing kInterpolated,
-// so kPos holds kInterpPrevPos + 0.5*vel while kInterpPrevPos holds the true 30Hz logic position.
-inline bool readLogicPos(const MemReader& mem, uintptr_t entAddr, Vec2& outPos, bool& wasInterp) {
-    uint8_t interp = 0;
-    mem.read(entAddr + Offsets::Entity::kInterpolated, interp);
-    wasInterp = (interp != 0);
+inline bool readLogicPosFast(const MemReader& mem, uintptr_t entAddr, bool wasInterp, Vec2& outPos) {
+    static_assert(Offsets::Entity::kInterpPrevPos == Offsets::Entity::kPos + 8u, "Entity pos pair layout");
+    Vec2 pair[2]{};
+    if (mem.readBytes(entAddr + Offsets::Entity::kPos, pair, sizeof(pair))) {
+        if (wasInterp && std::isfinite(pair[1].x) && std::isfinite(pair[1].y)) {
+            outPos = pair[1];
+            return true;
+        }
+        if (std::isfinite(pair[0].x) && std::isfinite(pair[0].y)) {
+            outPos = pair[0];
+            return true;
+        }
+        return false;
+    }
     if (wasInterp) {
         Vec2 prev{};
         if (mem.read(entAddr + Offsets::Entity::kInterpPrevPos, prev) &&
@@ -344,6 +395,16 @@ inline bool readLogicPos(const MemReader& mem, uintptr_t entAddr, Vec2& outPos, 
     }
     return mem.read(entAddr + Offsets::Entity::kPos, outPos) &&
            std::isfinite(outPos.x) && std::isfinite(outPos.y);
+}
+
+// Read un-interpolated 30Hz logic position of a non-player entity.
+// In Online Co-op (0x954cd0.c:213), NetManager polls input before clearing kInterpolated,
+// so kPos holds kInterpPrevPos + 0.5*vel while kInterpPrevPos holds the true 30Hz logic position.
+inline bool readLogicPos(const MemReader& mem, uintptr_t entAddr, Vec2& outPos, bool& wasInterp) {
+    uint8_t interp = 0;
+    mem.read(entAddr + Offsets::Entity::kInterpolated, interp);
+    wasInterp = (interp != 0);
+    return readLogicPosFast(mem, entAddr, wasInterp, outPos);
 }
 
 inline bool unsupportedPlayerType(int playerType) {
@@ -387,29 +448,83 @@ inline bool isActiveEnemyRaw(int type, int variant, uint8_t dead, uint64_t flags
     return true;
 }
 
+struct OwnedMemo {
+    std::array<uintptr_t, 16> unownedRoots{};
+    int count = 0;
+
+    bool hasUnowned(uintptr_t addr) const {
+        for (int i = 0; i < count; ++i) {
+            if (unownedRoots[i] == addr) return true;
+        }
+        return false;
+    }
+
+    void addUnowned(uintptr_t addr) {
+        if (!addr || count >= static_cast<int>(unownedRoots.size()) || hasUnowned(addr)) return;
+        unownedRoots[count++] = addr;
+    }
+};
+
 // Exact parity with core.lua:240-258 playerOwned(entity), supporting familiars (Type 3),
 // SpawnerType 1/3, Deathmatch Familiar::Player (+0x410), shared-controller twins (Jacob & Esau),
 // and walking BOTH Parent and SpawnerEntity without falsely trusting FLAG_CHARMED.
-inline bool isPlayerOwned(const MemReader& mem, uintptr_t entAddr,
-                          bool deathmatch, uint32_t boundSeed, int myCtrlIdx) {
+inline bool isPlayerOwnedFast(const MemReader& mem, uintptr_t entAddr,
+                              int eType, int eSpawnerType, uint64_t eFlags,
+                              bool deathmatch, uint32_t boundSeed, int myCtrlIdx,
+                              OwnedMemo* memo = nullptr) {
     if (!entAddr) return false;
+    if (eFlags & IsaacEnums::kEntFlagFriendly) return true;
+    if (!deathmatch && (eType == IsaacEnums::kEntPlayer || eType == IsaacEnums::kEntFamiliar ||
+                        eSpawnerType == IsaacEnums::kEntPlayer || eSpawnerType == IsaacEnums::kEntFamiliar)) {
+        return true;
+    }
+
+    if (deathmatch && eType == IsaacEnums::kEntFamiliar) {
+        uintptr_t owner = mem.readPtr32(entAddr + Offsets::Familiar::kPlayer);
+        if (isOurSidePlayer(mem, owner, boundSeed, myCtrlIdx)) return true;
+    }
+
+    static_assert(Offsets::Entity::kSpawnerEntity == Offsets::Entity::kParent + 12u, "Entity ptr link layout");
+    uint32_t rootLinks[4]{};
+    uintptr_t p0 = 0, p1 = 0;
+    if (mem.readBytes(entAddr + Offsets::Entity::kParent, rootLinks, sizeof(rootLinks))) {
+        p0 = sanitizePtr32(rootLinks[0]);
+        p1 = sanitizePtr32(rootLinks[3]);
+    } else {
+        p0 = mem.readPtr32(entAddr + Offsets::Entity::kParent);
+        p1 = mem.readPtr32(entAddr + Offsets::Entity::kSpawnerEntity);
+    }
+    if (!p0 && !p1) return false;
+    if (memo && (!p0 || memo->hasUnowned(p0)) && (!p1 || memo->hasUnowned(p1))) {
+        return false;
+    }
+
     std::array<uintptr_t, 12> queue{};
     int head = 0, tail = 0;
     auto pushUnique = [&](uintptr_t p) {
         if (!p || tail >= static_cast<int>(queue.size())) return;
+        if (memo && memo->hasUnowned(p)) return;
         for (int i = 0; i < tail; ++i) {
             if (queue[i] == p) return;
         }
         queue[tail++] = p;
     };
-    pushUnique(entAddr);
+    pushUnique(p0);
+    pushUnique(p1);
 
+    static_assert(Offsets::Entity::kVariant == Offsets::Entity::kType + 4u &&
+                  Offsets::Entity::kSubType == Offsets::Entity::kType + 8u &&
+                  Offsets::Entity::kSpawnerType == Offsets::Entity::kType + 12u,
+                  "Entity header block layout");
     while (head < tail) {
         uintptr_t cur = queue[head++];
-        int t = 0, spawnerType = 0;
+        int32_t hdr[4]{};
+        if (!mem.readBytes(cur + Offsets::Entity::kType, hdr, sizeof(hdr))) {
+            if (!mem.read(cur + Offsets::Entity::kType, hdr[0])) continue;
+            mem.read(cur + Offsets::Entity::kSpawnerType, hdr[3]);
+        }
+        int t = hdr[0], spawnerType = hdr[3];
         uint64_t flags = 0;
-        if (!mem.read(cur + Offsets::Entity::kType, t)) continue;
-        mem.read(cur + Offsets::Entity::kSpawnerType, spawnerType);
         mem.read(cur + Offsets::Entity::kFlags, flags);
 
         if (flags & IsaacEnums::kEntFlagFriendly) return true;
@@ -428,10 +543,34 @@ inline bool isPlayerOwned(const MemReader& mem, uintptr_t entAddr,
             }
         }
 
-        pushUnique(mem.readPtr32(cur + Offsets::Entity::kParent));
-        pushUnique(mem.readPtr32(cur + Offsets::Entity::kSpawnerEntity));
+        uint32_t curLinks[4]{};
+        if (mem.readBytes(cur + Offsets::Entity::kParent, curLinks, sizeof(curLinks))) {
+            pushUnique(sanitizePtr32(curLinks[0]));
+            pushUnique(sanitizePtr32(curLinks[3]));
+        } else {
+            pushUnique(mem.readPtr32(cur + Offsets::Entity::kParent));
+            pushUnique(mem.readPtr32(cur + Offsets::Entity::kSpawnerEntity));
+        }
+    }
+
+    if (memo && tail < static_cast<int>(queue.size())) {
+        if (p0) memo->addUnowned(p0);
+        if (p1) memo->addUnowned(p1);
     }
     return false;
+}
+
+inline bool isPlayerOwned(const MemReader& mem, uintptr_t entAddr,
+                          bool deathmatch, uint32_t boundSeed, int myCtrlIdx) {
+    if (!entAddr) return false;
+    int32_t hdr[4]{};
+    if (!mem.readBytes(entAddr + Offsets::Entity::kType, hdr, sizeof(hdr))) {
+        if (!mem.read(entAddr + Offsets::Entity::kType, hdr[0])) return false;
+        mem.read(entAddr + Offsets::Entity::kSpawnerType, hdr[3]);
+    }
+    uint64_t flags = 0;
+    mem.read(entAddr + Offsets::Entity::kFlags, flags);
+    return isPlayerOwnedFast(mem, entAddr, hdr[0], hdr[3], flags, deathmatch, boundSeed, myCtrlIdx);
 }
 
 inline bool isHarmlessVisualEffect(int variant) {
@@ -807,44 +946,75 @@ inline void simulateBulletCommon(Vec2 pos, Vec2 vel, float size, float timeScale
     }
 }
 
-inline void simulateProjectile(const MemReader& mem, uintptr_t entAddr, Vec2 ePos,
-                               const ThreatScene& scene, float horizonUpdates,
-                               int steps60, BulletTrack& track, std::vector<DiscHazard>& discs) {
-    Vec2 vel{};
-    float size = 4.0f, timeScale = 1.0f, prevAge = 0.0f, age = 0.0f;
-    int spawnerType = 0, gridColl = 3;
-    mem.read(entAddr + Offsets::Entity::kSpawnerType, spawnerType);
-    mem.read(entAddr + Offsets::Entity::kGridColl, gridColl);
-    mem.read(entAddr + Offsets::Entity::kVel, vel);
-    mem.read(entAddr + Offsets::Entity::kSize, size);
-    mem.read(entAddr + Offsets::Entity::kTimeScale, timeScale);
-    mem.read(entAddr + Offsets::Entity::kPrevAgeFloat, prevAge);
-    mem.read(entAddr + Offsets::Entity::kAgeFloat, age);
+inline void simulateProjectilePreloaded(const MemReader& mem, uintptr_t entAddr, Vec2 ePos, Vec2 vel,
+                                        float size, int spawnerType, int gridColl,
+                                        const ThreatScene& scene, float horizonUpdates,
+                                        int steps60, BulletTrack& track, std::vector<DiscHazard>& discs) {
     if (!std::isfinite(vel.x) || !std::isfinite(vel.y)) return;
-    timeScale = std::max(0.1f, std::min(2.5f, std::isfinite(timeScale) ? timeScale : 1.0f));
+    static_assert(Offsets::Entity::kPrevAgeFloat == Offsets::Entity::kTimeScale + 4u &&
+                  Offsets::Entity::kAgeFloat == Offsets::Entity::kTimeScale + 8u,
+                  "Entity age block");
+    float ageBlock[3] = {1.0f, 0.0f, 0.0f};
+    if (!mem.readBytes(entAddr + Offsets::Entity::kTimeScale, ageBlock, sizeof(ageBlock))) {
+        mem.read(entAddr + Offsets::Entity::kTimeScale, ageBlock[0]);
+        mem.read(entAddr + Offsets::Entity::kPrevAgeFloat, ageBlock[1]);
+        mem.read(entAddr + Offsets::Entity::kAgeFloat, ageBlock[2]);
+    }
+    float timeScale = std::max(0.1f, std::min(2.5f, std::isfinite(ageBlock[0]) ? ageBlock[0] : 1.0f));
+    float prevAge = ageBlock[1], age = ageBlock[2];
 
+    static_assert(Offsets::Projectile::kFallingSpeed == Offsets::Projectile::kHeight + 4u &&
+                  Offsets::Projectile::kFallingAccel == Offsets::Projectile::kHeight + 8u &&
+                  Offsets::Projectile::kHomingStrength == Offsets::Projectile::kHeight + 20u &&
+                  Offsets::Projectile::kCurvingStrength == Offsets::Projectile::kHeight + 24u &&
+                  Offsets::Projectile::kAcceleration == Offsets::Projectile::kHeight + 28u &&
+                  Offsets::Projectile::kFlags == Offsets::Projectile::kHeight + 40u &&
+                  Offsets::Projectile::kWiggleOffset == Offsets::Projectile::kHeight + 56u &&
+                  Offsets::Projectile::kChangeFlags == Offsets::Projectile::kHeight + 64u &&
+                  Offsets::Projectile::kChangeVelocity == Offsets::Projectile::kHeight + 72u &&
+                  Offsets::Projectile::kChangeTimeout == Offsets::Projectile::kHeight + 76u,
+                  "Projectile block layout");
     float height = -23.0f, fallSpeed = 0.0f, fallAccel = 0.0f;
     float homing = 0.0f, curving = 0.0f, accel = 1.0f, changeVel = 0.0f;
     uint64_t flags = 0, changeFlags = 0;
     int32_t wiggleOff = 0, changeTimeout = 0;
-    mem.read(entAddr + Offsets::Projectile::kHeight, height);
-    mem.read(entAddr + Offsets::Projectile::kFallingSpeed, fallSpeed);
-    mem.read(entAddr + Offsets::Projectile::kFallingAccel, fallAccel);
-    mem.read(entAddr + Offsets::Projectile::kHomingStrength, homing);
-    mem.read(entAddr + Offsets::Projectile::kCurvingStrength, curving);
-    mem.read(entAddr + Offsets::Projectile::kAcceleration, accel);
-    mem.read(entAddr + Offsets::Projectile::kFlags, flags);
-    mem.read(entAddr + Offsets::Projectile::kWiggleOffset, wiggleOff);
-    mem.read(entAddr + Offsets::Projectile::kChangeFlags, changeFlags);
-    mem.read(entAddr + Offsets::Projectile::kChangeVelocity, changeVel);
-    mem.read(entAddr + Offsets::Projectile::kChangeTimeout, changeTimeout);
+    uint8_t pBuf[80]{};
+    if (mem.readBytes(entAddr + Offsets::Projectile::kHeight, pBuf, sizeof(pBuf))) {
+        std::memcpy(&height, pBuf + 0, 4);
+        std::memcpy(&fallSpeed, pBuf + 4, 4);
+        std::memcpy(&fallAccel, pBuf + 8, 4);
+        std::memcpy(&homing, pBuf + 20, 4);
+        std::memcpy(&curving, pBuf + 24, 4);
+        std::memcpy(&accel, pBuf + 28, 4);
+        std::memcpy(&flags, pBuf + 40, 8);
+        std::memcpy(&wiggleOff, pBuf + 56, 4);
+        std::memcpy(&changeFlags, pBuf + 64, 8);
+        std::memcpy(&changeVel, pBuf + 72, 4);
+        std::memcpy(&changeTimeout, pBuf + 76, 4);
+    } else {
+        mem.read(entAddr + Offsets::Projectile::kHeight, height);
+        mem.read(entAddr + Offsets::Projectile::kFallingSpeed, fallSpeed);
+        mem.read(entAddr + Offsets::Projectile::kFallingAccel, fallAccel);
+        mem.read(entAddr + Offsets::Projectile::kHomingStrength, homing);
+        mem.read(entAddr + Offsets::Projectile::kCurvingStrength, curving);
+        mem.read(entAddr + Offsets::Projectile::kAcceleration, accel);
+        mem.read(entAddr + Offsets::Projectile::kFlags, flags);
+        mem.read(entAddr + Offsets::Projectile::kWiggleOffset, wiggleOff);
+        mem.read(entAddr + Offsets::Projectile::kChangeFlags, changeFlags);
+        mem.read(entAddr + Offsets::Projectile::kChangeVelocity, changeVel);
+        mem.read(entAddr + Offsets::Projectile::kChangeTimeout, changeTimeout);
+    }
 
     Vec2 targetPos = scene.player.pos;
-    uintptr_t targetPtr = mem.readPtr32(entAddr + Offsets::Entity::kTarget);
-    if (targetPtr) {
-        Vec2 tp{};
-        bool dummy = false;
-        if (readLogicPos(mem, targetPtr, tp, dummy)) targetPos = tp;
+    constexpr uint64_t kNeedTargetMask =
+        IsaacEnums::kProjSmart | IsaacEnums::kProjSmartPerfect | IsaacEnums::kProjTurnHorizontal;
+    if ((flags & kNeedTargetMask) != 0 || ((flags & IsaacEnums::kProjChangeFlags) != 0 && (changeFlags & kNeedTargetMask) != 0)) {
+        uintptr_t targetPtr = mem.readPtr32(entAddr + Offsets::Entity::kTarget);
+        if (targetPtr) {
+            Vec2 tp{};
+            bool dummy = false;
+            if (readLogicPos(mem, targetPtr, tp, dummy)) targetPos = tp;
+        }
     }
 
     simulateBulletCommon(ePos, vel, size, timeScale, prevAge, age, spawnerType, gridColl,
@@ -853,20 +1023,139 @@ inline void simulateProjectile(const MemReader& mem, uintptr_t entAddr, Vec2 ePo
                          targetPos, scene, horizonUpdates, steps60, track, discs);
 }
 
-inline void appendNpcIntentWarnings(const MemReader& mem, uintptr_t entAddr, Vec2 pos, Vec2 vel,
+inline void simulateProjectile(const MemReader& mem, uintptr_t entAddr, Vec2 ePos,
+                               const ThreatScene& scene, float horizonUpdates,
+                               int steps60, BulletTrack& track, std::vector<DiscHazard>& discs) {
+    Vec2 vel{};
+    float size = 4.0f;
+    int spawnerType = 0, gridColl = 3;
+    mem.read(entAddr + Offsets::Entity::kSpawnerType, spawnerType);
+    mem.read(entAddr + Offsets::Entity::kGridColl, gridColl);
+    mem.read(entAddr + Offsets::Entity::kVel, vel);
+    mem.read(entAddr + Offsets::Entity::kSize, size);
+    simulateProjectilePreloaded(mem, entAddr, ePos, vel, size, spawnerType, gridColl,
+                                scene, horizonUpdates, steps60, track, discs);
+}
+
+// Chubber boomerang grub (39.22.0, Parent=39.2.0, verified 0x52c2f0..0x52c50c):
+// StateFrame = 0..42 (dies >42), frac = 1 - sf/21; outbound (frac >= 0 or !parent): vel = V1 * frac;
+// return leg (frac < 0 && parent): pulls to Parent via max(0, d-20)/d * toParent / max(1, 43-sf) * (-frac).
+inline void simulateChubberWorm(const MemReader& mem, uintptr_t entAddr, Vec2 ePos, Vec2 eVel, float eSize,
+                                const ThreatScene& scene, int steps60, BulletTrack& track) {
+    int32_t sfRaw = 0;
+    Vec2 v1{};
+    mem.read(entAddr + Offsets::NPC::kStateFrame, sfRaw);
+    mem.read(entAddr + Offsets::NPC::kV1, v1);
+
+    uint32_t links[4]{};
+    uintptr_t parentAddr = 0;
+    if (mem.readBytes(entAddr + Offsets::Entity::kParent, links, sizeof(links))) {
+        uintptr_t p = sanitizePtr32(links[0]);
+        parentAddr = p ? p : sanitizePtr32(links[3]);
+    } else {
+        parentAddr = mem.readPtr32(entAddr + Offsets::Entity::kParent);
+        if (!parentAddr) parentAddr = mem.readPtr32(entAddr + Offsets::Entity::kSpawnerEntity);
+    }
+
+    bool hasParent = false;
+    Vec2 parentPos{}, parentVel{};
+    if (parentAddr) {
+        uint64_t pFlags = 0;
+        uint8_t pEx = 0, pDead = 0, pInterp = 0;
+        if (readEntityLifeState(mem, parentAddr, pFlags, pEx, pDead, pInterp) &&
+            pEx && !pDead && readLogicPosFast(mem, parentAddr, pInterp != 0, parentPos)) {
+            hasParent = true;
+            mem.read(parentAddr + Offsets::Entity::kVel, parentVel);
+            if (!std::isfinite(parentVel.x) || !std::isfinite(parentVel.y)) parentVel = {0.0f, 0.0f};
+        }
+    }
+
+    int sf = std::max(0, static_cast<int>(sfRaw));
+    if (hasParent && sf == 0) {
+        Vec2 fromP = ePos - parentPos;
+        if (fromP.lengthSq() > 400.0f && (fromP.x * eVel.x + fromP.y * eVel.y) < 0.0f) {
+            sf = 32;
+        }
+    }
+    if (!std::isfinite(v1.x) || !std::isfinite(v1.y) || v1.lengthSq() < 1e-6f) {
+        if (std::isfinite(eVel.x) && std::isfinite(eVel.y) && eVel.lengthSq() > 1e-4f) {
+            float f0 = 1.0f - static_cast<float>(sf) / 21.0f;
+            if ((!hasParent && std::abs(f0) > 0.04f) || (sf <= 20 && f0 > 0.04f)) {
+                v1 = eVel * (1.0f / f0);
+            } else {
+                v1 = eVel;
+            }
+        } else {
+            v1 = {0.0f, 0.0f};
+        }
+    }
+    if (sf > 42) return;
+
+    const int clampedSteps = std::min(steps60, BulletTrack::kMaxPts - 1);
+    float simSf = static_cast<float>(sf);
+    Vec2 curPos = ePos;
+    Vec2 curParentPos = parentPos;
+
+    auto evalVelAt = [&](int curSf, Vec2 p, Vec2 pp) -> Vec2 {
+        float frac = 1.0f - static_cast<float>(curSf) / 21.0f;
+        if (frac >= 0.0f || !hasParent) {
+            return v1 * frac;
+        }
+        Vec2 toP = pp - p;
+        float d = toP.length();
+        if (d <= 20.0f || d <= 1e-4f) return {0.0f, 0.0f};
+        Vec2 pull = toP * ((d - 20.0f) / d);
+        int rem = std::max(1, 43 - curSf);
+        return pull * ((-frac) / static_cast<float>(rem));
+    };
+
+    if (scene.entityPhase > 0.0f) {
+        int curSf = static_cast<int>(std::floor(simSf + 1e-4f));
+        if (curSf > 42) return;
+        curPos += evalVelAt(curSf, curPos, curParentPos) * 0.5f;
+        if (hasParent) curParentPos += parentVel * 0.5f;
+        simSf += 0.5f;
+    }
+
+    track.radius = eSize + 3.0f;
+    track.pts[0] = curPos;
+    track.firstStep = 0;
+    track.lastStep = 0;
+    track.warning = 0;
+    track.minX = track.maxX = curPos.x;
+    track.minY = track.maxY = curPos.y;
+
+    for (int k = 1; k <= clampedSteps; ++k) {
+        int curSf = static_cast<int>(std::floor(simSf + 1e-4f));
+        if (curSf > 42) break;
+        curPos += evalVelAt(curSf, curPos, curParentPos) * 0.5f;
+        if (hasParent) curParentPos += parentVel * 0.5f;
+        simSf += 0.5f;
+        track.pts[k] = curPos;
+        track.minX = std::min(track.minX, curPos.x);
+        track.maxX = std::max(track.maxX, curPos.x);
+        track.minY = std::min(track.minY, curPos.y);
+        track.maxY = std::max(track.maxY, curPos.y);
+        track.lastStep = k;
+    }
+}
+
+inline void appendNpcIntentWarnings(const MemReader& mem, uintptr_t entAddr,
+                                    int type, int variant, float size, Vec2 pos, Vec2 vel,
                                     const ThreatScene& scene, float horizonUpdates,
                                     std::vector<DiscHazard>& discs,
                                     std::vector<LaserHazard>& lasers) {
-    int type = 0, variant = 0, state = 0, stateFrame = 0, i1 = 0;
     Vec2 sprOff{};
-    float size = 13.0f;
-    mem.read(entAddr + Offsets::Entity::kType, type);
-    mem.read(entAddr + Offsets::Entity::kVariant, variant);
-    mem.read(entAddr + Offsets::Entity::kSize, size);
     mem.read(entAddr + Offsets::Entity::kSpriteOffset, sprOff);
-    mem.read(entAddr + Offsets::NPC::kState, state);
-    mem.read(entAddr + Offsets::NPC::kStateFrame, stateFrame);
-    mem.read(entAddr + Offsets::NPC::kI1, i1);
+
+    int state = 0, stateFrame = 0, i1 = 0;
+    if (type == IsaacEnums::kEntUriel || type == IsaacEnums::kEntGabriel) {
+        mem.read(entAddr + Offsets::NPC::kState, state);
+        mem.read(entAddr + Offsets::NPC::kStateFrame, stateFrame);
+        mem.read(entAddr + Offsets::NPC::kI1, i1);
+    } else if (type == IsaacEnums::kEntFallen && variant == 1) {
+        mem.read(entAddr + Offsets::NPC::kI1, i1);
+    }
 
     char anim[64];
     float frame = 0.0f;
@@ -963,7 +1252,30 @@ inline void appendNpcIntentWarnings(const MemReader& mem, uintptr_t entAddr, Vec
         }
     };
 
-    if ((type == IsaacEnums::kEntVis && variant != 2) || type == IsaacEnums::kEntGluttony) {
+    if (type == IsaacEnums::kEntVis && variant == 2 && strStartsWith(anim, "Attack03") && frame <= 30.0f) {
+        const char* side = anim + 8;
+        float ang = 0.0f;
+        bool matched = true;
+        if (std::strcmp(side, "Horiz") == 0) ang = flipX ? 180.0f : 0.0f;
+        else if (std::strcmp(side, "Right") == 0) ang = 0.0f;
+        else if (std::strcmp(side, "Left") == 0) ang = 180.0f;
+        else if (std::strcmp(side, "Down") == 0) ang = 90.0f;
+        else if (std::strcmp(side, "Up") == 0) ang = 270.0f;
+        else matched = false;
+        if (matched) {
+            Vec2 dir = Vec2{1.0f, 0.0f}.rotatedDeg(ang);
+            float reach = 260.0f;
+            for (float s = 40.0f; s <= 260.0f; s += 40.0f) {
+                if (!scene.grid.inBoundsPoint(pos.x + dir.x * s, pos.y + dir.y * s, 0.0f)) {
+                    reach = s;
+                    break;
+                }
+            }
+            if (reach >= 40.0f) {
+                addDirectedLaser(lasers, pos, {0.0f, 0.0f}, ang, reach, 16.0f, 0.0f, true);
+            }
+        }
+    } else if ((type == IsaacEnums::kEntVis && variant != 2) || type == IsaacEnums::kEntGluttony) {
         if (strStartsWith(anim, "Attack01")) addCardStr(anim + 8, pos, 18.0f, 27.0f, false);
         else if (variant == 1 && strStartsWith(anim, "Attack02")) addCardStr(anim + 8, pos, 18.0f, 31.0f, false);
     } else if (type == IsaacEnums::kEntRageCreep && std::strcmp(anim, "Attack") == 0) {
@@ -984,9 +1296,12 @@ inline void appendNpcIntentWarnings(const MemReader& mem, uintptr_t entAddr, Vec
         addDirectedLaser(lasers, pos, vel, 90.0f, roomDiag, 24.0f, std::max(0.5f, 20.0f - frame), false);
     } else if (type == IsaacEnums::kEntMegaSatan && variant == 0 && std::strcmp(anim, "Shoot1") == 0) {
         addDirectedLaser(lasers, pos, vel, 90.0f, roomDiag, 36.0f, std::max(0.5f, 4.0f - frame), false);
-    } else if (type == IsaacEnums::kEntFallen && variant == 1 && std::strcmp(anim, "Attack2Alt") == 0) {
-        for (float ang : {0.0f, 90.0f, 180.0f, 270.0f}) {
-            addDirectedLaser(lasers, pos, vel, ang, roomDiag, 24.0f, std::max(0.5f, 29.0f - frame), false);
+    } else if (type == IsaacEnums::kEntFallen && variant == 1 &&
+               (std::strcmp(anim, "Attack2Alt") == 0 || std::strcmp(anim, "Attack2") == 0)) {
+        const bool diag = (std::strcmp(anim, "Attack2") == 0 && i1 != 0);
+        const float af = std::max(0.5f, 29.0f - frame);
+        for (float base : {0.0f, 90.0f, 180.0f, 270.0f}) {
+            addDirectedLaser(lasers, pos, vel, base + (diag ? 45.0f : 0.0f), roomDiag, 24.0f, af, false);
         }
     } else if (type == IsaacEnums::kEntEye && (variant == 0 || variant == 1) && std::strcmp(anim, "Shoot") == 0) {
         Vec2 toP = scene.player.pos - pos;
@@ -1383,7 +1698,7 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
     mem.read(room + Offsets::Room::kEntityCount, entCount);
     entCount = std::min<uint32_t>(entCount, 1024u);
 
-    // Pre-scan live bombs for blastHorizon extension (core.lua:624-625) & detect 60Hz interpolation phase
+    // Batch-read entity pointer list once and pre-filter irrelevant entities (familiars/visual FX/etc.)
     int qDelay = std::max(0, std::min(8, queueDelay));
     scene.queueDelay30 = qDelay;
     int hMs = std::max(150, std::min(700, horizonMs > 0 ? horizonMs : 450));
@@ -1394,31 +1709,88 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
     bool sawNonPlayer = false;
     bool anyInterpolated = false;
 
+    static_assert(Offsets::Entity::kVariant == Offsets::Entity::kType + 4u &&
+                  Offsets::Entity::kSubType == Offsets::Entity::kType + 8u &&
+                  Offsets::Entity::kSpawnerType == Offsets::Entity::kType + 12u,
+                  "Entity type header layout");
+    static_assert(Offsets::Entity::kExists == Offsets::Entity::kFlags + 10u &&
+                  Offsets::Entity::kDead == Offsets::Entity::kFlags + 11u &&
+                  Offsets::Entity::kInterpolated == Offsets::Entity::kFlags + 13u,
+                  "Entity life block layout");
+
+    struct EntCand {
+        uintptr_t addr = 0;
+        int type = 0, variant = 0, subType = 0, spawnerType = 0;
+        uint64_t flags = 0;
+        uint8_t dead = 0, interp = 0;
+    };
+    struct BombPrefetch {
+        Vec2 pos{}, vel{};
+        float size = 10.0f, radiusMult = 1.0f, atUpdates = -1.0f;
+        int variant = 0;
+    };
+
+    std::array<uint32_t, 1024> rawEntPtrs{};
+    bool entPtrBatchOk = (entCount > 0 && entData)
+        ? mem.readBytes(entData, rawEntPtrs.data(), static_cast<size_t>(entCount) * 4u)
+        : false;
+    std::vector<EntCand> cands;
+    cands.reserve(std::min<uint32_t>(entCount, 256u));
+    std::vector<BombPrefetch> preBombs;
+    preBombs.reserve(8);
+    bool sawLiveExploder = false;
+
     for (uint32_t ei = 0; ei < entCount && entData; ++ei) {
-        uintptr_t e = mem.readPtr32(entData + static_cast<uintptr_t>(ei) * 4u);
+        uintptr_t e = entPtrBatchOk
+            ? detail::sanitizePtr32(rawEntPtrs[ei])
+            : mem.readPtr32(entData + static_cast<uintptr_t>(ei) * 4u);
         if (!e || e == myPlayer) continue;
+
         uint8_t ex = 0, dead = 0, interp = 0;
-        int et = 0, ev = 0;
-        mem.read(e + Offsets::Entity::kExists, ex);
-        if (!ex) continue;
-        mem.read(e + Offsets::Entity::kType, et);
+        uint64_t flags = 0;
+        if (!detail::readEntityLifeState(mem, e, flags, ex, dead, interp) || !ex) continue;
+
+        int32_t hdr[4]{};
+        if (!mem.readBytes(e + Offsets::Entity::kType, hdr, sizeof(hdr))) {
+            mem.read(e + Offsets::Entity::kType, hdr[0]);
+            mem.read(e + Offsets::Entity::kVariant, hdr[1]);
+            mem.read(e + Offsets::Entity::kSubType, hdr[2]);
+            mem.read(e + Offsets::Entity::kSpawnerType, hdr[3]);
+        }
+        int et = hdr[0], ev = hdr[1], esub = hdr[2], espawner = hdr[3];
+
         if (et != IsaacEnums::kEntPlayer) {
             sawNonPlayer = true;
-            mem.read(e + Offsets::Entity::kInterpolated, interp);
             if (interp) anyInterpolated = true;
         }
-        if (et == IsaacEnums::kEntBomb) {
-            mem.read(e + Offsets::Entity::kDead, dead);
+
+        // Discard harmless/irrelevant entities before touching kPos/kVel/kSize/Parent/Sprite pages!
+        if (et == IsaacEnums::kEntFamiliar) {
+            if (!scene.deathmatch) continue;
+        } else if (et == IsaacEnums::kEntPlayer) {
+            if (!scene.deathmatch || dead) continue;
+        } else if (et == IsaacEnums::kEntEffect) {
+            if (detail::isHarmlessVisualEffect(ev)) continue;
+            bool isPlayerCreep = detail::isPlayerCreepVariant(ev);
+            if (isPlayerCreep && !scene.deathmatch) continue;
+            bool ground = detail::isEnemyGroundCreep(ev) || (scene.deathmatch && isPlayerCreep);
+            bool nativeCreep = ground && (ev != 195);
+            if (dead && (nativeCreep || !ground)) continue;
+            if (!scene.deathmatch && ((flags & IsaacEnums::kEntFlagFriendly) ||
+                                      espawner == IsaacEnums::kEntPlayer ||
+                                      espawner == IsaacEnums::kEntFamiliar)) {
+                continue;
+            }
+        } else if (et == IsaacEnums::kEntBomb) {
             if (dead) continue;
             float dmg = 0.0f, mult = 1.0f;
             mem.read(e + Offsets::Bomb::kExplosionDamage, dmg);
             mem.read(e + Offsets::Bomb::kRadiusMultiplier, mult);
-            mem.read(e + Offsets::Entity::kVariant, ev);
             if (dmg <= 0.0f) continue;
-            Vec2 bPos{}; bool dummy = false;
-            if (!detail::readLogicPos(mem, e, bPos, dummy)) continue;
-            float bRad = ((ev == 17) ? 180.0f : 100.0f) * std::max(0.5f, mult);
-            if ((bPos - scene.player.pos).length() > bRad + 220.0f) continue;
+            Vec2 bPos{};
+            if (!detail::readLogicPosFast(mem, e, interp != 0, bPos)) continue;
+            float clampedMult = std::max(0.5f, mult);
+            float bRad = ((ev == 17) ? 180.0f : 100.0f) * clampedMult;
             char bAnim[32]; float bFrame = 0.0f; bool bPlay = false, bFx = false;
             float at = -1.0f;
             if (detail::readSpriteState(mem, e + Offsets::Entity::kSprite, bAnim, sizeof(bAnim), bFrame, bPlay, bFx) &&
@@ -1429,10 +1801,51 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
                 mem.read(e + Offsets::Bomb::kFuse, fuse);
                 if (fuse >= 0 && fuse <= 120) at = static_cast<float>(fuse);
             }
-            if (at >= 0.0f && at <= 22.0f) {
+            if ((bPos - scene.player.pos).lengthSq() <= (bRad + 220.0f) * (bRad + 220.0f) &&
+                at >= 0.0f && at <= 22.0f) {
                 blastHorizon = std::max(blastHorizon, at + 2.0f);
             }
+            Vec2 bVel{}; float bSize = 10.0f;
+            uint8_t kinBuf[44]{};
+            if (mem.readBytes(e + Offsets::Entity::kVel, kinBuf, sizeof(kinBuf))) {
+                std::memcpy(&bVel, kinBuf, sizeof(Vec2));
+                std::memcpy(&bSize, kinBuf + (Offsets::Entity::kSize - Offsets::Entity::kVel), sizeof(float));
+            } else {
+                mem.read(e + Offsets::Entity::kVel, bVel);
+                mem.read(e + Offsets::Entity::kSize, bSize);
+            }
+            if (!std::isfinite(bVel.x) || !std::isfinite(bVel.y)) bVel = {0.0f, 0.0f};
+            preBombs.push_back({bPos, bVel, bSize, clampedMult, at, ev});
+            continue;
+        } else if (et == IsaacEnums::kEntTear || et == IsaacEnums::kEntKnife ||
+                   et == IsaacEnums::kEntProjectile || et == IsaacEnums::kEntLaser) {
+            if (dead) continue;
+            if (et == IsaacEnums::kEntProjectile && !scene.deathmatch &&
+                ((flags & IsaacEnums::kEntFlagFriendly) ||
+                 espawner == IsaacEnums::kEntPlayer || espawner == IsaacEnums::kEntFamiliar)) {
+                continue;
+            }
+        } else if (et == IsaacEnums::kEntPickup) {
+            // Retain pickups for pedestal/priced/chest autoAvoid check
+        } else if (et >= 10 && et <= 999) {
+            bool exploder = detail::isExploderNpc(et, ev);
+            if (dead && !exploder) continue;
+            if (et == IsaacEnums::kEntShopkeeper || et == IsaacEnums::kEntEmbryo ||
+                et == IsaacEnums::kEntMovingBox || et == IsaacEnums::kEntGenericPrp ||
+                et == IsaacEnums::kEntMinecart) {
+                continue;
+            }
+            if (!scene.deathmatch && ((flags & IsaacEnums::kEntFlagFriendly) ||
+                                      espawner == IsaacEnums::kEntPlayer ||
+                                      espawner == IsaacEnums::kEntFamiliar)) {
+                continue;
+            }
+            if (!dead && exploder) sawLiveExploder = true;
+        } else {
+            continue;
         }
+
+        cands.push_back({e, et, ev, esub, espawner, flags, dead, interp});
     }
 
     if ((tick60 & 1u) != 0 && sawNonPlayer && !anyInterpolated) {
@@ -1454,7 +1867,7 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
         return scene.hasTwin && (p - scene.twin.pos).lengthSq() <= limSq;
     };
 
-    // Populate room physical grid & static grid hazards
+    // Populate room physical grid & static grid hazards via batched array reads
     g.cells.fill(0);
     g.hasSolidCells = false;
     bool sacrificeRoom = (g.type == 13);
@@ -1462,15 +1875,35 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
     struct TntCell { Vec2 pos; int state; };
     std::vector<TntCell> tntCells;
 
+    std::array<uint32_t, Offsets::Room::kMaxGridCells> gridPtrs{};
+    bool gridPtrBatch = mem.readBytes(room + Offsets::Room::kGridEntities, gridPtrs.data(),
+                                      static_cast<size_t>(g.cellCount) * 4u);
+    std::array<int32_t, Offsets::Room::kMaxGridCells> gridRawTypes{};
+    bool gridRawLoaded = false, gridRawBatch = false;
+    static_assert(Offsets::Grid::kVariant == Offsets::Grid::kType + 4u &&
+                  Offsets::Grid::kState == Offsets::Grid::kType + 8u &&
+                  Offsets::Grid::kCollisionClass == Offsets::Grid::kType + 56u,
+                  "Grid entity header layout");
+
     for (int i = 0; i < g.cellCount; ++i) {
-        uintptr_t ge = mem.readPtr32(room + Offsets::Room::kGridEntities + static_cast<uintptr_t>(i) * 4u);
+        uintptr_t ge = gridPtrBatch
+            ? detail::sanitizePtr32(gridPtrs[i])
+            : mem.readPtr32(room + Offsets::Room::kGridEntities + static_cast<uintptr_t>(i) * 4u);
         uint8_t cf = 0;
         if (ge) {
             int gt = 0, gv = 0, gs = 0, gc = 0;
-            mem.read(ge + Offsets::Grid::kType, gt);
-            mem.read(ge + Offsets::Grid::kVariant, gv);
-            mem.read(ge + Offsets::Grid::kState, gs);
-            mem.read(ge + Offsets::Grid::kCollisionClass, gc);
+            uint8_t gbuf[60]{};
+            if (mem.readBytes(ge + Offsets::Grid::kType, gbuf, sizeof(gbuf))) {
+                std::memcpy(&gt, gbuf + 0, 4);
+                std::memcpy(&gv, gbuf + 4, 4);
+                std::memcpy(&gs, gbuf + 8, 4);
+                std::memcpy(&gc, gbuf + 56, 4);
+            } else {
+                mem.read(ge + Offsets::Grid::kType, gt);
+                mem.read(ge + Offsets::Grid::kVariant, gv);
+                mem.read(ge + Offsets::Grid::kState, gs);
+                mem.read(ge + Offsets::Grid::kCollisionClass, gc);
+            }
             if (gc == IsaacEnums::kGridCollWall) {
                 cf |= RoomGrid::kSolidGround | RoomGrid::kSolidFly;
             } else if (gc == IsaacEnums::kGridCollPit) {
@@ -1482,9 +1915,8 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
                 }
             }
 
-            Vec2 cPos = g.cellCenter(i);
             if (gt == IsaacEnums::kGridSpikes || gt == IsaacEnums::kGridSpikesOnOff) {
-                // GRID_SPIKES_ONOFF is retracted whenever State != 0 (core.lua:218)
+                Vec2 cPos = g.cellCenter(i);
                 bool active = (gt != IsaacEnums::kGridSpikesOnOff) || (gs == 0);
                 if (active) {
                     char spAnim[32]; float spFrame = 0.0f; bool spPlay = false, spFx = false;
@@ -1498,29 +1930,42 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
                 if (active) {
                     cf |= RoomGrid::kAutoAvoid;
                     if (sacrificeRoom) {
-                        // Sacrifice spikes hurt flyers too, but manual sacrifice must NEVER be blocked!
                         scene.discs.push_back(DiscHazard{cPos, {0, 0}, 20.0f, 0.0f, 1e6f, 0, {0, 0}, false, true, false, false});
                     } else if (groundVulnerable) {
                         scene.discs.push_back(DiscHazard{cPos, {0, 0}, 20.0f, 0.0f, 1e6f, 0, {0, 0}, false, false, false, true});
                     }
                 }
             } else if (gt == IsaacEnums::kGridPoop && gv == 1 && gc != IsaacEnums::kGridCollNone) {
+                Vec2 cPos = g.cellCenter(i);
                 cf |= RoomGrid::kAutoAvoid;
                 if (groundVulnerable) {
                     scene.discs.push_back(DiscHazard{cPos, {0, 0}, 26.0f, 0.0f, 1e6f, 0, {0, 0}, false, false, false, true});
                 }
             } else if (gt == IsaacEnums::kGridRockSpiked && gc != IsaacEnums::kGridCollNone) {
-                // Spiked rocks hurt walkers and flyers alike on contact (core.lua:764-768)!
+                Vec2 cPos = g.cellCenter(i);
                 cf |= RoomGrid::kAutoAvoid;
                 scene.discs.push_back(DiscHazard{cPos, {0, 0}, 26.0f, 0.0f, 1e6f, 0});
             } else if (gt == IsaacEnums::kGridRockBomb && gs == 3) {
+                Vec2 cPos = g.cellCenter(i);
                 scene.discs.push_back(DiscHazard{cPos, {0, 0}, 100.0f, 0.0f, 1e6f, 1});
-            } else if (gt == IsaacEnums::kGridTNT && gs < 4 && nearAnyPlayer(cPos, 120.0f)) {
-                tntCells.push_back({cPos, gs});
+            } else if (gt == IsaacEnums::kGridTNT && gs < 4) {
+                Vec2 cPos = g.cellCenter(i);
+                if (nearAnyPlayer(cPos, 120.0f)) {
+                    tntCells.push_back({cPos, gs});
+                }
             }
         } else {
+            if (!gridRawLoaded) {
+                gridRawLoaded = true;
+                gridRawBatch = mem.readBytes(room + Offsets::Room::kGridRawTypes, gridRawTypes.data(),
+                                             static_cast<size_t>(g.cellCount) * 4u);
+            }
             int raw = 0;
-            mem.read(room + Offsets::Room::kGridRawTypes + static_cast<uintptr_t>(i) * 4u, raw);
+            if (gridRawBatch) {
+                raw = gridRawTypes[i];
+            } else {
+                mem.read(room + Offsets::Room::kGridRawTypes + static_cast<uintptr_t>(i) * 4u, raw);
+            }
             if (raw >= 3000 && raw <= 3999) {
                 cf |= RoomGrid::kSolidGround | RoomGrid::kPit;
             } else if (raw >= 1000) {
@@ -1551,9 +1996,31 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
         bool pushed = false;
     };
     std::vector<BombInfo> bombs;
-    bombs.reserve(16);
+    bombs.reserve(preBombs.size());
     std::vector<Vec2> liveBombPos;
     std::vector<float> liveBombRad;
+    for (const auto& pb : preBombs) {
+        float warnBase = (pb.variant == 17) ? 180.0f : 100.0f;
+        float hardBase = (pb.variant == 17) ? 180.0f : 78.0f;
+        liveBombPos.push_back(pb.pos);
+        liveBombRad.push_back(warnBase * pb.radiusMult);
+        if (pb.atUpdates >= 0.0f && pb.atUpdates <= horizonUpdates + 2.0f) {
+            BombInfo bi{};
+            bi.pos = pb.pos; bi.vel = pb.vel; bi.size = pb.size;
+            bi.baseRadius = hardBase;
+            bi.radiusMult = pb.radiusMult;
+            bi.atUpdates = pb.atUpdates;
+            bi.friction = (pb.variant == 4) ? 1.0f : 0.95f;
+            float driftScale = (bi.friction >= 1.0f) ? pb.atUpdates
+                : (1.0f - std::pow(bi.friction, pb.atUpdates)) / (1.0f - bi.friction);
+            bi.blastPos = bi.pos + bi.vel * driftScale;
+            bombs.push_back(bi);
+        }
+        if (nearAnyPlayer(pb.pos, warnBase * pb.radiusMult)) {
+            scene.discs.push_back(DiscHazard{pb.pos, pb.vel * 0.5f, warnBase * pb.radiusMult, 0.0f, horizonUpdates, 1});
+        }
+    }
+
     std::vector<detail::PlayerShotTear> playerTears;
     std::vector<detail::PlayerShotBeam> playerBeams;
     std::vector<detail::ExploderSnap> exploders;
@@ -1561,98 +2028,88 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
     std::vector<float> activeNpcSize;
 
     int myCtrlIdx = scene.player.controllerIndex;
+    detail::OwnedMemo ownedMemo{};
+    bool needPlayerTears = sawLiveExploder || !tntCells.empty();
 
-    for (uint32_t ei = 0; ei < entCount && entData; ++ei) {
-        uintptr_t e = mem.readPtr32(entData + static_cast<uintptr_t>(ei) * 4u);
-        if (!e || e == myPlayer) continue;
+    static_assert(Offsets::Entity::kEntityColl == Offsets::Entity::kGridColl + 4u, "Entity coll layout");
+    static_assert(Offsets::Entity::kSize == Offsets::Entity::kVel + 16u &&
+                  Offsets::Entity::kSizeMulti == Offsets::Entity::kVel + 20u &&
+                  Offsets::Entity::kHitPoints == Offsets::Entity::kVel + 32u &&
+                  Offsets::Entity::kCollDamage == Offsets::Entity::kVel + 40u,
+                  "Entity kinematics block layout");
+    static_assert(Offsets::Tear::kFallingSpeed == Offsets::Tear::kHeight + 4u &&
+                  Offsets::Tear::kFallingAccel == Offsets::Tear::kHeight + 8u &&
+                  Offsets::Tear::kFlagsLo == Offsets::Tear::kHeight + 24u &&
+                  Offsets::Tear::kFlagsHi == Offsets::Tear::kHeight + 32u,
+                  "Tear block layout");
 
-        uint8_t exists = 0, eDead = 0;
-        int eType = 0, eVar = 0, eSub = 0, eEntityColl = 0, eGridColl = 3;
-        uint64_t eFlags = 0;
-        float eSize = 10.0f, eCollDmg = 0.0f;
-        Vec2 ePos{}, eVel{};
-        mem.read(e + Offsets::Entity::kExists, exists);
-        if (!exists) continue;
-        mem.read(e + Offsets::Entity::kDead, eDead);
-        mem.read(e + Offsets::Entity::kType, eType);
-        mem.read(e + Offsets::Entity::kVariant, eVar);
-        mem.read(e + Offsets::Entity::kSubType, eSub);
-        mem.read(e + Offsets::Entity::kFlags, eFlags);
-        mem.read(e + Offsets::Entity::kGridColl, eGridColl);
-        mem.read(e + Offsets::Entity::kEntityColl, eEntityColl);
-        mem.read(e + Offsets::Entity::kVel, eVel);
-        mem.read(e + Offsets::Entity::kSize, eSize);
-        mem.read(e + Offsets::Entity::kCollDamage, eCollDmg);
+    for (const EntCand& c : cands) {
+        const uintptr_t e = c.addr;
+        const int eType = c.type;
+        const int eVar = c.variant;
+        const int eSub = c.subType;
+        const uint8_t eDead = c.dead;
+        const uint64_t eFlags = c.flags;
 
-        bool dummyInterp = false;
-        if (eType == IsaacEnums::kEntPlayer) {
-            if (!mem.read(e + Offsets::Entity::kPos, ePos) || !std::isfinite(ePos.x)) continue;
-        } else {
-            if (!detail::readLogicPos(mem, e, ePos, dummyInterp)) continue;
+        if (eType == IsaacEnums::kEntTear && !scene.deathmatch && !needPlayerTears) {
+            continue;
         }
 
-        // Player-side vs opponentENTITY_TEAR (Type 2)
-        if (eType == IsaacEnums::kEntTear) {
-            if (eDead) continue;
-            bool owned = detail::isPlayerOwned(mem, e, scene.deathmatch, boundSeed, myCtrlIdx);
-            if (owned) {
-                detail::PlayerShotTear pt{};
-                pt.pos = ePos; pt.vel = eVel; pt.size = eSize;
-                pt.dmg = eCollDmg > 0.0f ? eCollDmg : scene.player.tearDamage;
-                pt.gridColl = eGridColl;
-                mem.read(e + Offsets::Tear::kHeight, pt.height);
-                mem.read(e + Offsets::Tear::kFallingSpeed, pt.fallSpeed);
-                mem.read(e + Offsets::Tear::kFallingAccel, pt.fallAccel);
-                mem.read(e + Offsets::Tear::kFlagsLo, pt.flagsLo);
-                mem.read(e + Offsets::Tear::kFlagsHi, pt.flagsHi);
-                playerTears.push_back(pt);
-            } else if (scene.deathmatch && scene.bullets.size() < 256) {
-                float h = -23.0f, fs = 0.0f, fa = 0.0f;
-                mem.read(e + Offsets::Tear::kHeight, h);
-                mem.read(e + Offsets::Tear::kFallingSpeed, fs);
-                mem.read(e + Offsets::Tear::kFallingAccel, fa);
-                BulletTrack tr{};
-                detail::simulateBulletCommon(ePos, eVel, eSize, 1.0f, 0.0f, 0.0f, 1, eGridColl,
-                                             h, fs, fa, 0.0f, 0.0f, 1.0f,
-                                             IsaacEnums::kProjAnyHeightHit, 0, 0, 0.0f, 0,
-                                             scene.player.pos, scene, horizonUpdates, steps60, tr, scene.discs);
-                if (tr.lastStep >= tr.firstStep && tr.lastStep >= 0) scene.bullets.push_back(tr);
+        Vec2 ePos{};
+        if (eType == IsaacEnums::kEntPlayer) {
+            if (!mem.read(e + Offsets::Entity::kPos, ePos) || !std::isfinite(ePos.x) || !std::isfinite(ePos.y)) continue;
+        } else {
+            if (!detail::readLogicPosFast(mem, e, c.interp != 0, ePos)) continue;
+        }
+
+        if (eType == IsaacEnums::kEntPickup) {
+            int price = 0;
+            mem.read(e + Offsets::Pickup::kPrice, price);
+            if ((eVar == 100 && eSub != 0) || price != 0 || ((eVar == 52 || eVar == 54) && eSub != 0)) {
+                int pidx = g.indexAt(ePos.x, ePos.y);
+                if (pidx >= 0 && pidx < g.cellCount) {
+                    g.cells[pidx] |= RoomGrid::kAutoAvoid;
+                }
+            }
+            continue;
+        }
+
+        Vec2 eVel{};
+        Vec2 eSizeMulti{1.0f, 1.0f};
+        float eSize = 10.0f, eHp = 10.0f, eCollDmg = 0.0f;
+        uint8_t kinBuf[44]{};
+        if (mem.readBytes(e + Offsets::Entity::kVel, kinBuf, sizeof(kinBuf))) {
+            std::memcpy(&eVel, kinBuf, sizeof(Vec2));
+            std::memcpy(&eSize, kinBuf + 16, sizeof(float));
+            std::memcpy(&eSizeMulti, kinBuf + 20, sizeof(Vec2));
+            std::memcpy(&eHp, kinBuf + 32, sizeof(float));
+            std::memcpy(&eCollDmg, kinBuf + 40, sizeof(float));
+        } else {
+            mem.read(e + Offsets::Entity::kVel, eVel);
+            mem.read(e + Offsets::Entity::kSize, eSize);
+            mem.read(e + Offsets::Entity::kSizeMulti, eSizeMulti);
+            mem.read(e + Offsets::Entity::kHitPoints, eHp);
+            mem.read(e + Offsets::Entity::kCollDamage, eCollDmg);
+        }
+
+        // Deathmatch opponent player (excluding boundSeed & shared-controller twin Esau)
+        if (eType == IsaacEnums::kEntPlayer) {
+            if (scene.deathmatch && !eDead && !detail::isOurSidePlayer(mem, e, boundSeed, myCtrlIdx)) {
+                scene.discs.push_back(DiscHazard{ePos, eVel, eSize + 3.0f, 0.0f, horizonUpdates, 0,
+                                                 {0, 0}, false, false, true});
             }
             continue;
         }
 
         // Hostile / Deathmatch opponent ENTITY_KNIFE (Type 8)
         if (eType == IsaacEnums::kEntKnife) {
-            if (!eDead && !detail::isPlayerOwned(mem, e, scene.deathmatch, boundSeed, myCtrlIdx)) {
+            if (!detail::isPlayerOwnedFast(mem, e, eType, c.spawnerType, eFlags, scene.deathmatch, boundSeed, myCtrlIdx, &ownedMemo)) {
                 scene.discs.push_back(DiscHazard{ePos, eVel, std::max(24.0f, eSize), 0.0f, horizonUpdates, 0});
             }
             continue;
         }
 
-        if (eType == IsaacEnums::kEntProjectile) {
-            if (eDead) continue;
-            if (detail::isPlayerOwned(mem, e, scene.deathmatch, boundSeed, myCtrlIdx)) continue;
-            uint64_t pFlags = 0;
-            float fallAcc = 0.0f;
-            mem.read(e + Offsets::Projectile::kFlags, pFlags);
-            mem.read(e + Offsets::Projectile::kFallingAccel, fallAcc);
-            // EXPLODE projectiles always emit a 100px flight warning envelope (core.lua:698-702)
-            if (pFlags & IsaacEnums::kProjExplode) {
-                scene.discs.push_back(DiscHazard{ePos, eVel, 100.0f, 0.0f, horizonUpdates, 1});
-            }
-            bool collidable = (eEntityColl != IsaacEnums::kEntCollNone &&
-                               eEntityColl != IsaacEnums::kEntCollEnemies);
-            bool arcing = (eEntityColl == IsaacEnums::kEntCollNone && fallAcc > 0.05f);
-            if ((collidable || arcing) && scene.bullets.size() < 256) {
-                BulletTrack tr{};
-                detail::simulateProjectile(mem, e, ePos, scene, horizonUpdates, steps60, tr, scene.discs);
-                if (tr.lastStep >= tr.firstStep && tr.lastStep >= 0) scene.bullets.push_back(tr);
-            }
-            continue;
-        }
-
         if (eType == IsaacEnums::kEntLaser) {
-            if (eDead) continue;
             uint8_t oneHit = 0, firstUpd = 1, shrink = 0;
             int timeout = 0;
             mem.read(e + Offsets::Laser::kOneHit, oneHit);
@@ -1664,7 +2121,7 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
 
             uint8_t subType = static_cast<uint8_t>(eSub);
             bool isCircle = (subType == 1 || subType == 2 || subType == 3);
-            if (detail::isPlayerOwned(mem, e, scene.deathmatch, boundSeed, myCtrlIdx)) {
+            if (detail::isPlayerOwnedFast(mem, e, eType, c.spawnerType, eFlags, scene.deathmatch, boundSeed, myCtrlIdx, &ownedMemo)) {
                 if (!isCircle) {
                     Vec2 endPt = ePos;
                     mem.read(e + Offsets::Laser::kEndPoint, endPt);
@@ -1720,7 +2177,6 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
                             lh.reach = std::max(lh.reach, rel.length());
                         }
                     }
-                    // Always preserve the exact terminal sample so curved beam tails are never truncated!
                     Vec2 lastPt{};
                     if (mem.read(sb + (count - 1u) * sizeof(Vec2), lastPt) && std::isfinite(lastPt.x)) {
                         Vec2 rel = lastPt - lh.origin;
@@ -1757,56 +2213,13 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
             continue;
         }
 
-        if (eType == IsaacEnums::kEntBomb) {
-            if (eDead) continue;
-            float dmg = 0.0f, mult = 1.0f;
-            mem.read(e + Offsets::Bomb::kExplosionDamage, dmg);
-            mem.read(e + Offsets::Bomb::kRadiusMultiplier, mult);
-            if (dmg <= 0.0f) continue;
-            float clampedMult = std::max(0.5f, mult);
-            float warnBase = (eVar == 17) ? 180.0f : 100.0f;
-            float hardBase = (eVar == 17) ? 180.0f : 78.0f;
-            liveBombPos.push_back(ePos);
-            liveBombRad.push_back(warnBase * clampedMult);
-
-            char bAnim[32]; float bFrame = 0.0f; bool bPlay = false, bFx = false;
-            float at = -1.0f;
-            if (detail::readSpriteState(mem, e + Offsets::Entity::kSprite, bAnim, sizeof(bAnim), bFrame, bPlay, bFx)) {
-                if (std::strcmp(bAnim, "Pulse") == 0 && bFrame <= 59.0f) {
-                    at = std::max(0.0f, 58.0f - bFrame);
-                }
-            }
-            if (at < 0.0f) {
-                int32_t fuse = -1;
-                mem.read(e + Offsets::Bomb::kFuse, fuse);
-                if (fuse >= 0 && fuse <= 120) at = static_cast<float>(fuse);
-            }
-            if (at >= 0.0f && at <= horizonUpdates + 2.0f) {
-                BombInfo bi{};
-                bi.pos = ePos; bi.vel = eVel; bi.size = eSize;
-                bi.baseRadius = hardBase;
-                bi.radiusMult = clampedMult;
-                bi.atUpdates = at;
-                bi.friction = (eVar == 4) ? 1.0f : 0.95f;
-                float driftScale = (bi.friction >= 1.0f) ? at : (1.0f - std::pow(bi.friction, at)) / (1.0f - bi.friction);
-                bi.blastPos = bi.pos + bi.vel * driftScale;
-                bombs.push_back(bi);
-            }
-            if (nearAnyPlayer(ePos, warnBase * clampedMult)) {
-                scene.discs.push_back(DiscHazard{ePos, eVel * 0.5f, warnBase * clampedMult, 0.0f, horizonUpdates, 1});
-            }
-            continue;
-        }
-
         if (eType == IsaacEnums::kEntEffect) {
-            if (detail::isHarmlessVisualEffect(eVar)) continue;
             bool isPlayerCreep = detail::isPlayerCreepVariant(eVar);
-            if (isPlayerCreep && !scene.deathmatch) continue;
-
             bool ground = detail::isEnemyGroundCreep(eVar) || (scene.deathmatch && isPlayerCreep);
             bool nativeCreep = ground && (eVar != 195);
-            if (eDead && (nativeCreep || !ground)) continue;
-            if (detail::isPlayerOwned(mem, e, scene.deathmatch, boundSeed, myCtrlIdx)) continue;
+            if (detail::isPlayerOwnedFast(mem, e, eType, c.spawnerType, eFlags, scene.deathmatch, boundSeed, myCtrlIdx, &ownedMemo)) {
+                continue;
+            }
 
             if (eVar == 110 && !eDead) { // ENEMY_BRIMSTONE_SWIRL cardinal laser warning
                 char sAnim[32]; float sFrame = 0.0f; bool sPlay = false, sFx = false;
@@ -1824,29 +2237,26 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
             float baseAreaR = detail::areaEffectBaseRadius(eVar, warnEff);
             if (ground) {
                 if (!groundVulnerable) continue;
-                Vec2 sprScale{1.0f, 1.0f}, sm{1.0f, 1.0f};
+                Vec2 sprScale{1.0f, 1.0f};
                 float effScale = 1.0f;
                 mem.read(e + Offsets::Entity::kSpriteScale, sprScale);
-                mem.read(e + Offsets::Entity::kSizeMulti, sm);
                 mem.read(e + Offsets::Effect::kScale, effScale);
                 float pSpeed = scene.player.vel.length() * 2.0f;
                 float r = nativeCreep
                     ? (eSize * std::abs(sprScale.x) + 12.0f + pSpeed)
-                    : (std::max(eSize * std::max(std::abs(sm.x), std::abs(sm.y)),
+                    : (std::max(eSize * std::max(std::abs(eSizeMulti.x), std::abs(eSizeMulti.y)),
                                 24.0f * std::max(0.5f, effScale)) + 12.0f + pSpeed);
                 if (nearAnyPlayer(ePos, r)) {
                     scene.discs.push_back(DiscHazard{ePos, eVel, r, 0.0f, horizonUpdates, 0,
                                                      {0, 0}, false, false, false, true});
                 }
             } else if (baseAreaR > 0.0f || eCollDmg > 0.0f) {
-                Vec2 sm{1.0f, 1.0f};
                 float effScale = 1.0f;
                 int timeout = 0;
-                mem.read(e + Offsets::Entity::kSizeMulti, sm);
                 mem.read(e + Offsets::Effect::kScale, effScale);
                 mem.read(e + Offsets::Effect::kTimeout, timeout);
                 float maxT = (timeout > 0) ? std::min(horizonUpdates, static_cast<float>(timeout)) : horizonUpdates;
-                float hitR = eSize * std::max(std::abs(sm.x), std::abs(sm.y));
+                float hitR = eSize * std::max(std::abs(eSizeMulti.x), std::abs(eSizeMulti.y));
                 float r = std::max(hitR, (baseAreaR > 0.0f ? baseAreaR : 24.0f) * std::max(0.5f, effScale));
                 if (nearAnyPlayer(ePos, r)) {
                     scene.discs.push_back(DiscHazard{ePos, eVel, r, 0.0f, maxT, static_cast<uint8_t>(warnEff ? 1 : 0)});
@@ -1855,31 +2265,82 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
             continue;
         }
 
-        if (eType == IsaacEnums::kEntPickup) {
-            int price = 0;
-            mem.read(e + Offsets::Pickup::kPrice, price);
-            if ((eVar == 100 && eSub != 0) || price != 0 || ((eVar == 52 || eVar == 54) && eSub != 0)) {
-                int pidx = g.indexAt(ePos.x, ePos.y);
-                if (pidx >= 0 && pidx < g.cellCount) {
-                    g.cells[pidx] |= RoomGrid::kAutoAvoid;
+        // Remaining types (Tear, Projectile, NPC) use kGridColl & kEntityColl
+        int eGridColl = 3, eEntityColl = 0;
+        int32_t collPair[2]{};
+        if (mem.readBytes(e + Offsets::Entity::kGridColl, collPair, sizeof(collPair))) {
+            eGridColl = collPair[0];
+            eEntityColl = collPair[1];
+        } else {
+            mem.read(e + Offsets::Entity::kGridColl, eGridColl);
+            mem.read(e + Offsets::Entity::kEntityColl, eEntityColl);
+        }
+
+        if (eType == IsaacEnums::kEntTear) {
+            bool owned = detail::isPlayerOwnedFast(mem, e, eType, c.spawnerType, eFlags, scene.deathmatch, boundSeed, myCtrlIdx, &ownedMemo);
+            if (owned) {
+                detail::PlayerShotTear pt{};
+                pt.pos = ePos; pt.vel = eVel; pt.size = eSize;
+                pt.dmg = eCollDmg > 0.0f ? eCollDmg : scene.player.tearDamage;
+                pt.gridColl = eGridColl;
+                uint8_t tBuf[40]{};
+                if (mem.readBytes(e + Offsets::Tear::kHeight, tBuf, sizeof(tBuf))) {
+                    std::memcpy(&pt.height, tBuf + 0, 4);
+                    std::memcpy(&pt.fallSpeed, tBuf + 4, 4);
+                    std::memcpy(&pt.fallAccel, tBuf + 8, 4);
+                    std::memcpy(&pt.flagsLo, tBuf + 24, 8);
+                    std::memcpy(&pt.flagsHi, tBuf + 32, 8);
+                } else {
+                    mem.read(e + Offsets::Tear::kHeight, pt.height);
+                    mem.read(e + Offsets::Tear::kFallingSpeed, pt.fallSpeed);
+                    mem.read(e + Offsets::Tear::kFallingAccel, pt.fallAccel);
+                    mem.read(e + Offsets::Tear::kFlagsLo, pt.flagsLo);
+                    mem.read(e + Offsets::Tear::kFlagsHi, pt.flagsHi);
                 }
+                playerTears.push_back(pt);
+            } else if (scene.deathmatch && scene.bullets.size() < 256) {
+                float h = -23.0f, fs = 0.0f, fa = 0.0f;
+                mem.read(e + Offsets::Tear::kHeight, h);
+                mem.read(e + Offsets::Tear::kFallingSpeed, fs);
+                mem.read(e + Offsets::Tear::kFallingAccel, fa);
+                BulletTrack tr{};
+                detail::simulateBulletCommon(ePos, eVel, eSize, 1.0f, 0.0f, 0.0f, 1, eGridColl,
+                                             h, fs, fa, 0.0f, 0.0f, 1.0f,
+                                             IsaacEnums::kProjAnyHeightHit, 0, 0, 0.0f, 0,
+                                             scene.player.pos, scene, horizonUpdates, steps60, tr, scene.discs);
+                if (tr.lastStep >= tr.firstStep && tr.lastStep >= 0) scene.bullets.push_back(tr);
             }
             continue;
         }
 
-        // Deathmatch opponent player (excluding boundSeed & shared-controller twin Esau)
-        if (eType == IsaacEnums::kEntPlayer) {
-            if (scene.deathmatch && !eDead && !detail::isOurSidePlayer(mem, e, boundSeed, myCtrlIdx)) {
-                scene.discs.push_back(DiscHazard{ePos, eVel, eSize + 3.0f, 0.0f, horizonUpdates, 0,
-                                                 {0, 0}, false, false, true});
+        if (eType == IsaacEnums::kEntProjectile) {
+            if (detail::isPlayerOwnedFast(mem, e, eType, c.spawnerType, eFlags, scene.deathmatch, boundSeed, myCtrlIdx, &ownedMemo)) {
+                continue;
+            }
+            uint64_t pFlags = 0;
+            float fallAcc = 0.0f;
+            mem.read(e + Offsets::Projectile::kFlags, pFlags);
+            mem.read(e + Offsets::Projectile::kFallingAccel, fallAcc);
+            if (pFlags & IsaacEnums::kProjExplode) {
+                scene.discs.push_back(DiscHazard{ePos, eVel, 100.0f, 0.0f, horizonUpdates, 1});
+            }
+            bool collidable = (eEntityColl != IsaacEnums::kEntCollNone &&
+                               eEntityColl != IsaacEnums::kEntCollEnemies);
+            bool arcing = (eEntityColl == IsaacEnums::kEntCollNone && fallAcc > 0.05f);
+            if ((collidable || arcing) && scene.bullets.size() < 256) {
+                BulletTrack tr{};
+                detail::simulateProjectilePreloaded(mem, e, ePos, eVel, eSize, c.spawnerType, eGridColl,
+                                                    scene, horizonUpdates, steps60, tr, scene.discs);
+                if (tr.lastStep >= tr.firstStep && tr.lastStep >= 0) scene.bullets.push_back(tr);
             }
             continue;
         }
 
-        bool ownedNpc = detail::isPlayerOwned(mem, e, scene.deathmatch, boundSeed, myCtrlIdx);
-        if (ownedNpc) continue;
+        // NPCs (10..999)
+        if (detail::isPlayerOwnedFast(mem, e, eType, c.spawnerType, eFlags, scene.deathmatch, boundSeed, myCtrlIdx, &ownedMemo)) {
+            continue;
+        }
 
-        // Dead exploding NPCs (any exploder playing "Explode", core.lua:664-668)
         if (eDead) {
             if (detail::isExploderNpc(eType, eVar)) {
                 char dAnim[32]; float dFrame = 0.0f; bool dPlay = false, dFx = false;
@@ -1895,7 +2356,6 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
             continue;
         }
 
-        // Fireplaces (Entity 33) and Active Enemy / Boss contact hazards (core.lua:354-362)
         uint8_t isBoss = 0;
         mem.read(e + Offsets::NPC::kIsBoss, isBoss);
         bool activeEnemy = detail::isActiveEnemyRaw(eType, eVar, eDead, eFlags);
@@ -1906,6 +2366,18 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
             activeNpcPos.push_back(ePos);
             activeNpcVel.push_back(eVel);
             activeNpcSize.push_back(eSize);
+        }
+
+        // Chubber boomerang worm (39.22.0): model via exact StateFrame=0..42 tethered BulletTrack
+        // instead of an unbounded linear Pos + Vel*t DiscHazard.
+        if (eType == IsaacEnums::kEntVis && eVar == 22 && contactableColl && eCollDmg > 0.0f &&
+            (activeEnemy || (isBoss != 0)) && scene.bullets.size() < 256) {
+            BulletTrack wormTrack{};
+            detail::simulateChubberWorm(mem, e, ePos, eVel, eSize, scene, steps60, wormTrack);
+            if (wormTrack.lastStep >= wormTrack.firstStep && wormTrack.lastStep >= 0) {
+                scene.bullets.push_back(wormTrack);
+            }
+            continue;
         }
 
         if (contactableColl && eCollDmg > 0.0f &&
@@ -1923,15 +2395,13 @@ inline bool collectThreatScene(const MemReader& mem, uintptr_t imageBase,
         if (!activeEnemy) continue;
 
         if (detail::isExploderNpc(eType, eVar)) {
-            float hp = 10.0f;
-            mem.read(e + Offsets::Entity::kHitPoints, hp);
             detail::ExploderSnap es{};
-            es.pos = ePos; es.vel = eVel; es.size = eSize; es.hp = hp;
+            es.pos = ePos; es.vel = eVel; es.size = eSize; es.hp = eHp;
             es.type = eType; es.variant = eVar; es.dead = false;
             exploders.push_back(es);
         }
 
-        detail::appendNpcIntentWarnings(mem, e, ePos, eVel, scene, horizonUpdates, scene.discs, scene.lasers);
+        detail::appendNpcIntentWarnings(mem, e, eType, eVar, eSize, ePos, eVel, scene, horizonUpdates, scene.discs, scene.lasers);
     }
 
     // Resolve exploder death bursts & imminent killTime (npc_hazards.lua:345-390)

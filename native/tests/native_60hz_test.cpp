@@ -712,6 +712,234 @@ void benchmarkCombatRoom() {
     assert(usPerFrame < 1000.0); // comfortably < 1ms/frame!
 }
 
+void testKrampusAttack2ChubberBoomerangAndTopWall() {
+    WorldFixture f;
+    iad::ThreatScene scene;
+
+    // A1. Krampus (81.1) "Attack2" with I1=0 fires cardinal cross {0, 90, 180, 270} at frame 29 (Hit #1)
+    f.initBase();
+    f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {320.0f, 280.0f});
+    uintptr_t kr1 = f.addNpc(iad::IsaacEnums::kEntFallen, 1, {240.0f, 280.0f}, {0.0f, 0.0f}, "Attack2", 26.0f, false, 10);
+    f.m.w<int>(kr1 + iad::Offsets::NPC::kI1, 0);
+    assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+    assert(scene.lasers.size() == 4);
+    assert(std::abs(scene.lasers[0].activeFrom - 3.0f) < 0.1f);
+    assert(std::abs(scene.lasers[0].pts[1].y) < 1.0f || std::abs(scene.lasers[0].pts[1].x) < 1.0f);
+    auto krPlan1 = iad::solveNativePlan(scene, 0, -1, true);
+    assert(krPlan1.danger && krPlan1.bestDir != -1);
+    assert(iad::kCandY[krPlan1.bestDir] != 0.0f); // sidesteps perpendicular off cardinal Y=280 beam!
+
+    // A2. Krampus (81.1) "Attack2" with I1!=0 fires diagonal {45, 135, 225, 315} (safe at cardinal (360,280), dodges on (360,400))
+    f.initBase();
+    f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {360.0f, 280.0f});
+    uintptr_t kr2 = f.addNpc(iad::IsaacEnums::kEntFallen, 1, {240.0f, 280.0f}, {0.0f, 0.0f}, "Attack2", 26.0f, false, 10);
+    f.m.w<int>(kr2 + iad::Offsets::NPC::kI1, 1);
+    assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+    assert(scene.lasers.size() == 4);
+    for (const auto& lz : scene.lasers) {
+        assert(std::abs(std::abs(lz.pts[1].x) - std::abs(lz.pts[1].y)) < 1.0f);
+    }
+    auto krDiagSafe = iad::solveNativePlan(scene, 0, -1, true);
+    assert(krDiagSafe.straightScores[0] <= 0.0 && krDiagSafe.bestDir == -1);
+    f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {360.0f, 400.0f}); // directly on +45 deg ray from (240,280)
+    assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+    auto krDiagHit = iad::solveNativePlan(scene, 0, -1, true);
+    assert(krDiagHit.danger && krDiagHit.bestDir != -1);
+
+    // A3. Krampus (81.1) "Attack2Alt" ALWAYS fires cardinal even when I1!=0
+    f.initBase();
+    f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {320.0f, 280.0f});
+    uintptr_t kr3 = f.addNpc(iad::IsaacEnums::kEntFallen, 1, {240.0f, 280.0f}, {0.0f, 0.0f}, "Attack2Alt", 27.0f, false, 11);
+    f.m.w<int>(kr3 + iad::Offsets::NPC::kI1, 1);
+    assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+    assert(scene.lasers.size() == 4);
+    assert(std::abs(scene.lasers[0].activeFrom - 2.0f) < 0.1f);
+    assert(std::abs(scene.lasers[0].pts[1].y) < 1.0f || std::abs(scene.lasers[0].pts[1].x) < 1.0f);
+
+    // B1. Chubber (39.2.0) Attack03Horiz (FlipX directional) & Attack03Down windup warnings
+    f.initBase();
+    f.addNpc(iad::IsaacEnums::kEntVis, 2, {200.0f, 280.0f}, {0.0f, 0.0f}, "Attack03Horiz", 10.0f, false);
+    assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+    assert(scene.lasers.size() == 1 && scene.lasers[0].warning == 1 && scene.lasers[0].pts[1].x > 100.0f);
+    f.initBase();
+    f.addNpc(iad::IsaacEnums::kEntVis, 2, {200.0f, 280.0f}, {0.0f, 0.0f}, "Attack03Horiz", 10.0f, true);
+    assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+    assert(scene.lasers.size() == 1 && scene.lasers[0].warning == 1 && scene.lasers[0].pts[1].x < -100.0f);
+    f.initBase();
+    f.addNpc(iad::IsaacEnums::kEntVis, 2, {200.0f, 280.0f}, {0.0f, 0.0f}, "Attack03Down", 10.0f, false);
+    assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+    assert(scene.lasers.size() == 1 && scene.lasers[0].warning == 1 && scene.lasers[0].pts[1].y > 100.0f);
+
+    // B2. Chubber Worm (39.22.0, Parent=39.2.0) outbound deceleration & bounded turn-around (Hit #3)
+    f.initBase();
+    uintptr_t chub = f.addNpc(iad::IsaacEnums::kEntVis, 2, {160.0f, 280.0f}, {0.0f, 0.0f}, "Attack03Loop", 0.0f);
+    uintptr_t wormOut = f.addNpc(iad::IsaacEnums::kEntVis, 22, {215.0f, 280.0f}, {13.9f, 0.0f}, "Side", 1.0f);
+    f.m.w<int32_t>(wormOut + iad::Offsets::NPC::kStateFrame, 6);
+    f.m.w<iad::Vec2>(wormOut + iad::Offsets::NPC::kV1, {19.46f, 0.0f});
+    f.m.wPtr(wormOut + iad::Offsets::Entity::kParent, chub);
+    f.m.wPtr(wormOut + iad::Offsets::Entity::kSpawnerEntity, chub);
+    // Player beyond apex at x=430: bounded BulletTrack stops reversing before x=390 -> NO phantom dodge!
+    f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {430.0f, 280.0f});
+    assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+    assert(scene.bullets.size() == 1 && scene.discs.size() == 1);
+    assert(scene.bullets[0].maxX < 390.0f);
+    auto chubFarPlan = iad::solveNativePlan(scene, 0, -1, true);
+    assert(chubFarPlan.straightScores[0] <= 0.0 && chubFarPlan.bestDir == -1);
+    // Player on outbound reach at x=275 dodges perpendicularly off Y=280
+    f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {275.0f, 280.0f});
+    assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+    auto chubHitPlan = iad::solveNativePlan(scene, 0, -1, true);
+    assert(chubHitPlan.danger && chubHitPlan.bestDir != -1 && iad::kCandY[chubHitPlan.bestDir] != 0.0f);
+
+    // B3. Chubber Worm (39.22.0) return leg (StateFrame=35) stops at Parent and expires at sf>42 (Hit #4)
+    f.initBase();
+    uintptr_t chubRet = f.addNpc(iad::IsaacEnums::kEntVis, 2, {220.0f, 280.0f}, {0.0f, 0.0f}, "Attack03Loop", 0.0f);
+    uintptr_t wormRet = f.addNpc(iad::IsaacEnums::kEntVis, 22, {340.0f, 280.0f}, {-12.8f, 0.0f}, "Side", 2.0f);
+    f.m.w<int32_t>(wormRet + iad::Offsets::NPC::kStateFrame, 35);
+    f.m.wPtr(wormRet + iad::Offsets::Entity::kParent, chubRet);
+    f.m.wPtr(wormRet + iad::Offsets::Entity::kSpawnerEntity, chubRet);
+    f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {130.0f, 280.0f}); // behind parent: NEVER overshot!
+    assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+    assert(scene.bullets.size() == 1);
+    assert(scene.bullets[0].minX >= 210.0f && scene.bullets[0].lastStep <= 16);
+    auto chubBehindPlan = iad::solveNativePlan(scene, 0, -1, true);
+    assert(chubBehindPlan.straightScores[0] <= 0.0 && chubBehindPlan.bestDir == -1);
+    f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {280.0f, 280.0f}); // directly in return corridor!
+    assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+    auto chubRetHitPlan = iad::solveNativePlan(scene, 0, -1, true);
+    assert(chubRetHitPlan.danger && chubRetHitPlan.bestDir != -1 && iad::kCandY[chubRetHitPlan.bestDir] != 0.0f);
+
+    // C. Gazing Globin (24.1.0) + player pinned at top wall y=149.9f with solid room rocks (Hit #2/#4 geometry check)
+    f.initBase();
+    f.addGridEntity(3 + 4 * 15, 2, 0, 0, iad::IsaacEnums::kGridCollSolid); // solid rock enables hasSolidCells path
+    f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {320.0f, 149.9f});
+    f.addNpc(24, 1, {305.0f, 185.0f}, {1.5f, -5.0f}, "WalkVert", 2.0f);
+    assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+    assert(scene.grid.footprintSafe(320.0f, 149.9f, 10.0f, false));
+    auto topWallPlan = iad::solveNativePlan(scene, 0, -1, true);
+    assert(topWallPlan.danger && topWallPlan.bestDir != -1);
+    assert(iad::kCandX[topWallPlan.bestDir] > 0.0f || iad::kCandY[topWallPlan.bestDir] > 0.0f);
+
+    std::puts("PASS Krampus Attack2/Attack2Alt I1 rule, Chubber 39.2/39.22 boomerang & 24.1 top-wall dodge");
+}
+
+void testItLivesFamiliarEffectFloodThroughput() {
+    WorldFixture f;
+    f.initBase();
+    f.m.w<iad::Vec2>(f.player + iad::Offsets::Entity::kPos, {320.0f, 360.0f});
+    uintptr_t itLives = f.addNpc(78, 1, {320.0f, 240.0f}, {0.0f, 0.0f}, "Idle", 0.0f);
+    f.m.w<uint8_t>(itLives + iad::Offsets::NPC::kIsBoss, 1);
+
+    // 19 projectiles parented to It Lives!
+    for (int i = 0; i < 19; ++i) {
+        float ang = static_cast<float>(i) * 0.33f;
+        uintptr_t p = f.addProjectile({320.0f + std::cos(ang) * 20.0f, 240.0f + std::sin(ang) * 20.0f},
+                                      {std::cos(ang) * 5.0f, std::sin(ang) * 5.0f});
+        f.m.wPtr(p + iad::Offsets::Entity::kParent, itLives);
+        f.m.wPtr(p + iad::Offsets::Entity::kSpawnerEntity, itLives);
+    }
+    // Flood with 40 Familiars (type=3), 80 harmless visual Effects, 40 player Tears, and 10 dead non-exploder NPCs
+    for (int i = 0; i < 40; ++i) {
+        uintptr_t fam = f.m.alloc(0x600u);
+        f.m.w<uint8_t>(fam + iad::Offsets::Entity::kExists, 1);
+        f.m.w<int>(fam + iad::Offsets::Entity::kType, iad::IsaacEnums::kEntFamiliar);
+        f.m.w<iad::Vec2>(fam + iad::Offsets::Entity::kPos, {280.0f + i * 2.0f, 350.0f});
+        f.entities.push_back(fam);
+    }
+    static constexpr int kHarmlessFx[4] = {7, 15, 70, 13};
+    for (int i = 0; i < 80; ++i) {
+        f.addEffect(kHarmlessFx[i & 3], {200.0f + (i % 10) * 25.0f, 200.0f + (i / 10) * 18.0f});
+    }
+    for (int i = 0; i < 40; ++i) {
+        uintptr_t tear = f.m.alloc(0x600u);
+        f.m.w<uint8_t>(tear + iad::Offsets::Entity::kExists, 1);
+        f.m.w<int>(tear + iad::Offsets::Entity::kType, iad::IsaacEnums::kEntTear);
+        f.m.w<int>(tear + iad::Offsets::Entity::kSpawnerType, iad::IsaacEnums::kEntPlayer);
+        f.m.w<iad::Vec2>(tear + iad::Offsets::Entity::kPos, {320.0f, 340.0f - i * 3.0f});
+        f.m.w<iad::Vec2>(tear + iad::Offsets::Entity::kVel, {0.0f, -10.0f});
+        f.entities.push_back(tear);
+    }
+    for (int i = 0; i < 10; ++i) {
+        uintptr_t corpse = f.addNpc(10, 0, {180.0f + i * 25.0f, 220.0f});
+        f.m.w<uint8_t>(corpse + iad::Offsets::Entity::kDead, 1);
+    }
+    f.syncEntities();
+
+    iad::ThreatScene scene;
+    assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+    assert(scene.bullets.size() == 19);
+    assert(scene.discs.size() == 1); // Only It Lives!; 0 leaks from familiars/effects/tears/corpses
+
+    double collectUs = 0.0;
+    for (int iter = 0; iter < 200; ++iter) {
+        auto t0 = std::chrono::steady_clock::now();
+        assert(iad::collectThreatScene(f.m, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+        auto t1 = std::chrono::steady_clock::now();
+        collectUs += std::chrono::duration<double, std::micro>(t1 - t0).count();
+    }
+    collectUs /= 200.0;
+    std::printf("BENCH 60Hz It Lives! flood (%zu entities: 40 fam + 80 fx + 40 tears + 10 dead + 19 proj): collect=%.1f us/frame\n",
+                f.entities.size(), collectUs);
+    assert(collectUs < 400.0);
+}
+
+void testBatchedReadFallbackAndSanitizedPtrs() {
+    class BlockedRangeMem final : public iad::MemReader {
+        const MockMem& base;
+        uintptr_t blockA0 = 0, blockA1 = 0;
+        uintptr_t blockB0 = 0, blockB1 = 0;
+        bool overlaps(uintptr_t addr, size_t bytes, uintptr_t lo, uintptr_t hi) const {
+            if (lo >= hi || bytes == 0) return false;
+            uintptr_t end = addr + bytes;
+            return addr < hi && end > lo;
+        }
+    public:
+        BlockedRangeMem(const MockMem& m, uintptr_t a0, uintptr_t a1, uintptr_t b0 = 0, uintptr_t b1 = 0)
+            : base(m), blockA0(a0), blockA1(a1), blockB0(b0), blockB1(b1) {}
+        bool readable(uintptr_t addr, size_t bytes) const override {
+            if (overlaps(addr, bytes, blockA0, blockA1) || overlaps(addr, bytes, blockB0, blockB1)) return false;
+            return base.readable(addr, bytes);
+        }
+        bool readBytes(uintptr_t addr, void* out, size_t bytes) const override {
+            if (!readable(addr, bytes)) return false;
+            return base.readBytes(addr, out, bytes);
+        }
+    };
+
+    WorldFixture f;
+    f.initBase();
+    // 1. Repro: MOM_FOOT_STOMP (29) Size=20, SizeMulti={2,2}, Effect::Scale=0.5 when [e+0x37c..e+0x38c) fails 44B batch
+    uintptr_t stomp = f.addEffect(29, {320.0f, 280.0f}, 20.0f, 1.0f, 0.5f, 0.0f);
+    f.m.w<iad::Vec2>(stomp + iad::Offsets::Entity::kSizeMulti, {2.0f, 2.0f});
+    // 2. Chubber (39.2.0) + returning worm (39.22.0) when [parent+kFlags..parent+kFlags+8) fails 14B life batch
+    uintptr_t chub = f.addNpc(iad::IsaacEnums::kEntVis, 2, {160.0f, 280.0f}, {0.0f, 0.0f}, "Attack03Loop", 0.0f);
+    uintptr_t worm = f.addNpc(iad::IsaacEnums::kEntVis, 22, {270.0f, 280.0f}, {-10.0f, 0.0f}, "Side", 2.0f);
+    f.m.w<int32_t>(worm + iad::Offsets::NPC::kStateFrame, 35);
+    f.m.wPtr(worm + iad::Offsets::Entity::kParent, chub);
+    f.m.wPtr(worm + iad::Offsets::Entity::kSpawnerEntity, chub);
+    // 3. Small bogus gridPtr < 0x10000u must sanitize to 0 and consult kGridRawTypes (solid rock 1000)
+    int testIdx = 4 + 4 * 15;
+    f.m.w<uint32_t>(f.room + iad::Offsets::Room::kGridEntities + static_cast<uintptr_t>(testIdx) * 4u, 0x1234u);
+    f.m.w<int32_t>(f.room + iad::Offsets::Room::kGridRawTypes + static_cast<uintptr_t>(testIdx) * 4u, 1000);
+
+    BlockedRangeMem pmem(f.m, stomp + 0x37cu, stomp + 0x38cu,
+                         chub + iad::Offsets::Entity::kFlags, chub + iad::Offsets::Entity::kFlags + 8u);
+    iad::ThreatScene scene;
+    assert(iad::collectThreatScene(pmem, MockMem::kBase, WorldFixture::kSeed, 1, 450, 0, 60, scene));
+    bool sawFullStomp = false;
+    for (const auto& d : scene.discs) {
+        if (std::abs(d.pos.x - 320.0f) < 1.0f && std::abs(d.pos.y - 280.0f) < 1.0f) {
+            assert(std::abs(d.radius - 40.0f) < 0.05f); // exact Size(20) * SizeMulti(2) = 40, NOT 32.5!
+            sawFullStomp = true;
+        }
+    }
+    assert(sawFullStomp);
+    assert(scene.bullets.size() == 1 && scene.bullets[0].minX >= 150.0f); // parent resolved despite 14B batch fail
+    assert((scene.grid.cells[testIdx] & iad::RoomGrid::kSolidGround) != 0);
+
+    std::puts("PASS batched-read fallbacks (kSizeMulti, Chubber parent life) & <0x10000 pointer sanitization");
+}
+
 } // namespace
 
 int main() {
@@ -721,6 +949,9 @@ int main() {
     testNarrowRoomsKinematicsAndOnlineQueue();
     testSpikesFlightSacrificeOwnershipCreepAndFireplace();
     testSafetyPausePassthroughInterpTwinAndBombCapsule();
+    testKrampusAttack2ChubberBoomerangAndTopWall();
+    testItLivesFamiliarEffectFloodThroughput();
+    testBatchedReadFallbackAndSanitizedPtrs();
     benchmarkCombatRoom();
     std::puts("PASS all native 60Hz memory-read & 2-stage planning tests");
     return 0;
