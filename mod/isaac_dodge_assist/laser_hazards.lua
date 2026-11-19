@@ -131,7 +131,7 @@ end
 -- Double Vis fires its pair from "Attack02<dir>": the beams appeared on
 -- frame 32 and hit on 34 (2026-11-04). Super Gluttony (49.1) fires its
 -- pair the same way (B78YY60D: hit on Attack02Horiz frame 34).
-local brimstoneAngles = {Horiz={0,180}, Left={180}, Right={0}, Down={90}, Up={270}}
+local brimstoneAngles = {Horiz={0,180}, Hori={0,180}, Left={180}, Right={0}, Down={90}, Up={270}}
 local BRIMSTONE_FRAME, DOUBLE_VIS_FRAME = 27, 31
 local function appendBrimstone(npc, room, shapes)
     if npc.Type == EntityType.ENTITY_VIS then
@@ -200,8 +200,12 @@ local function appendBossBeam(npc, room, shapes, target)
             ENTITY_EYE = {{variant=0, animation="Shoot", frame=10, aim=true, width=12},
                 {variant=1, animation="Shoot", frame=10, aim=true}},
             ENTITY_RED_GHOST = {{prefix="Shoot", frame=13}},
+            ENTITY_DEATHS_HEAD = {{variant=3, prefix="Attack", frame=24, width=20}},
         }) do
             if EntityType[name] then bossBeams[EntityType[name]] = beams end
+        end
+        if not bossBeams[212] then
+            bossBeams[212] = {{variant=3, prefix="Attack", frame=24, width=20}}
         end
     end
     local beams = bossBeams[npc.Type]
@@ -290,10 +294,29 @@ local function appendDogma(npc, room, shapes, target)
     end
 end
 
+-- The Bloat (68.1): fires instant horizontal (y - 40) and downward brimstone
+-- with zero windup (CZTMRJ6J Hit #8). Warn along those three lanes while grounded.
+local function appendBloat(npc, room, shapes)
+    local peepEnum = EntityType and EntityType.ENTITY_PEEP
+    if (npc.Type ~= 68 and (not peepEnum or npc.Type ~= peepEnum)) or npc.Variant ~= 1 then return end
+    if npc.SpriteOffset and npc.SpriteOffset.Y < -5 then return end
+    local reach = (room:GetBottomRightPos() - room:GetTopLeftPos()):Length()
+    local eyeOrigin = Vector(npc.Position.X, npc.Position.Y - 40)
+    for _, angle in ipairs({0, 180}) do
+        shapes[#shapes+1] = {origin=eyeOrigin, velocity=npc.Velocity,
+            ring=false, width=24, points={Vector(0,0), Vector(reach,0):Rotated(angle)},
+            reach=reach, angularSpeed=0, delay=0, warning=true}
+    end
+    shapes[#shapes+1] = {origin=npc.Position, velocity=npc.Velocity,
+        ring=false, width=24, points={Vector(0,0), Vector(0, reach)},
+        reach=reach, angularSpeed=0, delay=0, warning=true}
+end
+
 -- target: the position aimed beams point at (our player).
 function M.appendWarnings(npc, room, shapes, target)
     appendBrimstone(npc, room, shapes)
     appendBossBeam(npc, room, shapes, target)
+    appendBloat(npc, room, shapes)
     appendDogma(npc, room, shapes, target)
     appendRageCreep(npc, room, shapes)
     if npc.Type ~= EntityType.ENTITY_URIEL and npc.Type ~= EntityType.ENTITY_GABRIEL then return end

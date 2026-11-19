@@ -435,33 +435,53 @@ local function buildField(p,steps,bullets,contacts,bombs,areas,lasers)
         local enemy=contacts[i]
         local sample=motion[enemy.InitSeed]
         local speed=sample and sample.speed or enemy.Velocity:Length()
-        -- Only the engine contact circle is a hit. The speed buffer is a
-        -- proximity warning: when it counted as a hit, a chasing enemy
-        -- made every direction look like an immediate collision.
-        local hard,near=enemy.Size+CONTACT_MARGIN,enemy.Size+5+min(16,speed*2)
-        local acc=sample and sample.acceleration
-        local hasNZ=acc and (acc.X~=0 or acc.Y~=0)
-        local hasAccel=hasNZ and acc:LengthSquared()>0.01
-        if hasNZ then forecast(enemy,steps) end
-        local path=hasNZ and sample.path
-        local ex,ey,evx,evy=enemy.Position.X,enemy.Position.Y,enemy.Velocity.X,enemy.Velocity.Y
-        for t=0,steps do
-            local previous=max(0,t-1)
-            local ax,ay,bx,by
-            if path then
-                local a,b=path[previous],path[t]
-                ax,ay,bx,by=a.X,a.Y,b.X,b.Y
-            else
-                ax,ay,bx,by=ex+evx*previous,ey+evy*previous,ex+evx*t,ey+evy*t
+        -- Respect Entity.SizeMulti for anisotropic NPCs (e.g. Beast 166x215.8,
+        -- Stalactite 22x220): model ellipses as swept 2-point capsules on lasers.
+        local sm=enemy.SizeMulti
+        local sx=(sm and sm.X and math.abs(sm.X)>0.01) and math.abs(sm.X) or 1
+        local sy=(sm and sm.Y and math.abs(sm.Y)>0.01) and math.abs(sm.Y) or 1
+        local rx,ry=enemy.Size*sx,enemy.Size*sy
+        if math.abs(rx-ry)>2 then
+            local rMin,rMax=min(rx,ry),max(rx,ry)
+            local span=rMax-rMin
+            local pts=(ry>rx) and {Vector(0,-span),Vector(0,span)} or {Vector(-span,0),Vector(span,0)}
+            lasers[#lasers+1]={origin=enemy.Position,velocity=enemy.Velocity,
+                ring=false,width=rMin+CONTACT_MARGIN,points=pts,reach=span,angularSpeed=0,delay=0}
+            local spdBuf=min(16,speed*2)
+            if spdBuf>1 then
+                lasers[#lasers+1]={origin=enemy.Position,velocity=enemy.Velocity,
+                    ring=false,width=rMin+5+spdBuf,points=pts,reach=span,angularSpeed=0,delay=0,warning=true}
             end
-            addXY(field,t,ax,ay,bx,by,hard)
-            addXY(field,t,ax,ay,bx,by,near,true)
-            -- A fast enemy can stop accelerating or change its turn. Retain
-            -- constant velocity as a second hypothesis, without doubling risk.
-            if hasAccel then
-                ax,ay,bx,by=ex+evx*previous,ey+evy*previous,ex+evx*t,ey+evy*t
+        else
+            local baseR=max(rx,ry)
+            -- Only the engine contact circle is a hit. The speed buffer is a
+            -- proximity warning: when it counted as a hit, a chasing enemy
+            -- made every direction look like an immediate collision.
+            local hard,near=baseR+CONTACT_MARGIN,baseR+5+min(16,speed*2)
+            local acc=sample and sample.acceleration
+            local hasNZ=acc and (acc.X~=0 or acc.Y~=0)
+            local hasAccel=hasNZ and acc:LengthSquared()>0.01
+            if hasNZ then forecast(enemy,steps) end
+            local path=hasNZ and sample.path
+            local ex,ey,evx,evy=enemy.Position.X,enemy.Position.Y,enemy.Velocity.X,enemy.Velocity.Y
+            for t=0,steps do
+                local previous=max(0,t-1)
+                local ax,ay,bx,by
+                if path then
+                    local a,b=path[previous],path[t]
+                    ax,ay,bx,by=a.X,a.Y,b.X,b.Y
+                else
+                    ax,ay,bx,by=ex+evx*previous,ey+evy*previous,ex+evx*t,ey+evy*t
+                end
                 addXY(field,t,ax,ay,bx,by,hard)
                 addXY(field,t,ax,ay,bx,by,near,true)
+                -- A fast enemy can stop accelerating or change its turn. Retain
+                -- constant velocity as a second hypothesis, without doubling risk.
+                if hasAccel then
+                    ax,ay,bx,by=ex+evx*previous,ey+evy*previous,ex+evx*t,ey+evy*t
+                    addXY(field,t,ax,ay,bx,by,hard)
+                    addXY(field,t,ax,ay,bx,by,near,true)
+                end
             end
         end
     end
@@ -475,18 +495,23 @@ local function buildField(p,steps,bullets,contacts,bombs,areas,lasers)
         if hasNZ then forecast(bullet,steps) end
         local path=hasNZ and sample.path
         local bx0,by0,bvx,bvy=bullet.Position.X,bullet.Position.Y,bullet.Velocity.X,bullet.Velocity.Y
+        local beastGrav = beastRoom and (bullet.FallingAccel or 0) > 0.05 and ((bullet.FallingAccel or 0) * 1.25) or 0
         for t=0,steps do
-            if heightIntersects(bullet,t) then
+            if beastRoom or heightIntersects(bullet,t) then
                 local previous=max(0,t-1)
                 local ax,ay,bx,by
-                if path then
+                if beastGrav > 0 then
+                    ax,ay=bx0+bvx*previous,by0+bvy*previous+0.5*beastGrav*previous*previous
+                    bx,by=bx0+bvx*t,by0+bvy*t+0.5*beastGrav*t*t
+                    if by > 460 and (bvy + beastGrav*t) > 0 then break end
+                elseif path then
                     local a,b=path[previous],path[t]
                     ax,ay,bx,by=a.X,a.Y,b.X,b.Y
                 else
                     ax,ay,bx,by=bx0+bvx*previous,by0+bvy*previous,bx0+bvx*t,by0+bvy*t
                 end
                 addXY(field,t,ax,ay,bx,by,r)
-                if hasAccel then
+                if hasAccel and beastGrav == 0 then
                     addXY(field,t,bx0+bvx*previous,by0+bvy*previous,bx0+bvx*t,by0+bvy*t,r)
                 end
             end
@@ -700,8 +725,11 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     local reach=stride*steps+p.Size
     hazardCells = {}
     -- Exploders and the player side's shots that may kill them.
-    local exploders, tears, beams, fusedBombs, liveBombs = {}, {}, {}, {}, {}
+    local exploders, tears, beams, fusedBombs, liveBombs, fireJets = {}, {}, {}, {}, {}, {}
     local trackable, rawBullets, rawContacts, rawLandings = {}, {}, {}, {}
+    local extAccelX, extAccelY = 0, 0
+    local fireJetVar = (EffectVariant and EffectVariant.FIRE_JET) or 147
+    local fireWaveVar = (EffectVariant and EffectVariant.FIRE_WAVE) or 148
     local tEffect = EntityType and EntityType.ENTITY_EFFECT
     local tPlayer = EntityType and EntityType.ENTITY_PLAYER
     local tFamiliar = EntityType and EntityType.ENTITY_FAMILIAR
@@ -764,6 +792,13 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
                     if envelope then
                         areas[#areas+1] = {position=effect.Position,velocity=effect.Velocity,radius=envelope,
                             warning=warningEffects[effect.Variant]}
+                        if (effect.Variant == fireJetVar or effect.Variant == fireWaveVar) and not effect:IsDead() and #fireJets < 64 then
+                            local sp = effect.GetSprite and effect:GetSprite()
+                            if sp then
+                                fireJets[#fireJets+1] = {pos=effect.Position, spawner=effect.SpawnerEntity,
+                                    spawnerType=effect.SpawnerType or 0, frame=sp:GetFrame() or 0, radius=envelope}
+                            end
+                        end
                     end
                     if swirl then LaserHazards.appendEffectWarnings(effect,room,lasers) end
                 end
@@ -820,6 +855,9 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
                         NpcHazards.pon(npc,areas)
                         NpcHazards.mother(npc,room,areas)
                         NpcHazards.chubberWindup(npc,room,lasers)
+                        NpcHazards.whipper(npc,room,lasers)
+                        local bx, by = NpcHazards.beast(npc,p,areas,lasers)
+                        extAccelX, extAccelY = extAccelX + bx, extAccelY + by
                         if contactThreat(npc) then
                             rawContacts[#rawContacts+1] = npc
                         elseif landingThreat(npc) then
@@ -869,10 +907,13 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
     end
     for i = 1, #rawContacts do
         local npc = rawContacts[i]
-        if npc.Position:Distance(p.Position) < reach+npc.Size+32+MotionPrediction.reach(motion,npc,steps) then
+        local sm = npc.SizeMulti
+        local maxMulti = sm and math.max(math.abs(sm.X or 1), math.abs(sm.Y or 1), 1) or 1
+        if npc.Position:Distance(p.Position) < reach+npc.Size*maxMulti+32+MotionPrediction.reach(motion,npc,steps) then
             contacts[#contacts+1] = npc
         end
     end
+    if #fireJets >= 2 then NpcHazards.fireWaves(fireJets,room,steps,areas) end
     for i = 1, #rawLandings do
         local npc = rawLandings[i]
         if npc.Position:Distance(p.Position) < reach+npc.Size+32+MotionPrediction.reach(motion,npc,steps) then
@@ -994,6 +1035,7 @@ mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
         steps=steps,field=field,sample=ThreatField.sample,sampleXY=ThreatField.sampleXY,
         gridSafe=gridSafe,gridSafeXY=gridSafeXY,ticks=PlayerMotion.TICKS,
         input=#pending>0 and pending[#pending] or input,pending=pending,
+        extAccel=(extAccelX ~= 0 or extAccelY ~= 0) and {X=extAccelX, Y=extAccelY} or nil,
         models={PlayerMotion.models(kinematics)}},directions,spaceCost)
     local finished=Isaac.GetTime()
     Diagnostics.planner(steps,inside,finished-started,field.queries,field.checks,field.records,paths)

@@ -51,6 +51,8 @@ function M.path(ctx,dir,model)
     if current then cx,cy=current.X*terminal,current.Y*terminal end
     local pending=ctx.pending
     local queued=pending and #pending or 0
+    local ext=ctx.extAccel
+    local extX,extY=ext and ext.X or 0,ext and ext.Y or 0
     local tick=0
     for t=1,steps do
         local ox,oy=x,y
@@ -65,6 +67,7 @@ function M.path(ctx,dir,model)
                 local f=(gx==0 and gy==0) and model.idle or model.drive
                 vx,vy=vx*f+gx*(1-f),vy*f+gy*(1-f)
             end
+            if extX~=0 or extY~=0 then vx,vy=vx+extX,vy+extY end
             dx,dy=dx+vx,dy+vy
         end
         local keepX,keepY

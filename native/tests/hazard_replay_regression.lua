@@ -501,4 +501,48 @@ do
  print('PASS reason=room previous-room attribution (1.1081 -> 8.31)')
 end
 
+-- CZTMRJ6J hazards: Whipper/Snapper 834.1, Bloat 68.1, Brimstone Death's Head 212.3,
+-- propagating Fire Jet 1000.147 wave, Beast 951.0 SuckLoop + SizeMulti, Poison Mind 301.0 chaser.
+do
+ local lh = dofile('mod/isaac_dodge_assist/laser_hazards.lua')
+ -- 1. Snapper 834.1 AttackHori whip at 180px
+ local snap = entity(834, 1, 'AttackHori', 5)
+ snap.Position = Vector(350, 280); snap.Velocity = Vector(0, 0)
+ local sLasers = {}
+ NpcHazards.whipper(snap, room, sLasers)
+ assert(#sLasers >= 1 and sLasers[1].reach >= 200 and not sLasers[1].warning, 'Snapper AttackHori must emit hard whip laser')
+
+ -- 2. Brimstone Death's Head 212.3 AttackDown + Bloat 68.1 instant brimstone warning lanes
+ local dh = entity(212, 3, 'AttackDown', 15)
+ dh.Position = Vector(320, 240); dh.Velocity = Vector(0, 0)
+ local dLasers = {}
+ lh.appendWarnings(dh, room, dLasers, Vector(320, 340))
+ assert(#dLasers == 1 and not dLasers[1].warning, '212.3 AttackDown must emit hard beam windup')
+ local bloat = entity(68, 1, 'Idle', 0)
+ bloat.Position = Vector(370, 312); bloat.Velocity = Vector(0, 0); bloat.SpriteOffset = Vector(0, 0)
+ local bLasers = {}
+ lh.appendWarnings(bloat, room, bLasers, Vector(220, 272))
+ assert(#bLasers == 3 and bLasers[1].warning and bLasers[1].origin.Y == 272, 'Bloat 68.1 must emit 3 soft brimstone lanes')
+
+ -- 3. Propagating Fire Jet 1000.147 wave extrapolation
+ local bk = entity(41, 4, 'Idle', 0)
+ local fAreas = {}
+ NpcHazards.fireWaves({
+  {pos=Vector(270, 160), spawner=bk, spawnerType=41, frame=6, radius=35},
+  {pos=Vector(240, 160), spawner=bk, spawnerType=41, frame=4, radius=35},
+ }, room, 14, fAreas)
+ assert(#fAreas == 1 and fAreas[1].velocity.X < -10 and not fAreas[1].warning, 'Fire Jet chain must extrapolate moving wave')
+
+ -- 4. Beast 951.0 SuckLoop pull + warning + Poison Mind 301.0 chaser
+ local beast = entity(951, 0, 'SuckLoop', 5)
+ beast.Position = Vector(520, 320); beast.Size = 166
+ local bAreas, beastLasers = {}, {}
+ local ex, ey = NpcHazards.beast(beast, {Position=Vector(294, 320)}, bAreas, beastLasers)
+ assert(ex > 0.35 and math.abs(ey) < 0.05 and #beastLasers == 1 and beastLasers[1].warning,
+  'Beast SuckLoop must return suction accel and standoff warning')
+ local pm = entity(EntityType.ENTITY_POISON_MIND or 301, 0, 'Walk', 0)
+ assert(NpcHazards.chaser(pm), 'Poison Mind 301.0 must be flagged as chaser exploder')
+ print('PASS CZTMRJ6J hazards: Snapper 834.1, 212.3, Bloat 68.1, FireJet wave, Beast SuckLoop, Poison Mind')
+end
+
 for _,line in ipairs(logs)do assert(not line:find('IAD LOADER: core error',1,true),line)end

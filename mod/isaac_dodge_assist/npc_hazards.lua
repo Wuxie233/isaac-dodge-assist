@@ -61,10 +61,11 @@ end
 -- then charges across at ~18/update (6LW23XWD f=238). Warn along clear cardinal
 -- lanes while stationary so the player does not walk blindly across its trigger.
 local GRUDGE_TYPE, PON_TYPE, MOTHER_TYPE, VIS_TYPE = 877, 840, 912, 39
+local WHIPPER_TYPE, BEAST_TYPE = 834, 951
 local CHUBBER_VARIANT, CHUBBER_WORM_VARIANT = 2, 22
 local CHUBBER_MAX_REACH, CHUBBER_RETURN_SPEED, CHUBBER_TURN_SPEED, CHUBBER_MIN_DIST = 260, 13.5, 4.0, 24
 local GRUDGE_AXES = {Vector(-1, 0), Vector(1, 0), Vector(0, -1), Vector(0, 1)}
-local CHUBBER_ANGLES = {Horiz={0, 180}, Left={180}, Right={0}, Down={90}, Up={270}}
+local CHUBBER_ANGLES = {Horiz={0, 180}, Hori={0, 180}, Left={180}, Right={0}, Down={90}, Up={270}}
 local function isNpcType(npc, key, rawId)
     local t = npc.Type
     local enumId = EntityType and EntityType[key]
@@ -205,6 +206,127 @@ function M.mother(npc, room, out)
         anim:find("knife", 1, true) or anim:find("spin", 1, true) then
         out[#out+1] = {position=npc.Position, velocity=npc.Velocity,
             radius=math.max(48, (npc.Size or 28) + 20), warning=true}
+    end
+end
+
+-- Whipper / Snapper / Flagellant (834.0/1/2): extends a ~200px whip without
+-- spawning a projectile or laser (CZTMRJ6J Hit #16 at 197px on AttackHori:9).
+function M.whipper(npc, room, lasers)
+    if not isNpcType(npc, "ENTITY_WHIPPER", WHIPPER_TYPE) or not npc:IsActiveEnemy(false) then return end
+    local sprite = npc.GetSprite and npc:GetSprite()
+    if not sprite then return end
+    local anim = sprite:GetAnimation()
+    local side = type(anim) == "string" and anim:match("^Attack(%a+)$")
+    local angles = side and CHUBBER_ANGLES[side]
+    local f = sprite:GetFrame() or 0
+    if not angles or f > 15 then return end
+    if (side == "Hori" or side == "Horiz") and sprite.FlipX ~= nil then
+        angles = {sprite.FlipX and 180 or 0}
+    end
+    local activeFrom = math.max(1, 8 - f)
+    for _, angle in ipairs(angles) do
+        local dir = Vector(1, 0):Rotated(angle)
+        local dist = 220
+        if room and room.IsPositionInRoom then
+            for step = 40, 220, 40 do
+                if not room:IsPositionInRoom(npc.Position + dir * step, 0) then dist = math.max(80, step); break end
+            end
+        end
+        lasers[#lasers+1] = {origin=npc.Position, velocity=npc.Velocity or Vector(0,0),
+            ring=false, width=18, points={Vector(0,0), dir * dist},
+            reach=dist, angularSpeed=0, delay=0, activeFrom=activeFrom}
+    end
+end
+
+-- The Beast (951.0) SuckStart/SuckLoop suction pull + standoff warning
+-- (CZTMRJ6J Hit #26-#28), and Ultra War Bomb (951.31) falling blast lead (#25).
+function M.beast(npc, player, areas, lasers)
+    if not isNpcType(npc, "ENTITY_THE_BEAST", BEAST_TYPE) then return 0, 0 end
+    if npc.Variant == 0 then
+        local sprite = npc.GetSprite and npc:GetSprite()
+        local anim = sprite and sprite:GetAnimation()
+        if type(anim) == "string" and anim:lower():find("suck", 1, true) then
+            local extX, extY = 0, 0
+            if player and player.Position then
+                local dx, dy = npc.Position.X - player.Position.X, npc.Position.Y - player.Position.Y
+                local dist = math.sqrt(dx*dx + dy*dy)
+                if dist > 1 then
+                    local pull = math.max(0.35, math.min(0.80, 125 / math.max(150, dist)))
+                    extX, extY = dx / dist * pull, dy / dist * pull
+                end
+            end
+            if lasers then
+                local dirX = (npc.Position.X >= 320) and -1 or 1
+                local reach = (npc.Size or 166) + 210
+                lasers[#lasers+1] = {origin=npc.Position, velocity=Vector(0,0),
+                    ring=false, width=160, points={Vector(0,0), Vector(dirX * reach, 0)},
+                    reach=reach, angularSpeed=0, delay=0, warning=true}
+            end
+            return extX, extY
+        end
+    elseif npc.Variant == 31 and areas then
+        local vel = npc.Velocity or Vector(0, 0)
+        areas[#areas+1] = {position=npc.Position + vel * 1.5, velocity=Vector(vel.X, vel.Y + 3),
+            radius=(npc.Size or 34) + 36, warning=true}
+    end
+    return 0, 0
+end
+
+-- Propagating FIRE_JET (1000.147) / FIRE_WAVE (1000.148) chains: each tile has
+-- vel=(0,0) while new tiles spawn every ~2 updates 30px ahead (CZTMRJ6J Hit #12).
+function M.fireWaves(jets, room, steps, areas)
+    if not jets or #jets < 2 then return end
+    local used = {}
+    for i = 1, #jets do
+        if not used[i] then
+            local g0 = jets[i]
+            local sp0 = g0.spawner
+            local newest
+            for j = i, #jets do
+                local gj = jets[j]
+                local same = sp0 and (gj.spawner == sp0) or
+                    (not sp0 and not gj.spawner and gj.spawnerType == g0.spawnerType and
+                     gj.pos:Distance(g0.pos) <= 200)
+                if same then
+                    used[j] = true
+                    if not newest or gj.frame < newest.frame then newest = gj end
+                end
+            end
+            if newest and newest.frame <= 8.5 then
+                local prev, bestDf
+                for j = 1, #jets do
+                    local gj = jets[j]
+                    if gj ~= newest then
+                        local same = newest.spawner and (gj.spawner == newest.spawner) or
+                            (not newest.spawner and not gj.spawner and gj.spawnerType == newest.spawnerType)
+                        local df = gj.frame - newest.frame
+                        if same and df >= 0.5 and df <= 8.0 then
+                            local d = newest.pos:Distance(gj.pos)
+                            if d >= 10 and d <= 80 and (not bestDf or df < bestDf) then
+                                bestDf, prev = df, gj
+                            end
+                        end
+                    end
+                end
+                if prev then
+                    local vx = (newest.pos.X - prev.pos.X) / bestDf
+                    local vy = (newest.pos.Y - prev.pos.Y) / bestDf
+                    local spd = math.sqrt(vx*vx + vy*vy)
+                    if spd >= 4 and spd <= 25 then
+                        local waveTo = math.min(steps or 14, 12)
+                        if room and room.IsPositionInRoom then
+                            for t = 1, waveTo do
+                                if not room:IsPositionInRoom(Vector(newest.pos.X + vx*t, newest.pos.Y + vy*t), 0) then
+                                    waveTo = t; break
+                                end
+                            end
+                        end
+                        areas[#areas+1] = {position=newest.pos, velocity=Vector(vx, vy),
+                            radius=math.max(35, newest.radius or 35), from=0, to=waveTo}
+                    end
+                end
+            end
+        end
     end
 end
 
@@ -352,6 +474,7 @@ local chasers = kinds({
     ENTITY_LEECH = {[1]=true, [2]=true},
     ENTITY_BLACK_MAW = false,
     ENTITY_TICKING_SPIDER = false,
+    ENTITY_POISON_MIND = false,
     ENTITY_FLY_BOMB = false,
 })
 local function listed(list, entity)
