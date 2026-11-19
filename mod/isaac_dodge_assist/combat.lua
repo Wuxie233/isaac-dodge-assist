@@ -182,8 +182,13 @@ local function ownedBy(e, player)
         if source and not known[source] then
             known[source] = true
             hops = hops + 1
-            local ok, spawner, parent, kind, controller = pcall(function()
-                return source.SpawnerEntity, source.Parent, source.Type, source.ControllerIndex
+            local ok, spawner, parent, kind, controller, famPlayer = pcall(function()
+                local fp
+                if source.Type == EntityType.ENTITY_FAMILIAR then
+                    local fam = source.ToFamiliar and source:ToFamiliar()
+                    fp = fam and fam.Player or nil
+                end
+                return source.SpawnerEntity, source.Parent, source.Type, source.ControllerIndex, fp
             end)
             if not ok then return false end
             if kind == EntityType.ENTITY_PLAYER then
@@ -195,6 +200,7 @@ local function ownedBy(e, player)
                     matched = true
                 end
             end
+            if famPlayer then pending[#pending+1] = famPlayer end
             if spawner then pending[#pending+1] = spawner end
             if parent then pending[#pending+1] = parent end
         end
@@ -456,8 +462,8 @@ local BEAM_HALF = 12
 -- A capped beam is only counted on an enemy it overlaps by half its size:
 -- grazing the tip missed in the closed-loop sim whenever we drifted back.
 local function inReach(forward, reach, size) return forward <= reach + size*0.5 end
-local function aimBeam(player, target, delay, beam)
-    local p, t, v = player.Position, target.Position, target.Velocity
+local function aimBeam(player, target, delay, beam, shooter)
+    local p, t, v = (shooter and shooter.Position) or player.Position, target.Position, target.Velocity
     local pv = player.Velocity or Vector(0, 0)
     local ox, oy = p.X + pv.X*delay, p.Y + pv.Y*delay
     local px, py = t.X + v.X*delay, t.Y + v.Y*delay
@@ -477,6 +483,30 @@ end
 -- online input queue, from where the queued command will actually fire, and
 -- measure how far the drifting tear passes from it. Pick the closest pass.
 -- beam = {reach=...} aims a beam instead.
+local function findShooter(entities, player)
+    local lilith = (PlayerType and PlayerType.PLAYER_LILITH) or 13
+    local blind = false
+    if player.GetPlayerType then
+        local ok, pt = pcall(player.GetPlayerType, player)
+        if ok and pt == lilith then blind = true end
+    end
+    if not blind and player.CanShoot then
+        local ok, can = pcall(player.CanShoot, player)
+        if ok and can == false then blind = true end
+    end
+    if not blind then return player end
+    local famType = (EntityType and EntityType.ENTITY_FAMILIAR) or 3
+    local incubusVar = (FamiliarVariant and FamiliarVariant.INCUBUS) or 80
+    local best, bestDistSq
+    for _, e in ipairs(entities or {}) do
+        if e.Type == famType and e.Variant == incubusVar and not (e.IsDead and e:IsDead()) and ownedBy(e, player) then
+            local dx, dy = e.Position.X - player.Position.X, e.Position.Y - player.Position.Y
+            local d2 = dx*dx + dy*dy
+            if not bestDistSq or d2 < bestDistSq then best, bestDistSq = e, d2 end
+        end
+    end
+    return best or player
+end
 local function findRocketTarget(entities, player)
     local targetVar = (EffectVariant and EffectVariant.TARGET) or 30
     for _, e in ipairs(entities or {}) do
@@ -496,9 +526,10 @@ local function aimRocket(crosshair, target, delay)
 end
 local function aim(player, target, queueDelay, beam, opts)
     local delay = queueDelay or 0
-    if beam then return aimBeam(player, target, delay, beam) end
+    local shooter = opts and opts.shooter
+    if beam then return aimBeam(player, target, delay, beam, shooter) end
     if opts and opts.crosshair then return aimRocket(opts.crosshair, target, delay) end
-    local p, t, v = player.Position, target.Position, target.Velocity
+    local p, t, v = (shooter and shooter.Position) or player.Position, target.Position, target.Velocity
     local pv = player.Velocity or Vector(0, 0)
     local ox, oy = p.X + pv.X*delay, p.Y + pv.Y*delay
     local baseSpeed = max(1, (player.ShotSpeed or 1) * 10)
@@ -1014,11 +1045,13 @@ function M.update(state, ctx)
     local rocket = rocketWeapon(p)
     local knife = knifeWeapon(p)
     local haemo = haemolacriaWeapon(p)
+    local shooter = findShooter(ctx.entities, p)
+    local shootPos = shooter.Position
     local crosshair = rocket and findRocketTarget(ctx.entities, p) or nil
     ctx.crosshair = crosshair
     local shoot, aligned, ax, ay, aimMiss = aim(p, target, ctx.queueDelay, beam, {
         melee=melee, meleeReach=95, bomb=bomb, rocket=rocket, crosshair=crosshair,
-        knife=knife, haemo=haemo,
+        knife=knife, haemo=haemo, shooter=shooter,
     })
     local info = {targetX=target.Position.X, targetY=target.Position.Y, targetR=target.Size, aimX=ax, aimY=ay}
     state.info = info
@@ -1053,12 +1086,12 @@ function M.update(state, ctx)
     local wasHeld = state.held
     local hold = fireControl(state, ctx, p, aligned, safe)
     local plainTears = state.weapon == "tears" and not (melee or bomb or rocket or knife or haemo)
-    local targetDist = target.Position:Distance(p.Position)
+    local targetDist = target.Position:Distance(shootPos)
     local ignoreTearRocks = spectral(p) or laserWeapon(p)
     if hold and plainTears and shoot >= 1 and shoot <= 4 then
         local axis = AXES[shoot]
-        local clear = laneClear(room, g, p.Position.X, p.Position.Y,
-            p.Position.X + axis[1]*min(targetDist, 110), p.Position.Y + axis[2]*min(targetDist, 110), ignoreTearRocks)
+        local clear = laneClear(room, g, shootPos.X, shootPos.Y,
+            shootPos.X + axis[1]*min(targetDist, 110), shootPos.Y + axis[2]*min(targetDist, 110), ignoreTearRocks)
         if not clear then
             -- Do not waste fire delay shooting straight into a solid rock.
             hold = false
@@ -1074,11 +1107,11 @@ function M.update(state, ctx)
             local maxRange = p.TearRange or 260
             for _, oe in ipairs(enemies) do
                 if oe ~= target then
-                    local fwd = (oe.Position.X - p.Position.X)*axis[1] + (oe.Position.Y - p.Position.Y)*axis[2]
+                    local fwd = (oe.Position.X - shootPos.X)*axis[1] + (oe.Position.Y - shootPos.Y)*axis[2]
                     if fwd > 0 and fwd <= maxRange then
                         local ft = min(12, max(1.5, fwd/speed))
-                        local sx = oe.Position.X - p.Position.X - dx*ft
-                        local sy = oe.Position.Y - p.Position.Y - dy*ft
+                        local sx = oe.Position.X - shootPos.X - dx*ft
+                        local sy = oe.Position.Y - shootPos.Y - dy*ft
                         if abs(sx*axis[2] - sy*axis[1]) <= oe.Size + 10 then hitOther = true; break end
                     end
                 end
@@ -1137,7 +1170,7 @@ function M.update(state, ctx)
         -- aligned, clear, in range, and uncrowded so lateral 1.3x tear drift stays down.
         local holdLine = plainTears and aligned and nearEnemy >= 115
             and targetDist <= (p.TearRange or 260) - 10
-            and laneClear(room, g, p.Position.X, p.Position.Y, target.Position.X, target.Position.Y, ignoreTearRocks)
+            and laneClear(room, g, shootPos.X, shootPos.Y, target.Position.X, target.Position.Y, ignoreTearRocks)
         for i, dir in ipairs(ctx.directions) do
             local x, y, crossed = endpoint(ctx, g, dir, ctx.stride)
             local cell = cellOf(room, g, x, y)

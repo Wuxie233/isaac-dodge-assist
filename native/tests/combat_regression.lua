@@ -737,3 +737,32 @@ local lineT=enemy(260,186) -- aligned right (miss=6 <= 19), d=160 <= 250, nearEn
 local _,mvLine,shLine,holdLine=update(s,{lineT})
 assert(shLine==2 and holdLine and mvLine==0,'aligned tear lane jittered off-axis: mv='..tostring(mvLine))
 print('PASS 0.27+ combat: target hysteresis, rock/wide-miss tear gating, firing-line deadband')
+
+-- 0.27+ Lilith/Incubus shooter origin & familiar.Player ownership through deep chains.
+do
+ PlayerType = PlayerType or {PLAYER_LILITH=13}
+ FamiliarVariant = FamiliarVariant or {INCUBUS=80}
+ EntityType.ENTITY_FAMILIAR = EntityType.ENTITY_FAMILIAR or 3
+ s = Combat.new(); Combat.cycle(s)
+ p.Position, p.Velocity = Vector(100, 180), Vector(0, 0)
+ local savedGetPT = p.GetPlayerType
+ p.GetPlayerType = function() return 13 end
+ -- Incubus trails 40px below Lilith (at y=220), directly aligned with enemy at (260, 220),
+ -- while Lilith's body at (100, 180) has a rock blocking right and is 40px off-line!
+ local inc = {Type=EntityType.ENTITY_FAMILIAR, Variant=FamiliarVariant.INCUBUS, Position=Vector(100, 220), Velocity=Vector(0, 0),
+  Player=p, IsDead=function()return false end, ToFamiliar=function(self)return self end, ToNPC=function()return nil end}
+ rocks[room:GetGridIndex(Vector(140, 180))] = true; s.grid = nil
+ local tgt = enemy(260, 220)
+ local _, _, shInc, holdInc = update(s, {inc, tgt})
+ assert(shInc == 2 and holdInc, 'Lilith Incubus aligned shot must fire even when body lane is blocked/misaligned')
+ -- Familiar tear owned only via familiar.Player (no Parent chain to player) must count as owned attack!
+ local famTear = {Type=EntityType.ENTITY_TEAR, Variant=0, Index=999, InitSeed=9991,
+  Position=Vector(120, 220), Velocity=Vector(10, 0), SpawnerEntity=inc,
+  IsDead=function()return false end, ToNPC=function()return nil end}
+ local beforeTears = s.stats.tears
+ update(s, {inc, tgt, famTear})
+ assert(s.stats.tears > beforeTears, 'familiar.Player owned tear must be recognized by combat.ownedBy')
+ p.GetPlayerType = savedGetPT
+ rocks = {}; s.grid = nil
+ print('PASS Lilith/Incubus shooter origin & familiar.Player ownership')
+end
